@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Baseline document CSP. The authoritative, strict CSP is set on the BrowserWindow
+      response headers in Task 9 (and differs dev vs prod). `style-src 'unsafe-inline'`
+      is required for injected/extracted stylesheets (Tailwind, Radix). No remote origins.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <title>Harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- electron-vite renderer entry (root is src/renderer per electron.vite.config.ts). -->
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

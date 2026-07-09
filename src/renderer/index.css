@@ -1,0 +1,36 @@
+/*
+ * Tailwind entry stylesheet — imported once from `main.tsx`.
+ *
+ * PostCSS (postcss.config.js) runs Tailwind + autoprefixer over these directives at
+ * build time; Tailwind's JIT scans the files listed in tailwind.config.js (the renderer
+ * index.html plus every renderer .ts/.tsx file) to generate the used utilities. No
+ * Tailwind config content-glob change was needed — the existing globs already cover
+ * every file this task creates.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * A couple of base rules the utility classes build on. Colors mirror `app/theme.ts`
+ * (kept in sync by hand at this small size; Phase 6 can unify via CSS variables).
+ */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #0b0e14; /* theme.colors.bg */
+  color: #e6e9ef; /* theme.colors.text */
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

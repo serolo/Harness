@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"sess-err-001","tools":["Bash"],"model":"claude-opus-4"}
+{"type":"result","subtype":"error_during_execution","result":"The agent hit an unrecoverable error.","session_id":"sess-err-001","is_error":true}

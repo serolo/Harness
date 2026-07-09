@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"sess-text-001","tools":["Bash","Read","Edit"],"model":"claude-opus-4"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello, "}]},"session_id":"sess-text-001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"world."}]},"session_id":"sess-text-001"}
+{"type":"result","subtype":"success","result":"Done.","session_id":"sess-text-001","usage":{"input_tokens":123,"output_tokens":45},"is_error":false}

@@ -1,0 +1,34 @@
+{
+  // Type-checks the test files (and the vitest setup) under `tsc -b`. Kept SEPARATE
+  // from the four app-build projects so test-only globals (vitest `describe/it/expect`)
+  // and the `@testing-library/jest-dom` matcher augmentation don't leak into the app
+  // type graph or the emitted build. Emits nothing (`noEmit`); it exists only to fail
+  // the `check` gate if a test stops type-checking.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    // `composite` requires a place for build info even with noEmit.
+    "outDir": "out/types/test",
+    "rootDir": "src",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // vitest globals (globals:true in vitest.config) + node + jsdom matchers.
+    "types": ["node", "vitest/globals", "@testing-library/jest-dom/vitest"],
+    "jsx": "react-jsx",
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "@renderer/*": ["./src/renderer/*"]
+    }
+  },
+  "references": [
+    { "path": "./tsconfig.shared.json" },
+    { "path": "./tsconfig.main.json" },
+    { "path": "./tsconfig.renderer.json" }
+  ],
+  "include": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/test/**/*.ts",
+    "src/preload/**/*.d.ts"
+  ]
+}

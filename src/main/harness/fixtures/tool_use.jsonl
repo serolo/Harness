@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"sess-tool-001","tools":["Bash","Grep","Read"],"model":"claude-opus-4"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"ls -la","description":"List files"}}]},"session_id":"sess-tool-001"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"total 0\ndrwxr-xr-x  2 user staff 64 file.txt"}]}}
+{"type":"result","subtype":"success","result":"Listed the directory.","session_id":"sess-tool-001","usage":{"input_tokens":200,"output_tokens":30},"is_error":false}

@@ -1,0 +1,4 @@
+Analyzing the workspace...
+Editing src/index.ts
+Ran tests: 12 passed
+Done.

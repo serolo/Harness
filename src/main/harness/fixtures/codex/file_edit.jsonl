@@ -1,0 +1,5 @@
+{"type":"session_configured","session_id":"codex-sess-edit-001","model":"codex-1"}
+{"type":"file_change","path":"/repo/src/new.ts","kind":"add"}
+{"type":"file_change","path":"/repo/src/existing.ts","kind":"modify"}
+{"type":"file_change","path":"/repo/src/old.ts","kind":"delete"}
+{"type":"turn_complete","usage":{"input_tokens":300,"output_tokens":80}}

@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"sess-resume-abc","tools":["Bash","Read"],"model":"claude-opus-4"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Resuming where we left off."}]},"session_id":"sess-resume-abc"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_20","name":"TodoWrite","input":{"todos":[{"content":"Read the spec","status":"completed","activeForm":"Reading the spec"},{"content":"Implement the parser","status":"in_progress","activeForm":"Implementing the parser"}]}}]},"session_id":"sess-resume-abc"}
+{"type":"result","subtype":"success","result":"Resumed and updated todos.","session_id":"sess-resume-abc","usage":{"input_tokens":500,"output_tokens":60},"is_error":false}

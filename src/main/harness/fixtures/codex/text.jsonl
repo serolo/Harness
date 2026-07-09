@@ -1,0 +1,4 @@
+{"type":"session_configured","session_id":"codex-sess-text-001","model":"codex-1"}
+{"type":"agent_message_delta","delta":"Hello, "}
+{"type":"agent_message_delta","delta":"world."}
+{"type":"turn_complete","usage":{"input_tokens":123,"output_tokens":45}}

@@ -1,0 +1,41 @@
+# PROVISIONAL BRANDING (README §11 open question).
+# Working name "harness" / "Harness" / appId com.serolo.harness is NOT final.
+# Chosen because spec §5.8 already hardcodes the `harness://` deep-link scheme and the
+# safeStorage service name derives from it. Confirm before v1: changing the appId/protocol
+# later means migrating deep links + Keychain entries. If renamed, update exactly:
+#   - this file (appId/productName)
+#   - setAsDefaultProtocolClient('harness') in src/main/index.ts (Task 9)
+#   - the safeStorage service key (Phase 5)
+appId: com.serolo.harness
+productName: Harness
+copyright: Copyright © 2026
+
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - out/**/*
+  - package.json
+
+# macOS only for v1 (spec §1.3).
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  # Entitlements placeholder — hardened runtime + notarization wired in Phase 6.
+  # entitlements: build/entitlements.mac.plist
+  # entitlementsInherit: build/entitlements.mac.plist
+  hardenedRuntime: false
+
+# Deep-link protocol (spec §5.8). Registered at runtime via setAsDefaultProtocolClient too.
+protocols:
+  - name: Harness
+    schemes:
+      - harness
+
+# Native modules (better-sqlite3, node-pty) are rebuilt for the Electron ABI via
+# @electron/rebuild (npm run rebuild / postinstall), so electron-builder's own rebuild
+# is redundant here.
+npmRebuild: false

@@ -1,0 +1,2 @@
+[32mBuilding...[0m
+[1msrc/app.ts[0m updated

@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+*.tsbuildinfo
+# Stray tsc emit next to standalone scripts (scripts/*.ts run via tsx)
+scripts/*.js
+scripts/*.js.map
+scripts/*.d.ts
+scripts/*.d.ts.map
+
+# Databases (local app data / test scratch)
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets — never commit token ciphertext or keys
+secrets/
+*.pem
+*.key
+.env
+.env.*
+
+# Agent context / scratch
+.context/
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# OS / editor
+.DS_Store

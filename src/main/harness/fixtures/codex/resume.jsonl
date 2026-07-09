@@ -1,0 +1,4 @@
+{"type":"session_configured","session_id":"codex-sess-resume-abc","model":"codex-1"}
+{"type":"agent_message_delta","delta":"Resuming where we left off."}
+{"type":"tool_call","name":"apply_patch","arguments":{"path":"/repo/src/parser.ts"}}
+{"type":"turn_complete","usage":{"input_tokens":500,"output_tokens":60}}

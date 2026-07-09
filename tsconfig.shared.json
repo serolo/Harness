@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src/shared",
+    "outDir": "out/types/shared",
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src/shared/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

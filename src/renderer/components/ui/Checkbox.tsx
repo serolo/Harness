@@ -1,7 +1,12 @@
 // Checkbox with label — ported from components/core/Checkbox.jsx. Settings toggles that
 // read as options, todo items.
 
-export interface CheckboxProps {
+import type { InputHTMLAttributes } from 'react';
+
+export interface CheckboxProps extends Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  'type' | 'checked' | 'onChange' | 'className'
+> {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label?: React.ReactNode;
@@ -9,12 +14,15 @@ export interface CheckboxProps {
   className?: string;
 }
 
+/** Forwards `...rest` (id, name, data-testid, aria-*, ...) onto the native `<input>` so
+ *  callers can keep their existing test hooks when adopting this primitive. */
 export function Checkbox({
   checked,
   onChange,
   label,
   disabled,
   className = '',
+  ...rest
 }: CheckboxProps): React.JSX.Element {
   return (
     <label
@@ -52,6 +60,7 @@ export function Checkbox({
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
         className="absolute h-0 w-0 opacity-0"
+        {...rest}
       />
       {label}
     </label>

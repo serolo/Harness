@@ -1,15 +1,14 @@
-// Renderer theme tokens (Phase 0 — minimal scaffolding).
+// Renderer theme tokens.
 //
-// These are the design primitives the shell renders against. They are kept as plain
-// TS objects (not Tailwind config) so components can read them at runtime for inline
-// styles where a utility class doesn't fit, and so `providers.tsx` can publish the
-// active theme through React context. Tailwind utility classes remain the primary
-// styling mechanism (see index.css); this is the shared source of a few named tokens.
-//
-// Later phases (esp. Phase 6 "Config, Settings UI, Polish") may promote these into
-// CSS variables / a full design system. For now: minimal, real, and typed.
+// These are plain TS mirrors of the CSS custom properties in
+// `src/renderer/styles/tokens/colors.css` (the design-system source of truth), for the
+// few call sites that need a literal color value in JS rather than a Tailwind class or
+// `var()` — e.g. `useTerminal.ts`'s xterm theme, which paints via canvas/WebGL and can't
+// read CSS variables. Tailwind utility classes (mapped in `tailwind.config.js`) remain
+// the primary styling mechanism; keep these values in sync with `tokens/colors.css` by
+// hand at this small size.
 
-/** Named color tokens for the dark shell chrome. */
+/** Named color tokens for the dark shell chrome (mirrors `tokens/colors.css` `:root`). */
 export const colors = {
   /** App background (outermost). */
   bg: '#0b0e14',
@@ -23,12 +22,12 @@ export const colors = {
   textMuted: '#8b93a7',
   /** Accent (interactive) color. */
   accent: '#5b8cff',
-  /** IPC-health OK. */
-  ok: '#3fb950',
-  /** IPC-health error. */
-  error: '#f85149',
-  /** IPC-health pending. */
-  pending: '#d29922',
+  /** IPC-health OK / status "running". */
+  ok: '#3fb960',
+  /** IPC-health error / status "attention". */
+  error: '#f0565f',
+  /** IPC-health pending / status "working". */
+  pending: '#d9a13c',
 } as const;
 
 /** Spacing scale (px). Deliberately small — extend in Phase 6. */

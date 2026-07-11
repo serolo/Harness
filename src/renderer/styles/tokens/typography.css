@@ -1,0 +1,32 @@
+/* Harness — typography tokens. System fonts only: SF Pro via the native stack,
+   SF Mono via the native mono stack. No webfonts shipped. */
+
+:root {
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
+    "Cascadia Mono", monospace;
+
+  /* Size scale (px) — desktop-app density */
+  --text-2xs: 10px;   /* badges, keycaps */
+  --text-xs: 11px;    /* metadata, secondary rows, section labels */
+  --text-sm: 12px;    /* controls, table cells, mono code */
+  --text-base: 13px;  /* body — chat, settings, lists */
+  --text-md: 15px;    /* pane titles, dialog titles */
+  --text-lg: 20px;    /* onboarding / empty-state headings */
+  --text-xl: 28px;    /* marketing sub-heads */
+  --text-2xl: 44px;   /* marketing hero */
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-caps: 0.06em; /* uppercase section labels */
+}

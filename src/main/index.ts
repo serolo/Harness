@@ -80,6 +80,16 @@ const WINDOW_DEFAULTS = {
   height: 900,
   minWidth: 960,
   minHeight: 600,
+  // macOS only: inset the native traffic lights into the renderer's custom titlebar
+  // strip (Harness design system) instead of drawing a full native title bar. Real
+  // OS-drawn traffic lights, not a renderer-painted substitute. Other platforms keep
+  // the default frame — no custom titlebar there.
+  ...(process.platform === 'darwin'
+    ? {
+        titleBarStyle: 'hiddenInset' as const,
+        trafficLightPosition: { x: 14, y: 13 },
+      }
+    : {}),
 };
 
 // electron-log is the process-wide logger; init it before anything else can fail.

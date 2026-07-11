@@ -1,0 +1,53 @@
+/* Harness — base element rules built on the tokens. */
+
+body {
+  margin: 0;
+  background: var(--surface-app);
+  color: var(--text-body);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--selection-bg);
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+code, pre, kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Shared entrance/pulse keyframes — referenced via Tailwind arbitrary `animate-[...]`
+ * values (Dialog scrim/panel entrance, StatusBadge/SignalRow "working" pulse). */
+@keyframes hn-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes hn-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes hn-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}

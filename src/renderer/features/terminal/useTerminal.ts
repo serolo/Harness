@@ -15,11 +15,14 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { invoke, subscribeStream } from '@renderer/ipc';
 
-/** Dark theme matching the app shell (slate-950 background). */
+/** Dark theme matching the app shell. Literal values (not `var()`) — xterm paints via
+ *  canvas/WebGL, not the DOM, so it can't read CSS custom properties. Mirrors
+ *  `tokens/colors.css`: `--surface-well` (terminal well), `--fg-1` (foreground),
+ *  `--accent` (cursor). */
 const TERMINAL_THEME = {
-  background: '#020617',
-  foreground: '#e2e8f0',
-  cursor: '#38bdf8',
+  background: '#07090d',
+  foreground: '#e6e9ef',
+  cursor: '#5b8cff',
 } as const;
 
 /**

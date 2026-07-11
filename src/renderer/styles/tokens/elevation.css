@@ -1,0 +1,22 @@
+/* Harness — elevation & motion tokens. Shadows are soft and cool-tinted;
+   dark mode relies more on surface steps than shadow. */
+
+:root {
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);                            /* rows, chips */
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.35);                           /* cards, popovers */
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.45);                          /* menus, dropdowns */
+  --shadow-4: 0 16px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0,0,0,.4); /* dialogs, palette */
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.25, 1);
+  --duration-fast: 120ms;   /* hovers, presses */
+  --duration-base: 180ms;   /* fades, tab switches */
+  --duration-slow: 280ms;   /* dialogs, palette entrance */
+}
+
+[data-theme="light"] {
+  --shadow-1: 0 1px 2px rgba(23, 28, 38, 0.08);
+  --shadow-2: 0 2px 8px rgba(23, 28, 38, 0.1);
+  --shadow-3: 0 8px 24px rgba(23, 28, 38, 0.14);
+  --shadow-4: 0 16px 48px rgba(23, 28, 38, 0.2), 0 2px 8px rgba(23, 28, 38, 0.08);
+}

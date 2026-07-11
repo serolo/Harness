@@ -16,10 +16,10 @@ const STATUS_LABEL: Record<TurnStatus, string> = {
 };
 
 const STATUS_CLASS: Record<TurnStatus, string> = {
-  streaming: 'text-amber-300',
-  completed: 'text-emerald-400',
-  interrupted: 'text-slate-400',
-  error: 'text-red-400',
+  streaming: 'text-warn',
+  completed: 'text-ok',
+  interrupted: 'text-fg-3',
+  error: 'text-danger',
 };
 
 export function TurnDivider({
@@ -33,14 +33,14 @@ export function TurnDivider({
 
   return (
     <div
-      className="my-2 flex items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500"
+      className="my-2 flex items-center gap-2 text-2xs uppercase tracking-caps text-fg-3"
       data-testid="turn-divider"
       data-status={status}
     >
-      <span className="h-px flex-1 bg-slate-800" />
+      <span className="h-px flex-1 bg-border-1" />
       <span className={STATUS_CLASS[status]}>{STATUS_LABEL[status]}</span>
-      {tokens && <span className="text-slate-600">· {tokens}</span>}
-      <span className="h-px flex-1 bg-slate-800" />
+      {tokens && <span className="text-fg-3">· {tokens}</span>}
+      <span className="h-px flex-1 bg-border-1" />
     </div>
   );
 }

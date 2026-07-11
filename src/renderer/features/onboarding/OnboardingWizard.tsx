@@ -22,6 +22,7 @@ import { useEffect, useState } from 'react';
 
 import type { OnboardingState } from '@shared/ipc';
 import { invoke } from '@renderer/ipc';
+import { Button } from '@renderer/components/ui';
 
 /** localStorage key recording that the user acknowledged the v1 execution-model disclosure. */
 const ACK_KEY = 'harness.onboarding.acknowledged';
@@ -79,24 +80,24 @@ export function OnboardingWizard(): React.JSX.Element | null {
 
   return (
     <div
-      className="absolute inset-0 z-[60] flex items-center justify-center bg-black/60"
+      className="absolute inset-0 z-[60] flex animate-[hn-fade_180ms_var(--ease-out)] items-center justify-center bg-scrim"
       data-testid="onboarding-overlay"
     >
       <div
-        className="flex max-h-[85vh] w-[560px] max-w-[92vw] flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-2xl"
+        className="flex max-h-[85vh] w-[560px] max-w-[92vw] animate-[hn-rise_280ms_var(--ease-out)] flex-col overflow-hidden rounded-4 border border-border-1 bg-surface-overlay shadow-4"
         data-testid="onboarding-wizard"
       >
-        <div className="border-b border-slate-800 px-5 py-3">
-          <h2 className="text-sm font-semibold text-slate-100">
+        <div className="border-b border-border-1 px-5 py-4">
+          <h2 className="font-display text-lg font-semibold text-fg-1">
             Welcome — let’s get set up
           </h2>
-          <p className="mt-0.5 text-xs text-slate-500">
+          <p className="mt-1 text-sm text-fg-2">
             A couple of steps and one important thing to know before you run an
             agent.
           </p>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {/* Setup checklist — reflects onboarding:state. */}
           <ol className="flex flex-col gap-2" data-testid="onboarding-steps">
             <StepRow
@@ -121,13 +122,13 @@ export function OnboardingWizard(): React.JSX.Element | null {
 
           {/* HEIGHTENED-SCRUTINY: the v1 execution-model disclosure (spec §7). */}
           <div
-            className="mt-4 rounded-md border border-amber-800/60 bg-amber-950/40 p-3"
+            className="mt-4 rounded-3 border border-warn bg-warn-muted p-3.5"
             data-testid="onboarding-disclosure"
           >
-            <div className="text-xs font-semibold uppercase tracking-wide text-amber-300">
+            <div className="text-xs font-semibold uppercase tracking-caps text-warn">
               Before you run an agent — how execution works
             </div>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-amber-100/90">
+            <p className="mt-1.5 text-base leading-relaxed text-fg-1">
               Agent turns and run scripts execute as{' '}
               <strong>real commands with your user account’s privileges</strong>
               , directly inside each workspace’s worktree.{' '}
@@ -138,12 +139,12 @@ export function OnboardingWizard(): React.JSX.Element | null {
               before merging.
             </p>
             <label
-              className="mt-2.5 flex cursor-pointer items-start gap-2 text-[13px] text-amber-100"
+              className="mt-2.5 flex cursor-pointer items-start gap-2 text-base text-fg-1"
               data-testid="onboarding-ack-label"
             >
               <input
                 type="checkbox"
-                className="mt-0.5 h-4 w-4 accent-amber-500"
+                className="mt-0.5 h-4 w-4 accent-warn"
                 data-testid="onboarding-ack"
                 checked={ackChecked}
                 onChange={(e) => setAckChecked(e.target.checked)}
@@ -156,16 +157,17 @@ export function OnboardingWizard(): React.JSX.Element | null {
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-slate-800 px-5 py-3">
-          <button
+        <div className="flex items-center justify-end gap-2 border-t border-border-1 px-5 py-3">
+          <Button
             type="button"
-            className="rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
+            variant="primary"
+            size="sm"
             data-testid="onboarding-continue"
             disabled={!ackChecked}
             onClick={acknowledge}
           >
             Get started
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -191,20 +193,16 @@ function StepRow({
       data-done={done}
     >
       <span
-        className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] ${
-          done
-            ? 'bg-emerald-600 text-white'
-            : 'border border-slate-600 text-slate-600'
+        className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-2xs ${
+          done ? 'bg-ok text-white' : 'border border-border-2 text-fg-3'
         }`}
         aria-hidden
       >
         {done ? '✓' : ''}
       </span>
       <div className="min-w-0">
-        <div className="text-[13px] text-slate-200">{title}</div>
-        {!done ? (
-          <div className="text-[11px] text-slate-500">{todo}</div>
-        ) : null}
+        <div className="text-base text-fg-1">{title}</div>
+        {!done ? <div className="text-xs text-fg-3">{todo}</div> : null}
       </div>
     </li>
   );

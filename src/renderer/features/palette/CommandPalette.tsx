@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useUiStore } from '@renderer/stores/ui';
+import { Kbd } from '@renderer/components/ui';
 import {
   filterCommands,
   useCommands,
@@ -86,19 +87,19 @@ export function CommandPalette({
 
   return (
     <div
-      className="absolute inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh]"
+      className="absolute inset-0 z-50 flex animate-[hn-fade_180ms_var(--ease-out)] items-start justify-center bg-scrim backdrop-blur-[8px] pt-[12vh]"
       data-testid="command-palette-overlay"
       onClick={close}
     >
       <div
-        className="w-[560px] max-w-[90vw] overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-2xl"
+        className="w-[560px] max-w-[90vw] animate-[hn-rise_280ms_var(--ease-out)] overflow-hidden rounded-4 border border-border-1 bg-surface-overlay shadow-4"
         data-testid="command-palette"
         onClick={(e) => e.stopPropagation()}
       >
         <input
           ref={inputRef}
           type="text"
-          className="w-full border-b border-slate-800 bg-transparent px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none"
+          className="w-full border-b border-border-1 bg-transparent px-4 py-3 text-sm text-fg-1 placeholder:text-fg-3 focus:outline-none"
           placeholder="Type a command…"
           data-testid="command-palette-input"
           value={query}
@@ -108,7 +109,7 @@ export function CommandPalette({
         <ul className="max-h-[50vh] overflow-y-auto py-1" role="listbox">
           {results.length === 0 ? (
             <li
-              className="px-4 py-3 text-xs text-slate-600"
+              className="px-4 py-3 text-xs text-fg-3"
               data-testid="command-palette-empty"
             >
               No matching commands.
@@ -121,17 +122,17 @@ export function CommandPalette({
                 aria-selected={idx === active}
                 data-testid={`command-item-${command.id}`}
                 data-active={idx === active}
-                className={`flex cursor-pointer items-center justify-between gap-3 px-4 py-2 text-sm ${
+                className={`flex cursor-pointer items-center justify-between gap-3 px-4 py-2 text-sm transition-colors duration-fast ease-out ${
                   idx === active
-                    ? 'bg-slate-800 text-slate-100'
-                    : 'text-slate-300 hover:bg-slate-800/50'
+                    ? 'bg-bg-4 text-fg-1'
+                    : 'text-fg-2 hover:bg-bg-3'
                 }`}
                 onMouseEnter={() => setActive(idx)}
                 onClick={() => runAt(idx)}
               >
                 <span className="truncate">{command.title}</span>
                 {command.subtitle ? (
-                  <span className="shrink-0 text-[11px] text-slate-500">
+                  <span className="shrink-0 text-2xs text-fg-3">
                     {command.subtitle}
                   </span>
                 ) : null}
@@ -139,6 +140,17 @@ export function CommandPalette({
             ))
           )}
         </ul>
+        <div className="flex items-center justify-end gap-3 border-t border-border-1 px-4 py-2 text-2xs text-fg-3">
+          <span className="inline-flex items-center gap-1.5">
+            <Kbd keys="↑↓" /> Navigate
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Kbd keys="⏎" /> Select
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Kbd keys="⎋" /> Close
+          </span>
+        </div>
       </div>
     </div>
   );

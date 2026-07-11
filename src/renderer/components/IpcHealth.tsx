@@ -21,17 +21,17 @@ const STATE_META: Record<
   { dotClass: string; label: string; title: string }
 > = {
   pending: {
-    dotClass: 'bg-amber-500 animate-pulse',
+    dotClass: 'bg-warn animate-pulse',
     label: 'IPC…',
     title: 'Checking IPC round trip to the main process',
   },
   ok: {
-    dotClass: 'bg-emerald-500',
+    dotClass: 'bg-ok',
     label: 'IPC OK',
     title: 'IPC round trip succeeded (app:ping → ok)',
   },
   error: {
-    dotClass: 'bg-red-500',
+    dotClass: 'bg-danger',
     label: 'IPC error',
     title: 'IPC round trip failed — the main process did not answer app:ping',
   },
@@ -72,7 +72,7 @@ export function IpcHealth(): React.JSX.Element {
 
   return (
     <div
-      className="flex items-center gap-2 text-xs text-slate-400"
+      className="flex items-center gap-2 text-xs text-fg-2"
       role="status"
       aria-live="polite"
       title={meta.title}

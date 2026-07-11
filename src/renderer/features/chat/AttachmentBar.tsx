@@ -2,6 +2,7 @@
 // Phase 4 via a shared store (SEAM) — this bar renders whatever the composer holds.
 
 import type { Attachment } from '@shared/harness';
+import { Badge } from '@renderer/components/ui';
 
 export interface AttachmentBarProps {
   attachments: Attachment[];
@@ -33,20 +34,17 @@ export function AttachmentBar({
       data-testid="attachment-bar"
     >
       {attachments.map((a, i) => (
-        <span
-          key={i}
-          className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300"
-        >
+        <Badge key={i} tone="neutral" className="gap-1.5 py-1 pr-1">
           <span className="max-w-[220px] truncate font-mono">{label(a)}</span>
           <button
             type="button"
             aria-label="Remove attachment"
-            className="text-slate-500 hover:text-slate-200"
+            className="text-fg-3 hover:text-fg-1"
             onClick={() => onRemove(i)}
           >
             ×
           </button>
-        </span>
+        </Badge>
       ))}
     </div>
   );

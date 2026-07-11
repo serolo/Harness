@@ -15,23 +15,23 @@ const STATUS_CONFIG: Record<
   { dotClass: string; label: string }
 > = {
   idle: {
-    dotClass: 'bg-slate-500',
+    dotClass: 'bg-status-idle',
     label: 'idle',
   },
   working: {
-    dotClass: 'bg-amber-400 animate-pulse',
+    dotClass: 'bg-status-working animate-pulse',
     label: 'working',
   },
   needs_attention: {
-    dotClass: 'bg-red-500',
+    dotClass: 'bg-status-attention',
     label: 'attention',
   },
   running: {
-    dotClass: 'bg-emerald-500',
+    dotClass: 'bg-status-running',
     label: 'running',
   },
   archived: {
-    dotClass: 'bg-slate-700',
+    dotClass: 'bg-status-archived',
     label: 'archived',
   },
 };
@@ -50,7 +50,7 @@ export function StatusBadge({ status }: StatusBadgeProps): React.JSX.Element {
 
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium text-slate-300"
+      className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-2xs font-medium text-fg-2"
       data-testid="status-badge"
       data-status={status}
       aria-label={`Status: ${label}`}

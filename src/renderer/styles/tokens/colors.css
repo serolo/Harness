@@ -7,33 +7,33 @@
   color-scheme: dark;
 
   /* ---- Base ramp (dark) ---- */
-  --bg-0: #07090d;            /* deepest — terminal, code wells */
-  --bg-1: #0b0e14;            /* app background (theme.ts bg) */
-  --bg-2: #11151f;            /* raised surface — sidebar, panels (theme.ts surface) */
-  --bg-3: #171c29;            /* hover surface, cards on panels */
-  --bg-4: #1f2534;            /* active / selected surface */
+  --bg-0: #07090d; /* deepest — terminal, code wells */
+  --bg-1: #0b0e14; /* app background (theme.ts bg) */
+  --bg-2: #11151f; /* raised surface — sidebar, panels (theme.ts surface) */
+  --bg-3: #171c29; /* hover surface, cards on panels */
+  --bg-4: #1f2534; /* active / selected surface */
 
-  --border-1: #1e2430;        /* hairline divider (theme.ts border) */
-  --border-2: #2a3140;        /* control borders, hover borders */
+  --border-1: #1e2430; /* hairline divider (theme.ts border) */
+  --border-2: #2a3140; /* control borders, hover borders */
 
-  --fg-1: #e6e9ef;            /* primary text (theme.ts text) */
-  --fg-2: #8b93a7;            /* secondary / muted (theme.ts textMuted) */
-  --fg-3: #5c6478;            /* tertiary — hints, timestamps */
+  --fg-1: #e6e9ef; /* primary text (theme.ts text) */
+  --fg-2: #8b93a7; /* secondary / muted (theme.ts textMuted) */
+  --fg-3: #5c6478; /* tertiary — hints, timestamps */
   --fg-disabled: #3e4453;
 
   /* ---- Accent (interactive blue, theme.ts accent) ---- */
   --accent: #5b8cff;
   --accent-hover: #729cff;
   --accent-active: #4a7bf0;
-  --accent-fg: #0b0e14;       /* text on accent fills */
+  --accent-fg: #0b0e14; /* text on accent fills */
   --accent-muted: rgba(91, 140, 255, 0.14);
   --accent-border: rgba(91, 140, 255, 0.45);
 
   /* ---- Status (workspace lifecycle + checks) ---- */
   --status-idle: #6b7488;
-  --status-working: #d9a13c;      /* amber — agent streaming */
-  --status-attention: #f0565f;    /* red — needs user input */
-  --status-running: #3fb960;      /* green — dev server live */
+  --status-working: #d9a13c; /* amber — agent streaming */
+  --status-attention: #f0565f; /* red — needs user input */
+  --status-running: #3fb960; /* green — dev server live */
   --status-archived: #3e4453;
 
   --ok: #3fb960;
@@ -57,8 +57,8 @@
   --surface-app: var(--bg-1);
   --surface-panel: var(--bg-2);
   --surface-card: var(--bg-3);
-  --surface-well: var(--bg-0);       /* terminal / code background */
-  --surface-overlay: #141926;        /* dialogs, palette, menus */
+  --surface-well: var(--bg-0); /* terminal / code background */
+  --surface-overlay: #141926; /* dialogs, palette, menus */
   --scrim: rgba(4, 6, 10, 0.6);
   --text-body: var(--fg-1);
   --text-muted: var(--fg-2);
@@ -69,7 +69,7 @@
   --selection-bg: rgba(91, 140, 255, 0.28);
 }
 
-[data-theme="light"] {
+[data-theme='light'] {
   color-scheme: light;
 
   --bg-0: #eceef2;

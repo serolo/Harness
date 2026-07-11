@@ -14,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { CloneProgress } from '@shared/ipc';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
+import { Button, Input } from '@renderer/components/ui';
 
 type Mode = 'idle' | 'clone-form' | 'clone-progress';
 
@@ -134,7 +135,7 @@ export function AddProjectMenu({
             type="button"
             onClick={() => void handleAddLocal()}
             disabled={isWorking}
-            className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+            className="w-full rounded-2 px-2 py-1.5 text-left text-xs text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1 disabled:opacity-50"
           >
             + Add local repo
           </button>
@@ -146,7 +147,7 @@ export function AddProjectMenu({
               setMode('clone-form');
               setError(null);
             }}
-            className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="w-full rounded-2 px-2 py-1.5 text-left text-xs text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
           >
             + Clone URL…
           </button>
@@ -158,51 +159,54 @@ export function AddProjectMenu({
           onSubmit={(e) => void handleCloneSubmit(e)}
           className="flex flex-col gap-1.5"
         >
-          <input
+          <Input
             type="url"
             value={cloneUrl}
             onChange={(e) => setCloneUrl(e.target.value)}
             placeholder="https://github.com/org/repo.git"
             autoFocus
             required
-            className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 placeholder-slate-600 focus:border-slate-500 focus:outline-none"
+            className="w-full text-xs"
           />
           <div className="flex gap-1">
-            <button
+            <Button
               type="submit"
+              variant="primary"
+              size="sm"
               disabled={!cloneUrl.trim()}
-              className="flex-1 rounded bg-slate-700 px-2 py-1 text-xs font-medium text-slate-100 hover:bg-slate-600 disabled:opacity-50"
+              className="flex-1"
             >
               Clone
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={() => {
                 setMode('idle');
                 setCloneUrl('');
                 setError(null);
               }}
-              className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-800"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </form>
       )}
 
       {mode === 'clone-progress' && (
         <div className="flex flex-col gap-1">
-          <p className="text-[11px] text-slate-400">{phaseLabel()}</p>
-          <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+          <p className="text-xs text-fg-2">{phaseLabel()}</p>
+          <div className="h-1.5 overflow-hidden rounded-full bg-bg-3">
             <div
-              className="h-full rounded-full bg-slate-400 transition-all"
+              className="h-full rounded-full bg-accent transition-all duration-base ease-out"
               style={{ width: `${progressPercent()}%` }}
             />
           </div>
         </div>
       )}
 
-      {error && <p className="text-[11px] text-red-400">{error}</p>}
+      {error && <p className="text-xs text-danger">{error}</p>}
     </div>
   );
 }

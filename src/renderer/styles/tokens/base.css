@@ -23,7 +23,9 @@ a:hover {
   text-decoration: underline;
 }
 
-code, pre, kbd {
+code,
+pre,
+kbd {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
 }

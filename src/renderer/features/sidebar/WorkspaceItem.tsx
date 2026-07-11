@@ -89,10 +89,8 @@ export function WorkspaceItem({
         type="button"
         onClick={() => onSelect(workspace.id)}
         aria-current={isSelected ? 'true' : undefined}
-        className={`group w-full rounded px-2 py-2 text-left transition-colors ${
-          isSelected
-            ? 'bg-slate-700 text-slate-100'
-            : 'text-slate-300 hover:bg-slate-800'
+        className={`group w-full rounded-2 px-2 py-2 text-left transition-colors duration-fast ease-out ${
+          isSelected ? 'bg-bg-4 text-fg-1' : 'text-fg-2 hover:bg-bg-3'
         }`}
       >
         {/* Top row: name + status badge */}
@@ -104,7 +102,7 @@ export function WorkspaceItem({
         </div>
 
         {/* Second row: branch + harness + optional port */}
-        <div className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-500">
+        <div className="mt-0.5 flex items-center gap-2 text-xs text-fg-3">
           <span className="min-w-0 flex-1 truncate">{workspace.branch}</span>
           <span className="shrink-0">
             {HARNESS_LABELS[workspace.harness] ?? workspace.harness}
@@ -121,7 +119,7 @@ export function WorkspaceItem({
           <button
             type="button"
             onClick={() => void handleRestore()}
-            className="rounded px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+            className="rounded-1 px-1.5 py-0.5 text-2xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2"
             data-testid="restore-btn"
             aria-label={`Restore workspace ${workspace.name}`}
           >
@@ -131,7 +129,7 @@ export function WorkspaceItem({
           <button
             type="button"
             onClick={() => void handleArchive()}
-            className="rounded px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-800 hover:text-slate-400"
+            className="rounded-1 px-1.5 py-0.5 text-2xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2"
             data-testid="archive-btn"
             aria-label={`Archive workspace ${workspace.name}`}
           >

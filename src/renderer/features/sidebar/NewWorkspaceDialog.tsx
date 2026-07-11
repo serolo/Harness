@@ -18,6 +18,16 @@
 // The PR/issue lists degrade gracefully: when no GitHub account is connected the
 // `invoke` rejects with a typed AppError and an inline "Connect GitHub" empty state is
 // shown instead of crashing the dialog.
+//
+// Design system note (Batch A): the overlay/panel chrome mirrors `components/ui/Dialog`
+// (rounded-4/border-border-1/bg-surface-overlay/shadow-4) by hand rather than importing
+// the primitive — Dialog has no slot for the tabbed source picker + streaming log body
+// this component drives, so re-using its visual recipe (not its markup) keeps the same
+// look without forcing the multi-tab logic through a single `children` slot. The source
+// tabs (data-testid + aria-pressed + per-tab disabled) and the harness/base-branch/PR/issue
+// controls stay hand-rolled or adopt `Input`/`Select`/`Button`/`IconButton` where doing so
+// doesn't drop a `data-testid` or a `disabled` per-option requirement (see the harness
+// `<Select>` vs. keeping a raw `<input>`/`<select>` for the rest).
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { HarnessId } from '@shared/harness';
@@ -27,6 +37,7 @@ import type { LinearIssue } from '@shared/linear';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useComposerStore } from '@renderer/stores/composer';
+import { Button, IconButton, Input, Select } from '@renderer/components/ui';
 import { SetupLogPanel } from './SetupLogPanel';
 
 const HARNESS_OPTIONS: { value: HarnessId; label: string }[] = [
@@ -287,7 +298,7 @@ export function NewWorkspaceDialog({
     <>
       {/* Overlay */}
       <div
-        className="fixed inset-0 z-40 bg-black/60"
+        className="fixed inset-0 z-40 bg-scrim"
         aria-hidden="true"
         onClick={handleClose}
       />
@@ -301,32 +312,25 @@ export function NewWorkspaceDialog({
         data-testid="new-workspace-dialog"
       >
         <div
-          className="relative w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 shadow-2xl"
+          className="relative w-full max-w-md rounded-4 border border-border-1 bg-surface-overlay shadow-4"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-            <h2 className="text-sm font-semibold text-slate-100">
-              New Workspace
-            </h2>
-            <button
-              type="button"
-              onClick={handleClose}
-              className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
-              aria-label="Close"
-            >
+          <div className="flex items-center justify-between border-b border-border-1 px-4 py-3">
+            <h2 className="text-md font-semibold text-fg-1">New Workspace</h2>
+            <IconButton label="Close" size="sm" onClick={handleClose}>
               ✕
-            </button>
+            </IconButton>
           </div>
 
           {/* Body */}
           <div className="p-4">
             {/* Source type tabs */}
             <div className="mb-4">
-              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              <p className="mb-1.5 text-xs font-medium uppercase tracking-caps text-fg-3">
                 Source
               </p>
-              <div className="flex gap-1 rounded-md border border-slate-700 bg-slate-950 p-0.5">
+              <div className="flex gap-1 rounded-2 border border-border-2 bg-surface-well p-0.5">
                 {TABS.map(({ id, label }) => (
                   <button
                     key={id}
@@ -334,10 +338,10 @@ export function NewWorkspaceDialog({
                     disabled={isStreaming}
                     onClick={() => setActiveTab(id)}
                     data-testid={`source-tab-${id}`}
-                    className={`flex-1 rounded px-2 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`flex-1 rounded-1 px-2 py-1 text-xs transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
                       activeTab === id
-                        ? 'bg-slate-700 text-slate-100'
-                        : 'text-slate-400 hover:text-slate-200'
+                        ? 'bg-bg-4 text-fg-1'
+                        : 'text-fg-2 hover:text-fg-1'
                     }`}
                     aria-pressed={activeTab === id}
                   >
@@ -349,73 +353,66 @@ export function NewWorkspaceDialog({
 
             {/* Harness (shared across all source tabs) */}
             <label className="mb-4 block">
-              <span className="mb-1 block text-xs text-slate-400">Harness</span>
-              <select
+              <span className="mb-1 block text-xs text-fg-2">Harness</span>
+              <Select
                 value={harness}
                 onChange={(e) => setHarness(e.target.value as HarnessId)}
                 disabled={isStreaming}
-                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200 focus:border-slate-500 focus:outline-none disabled:opacity-50"
-              >
-                {HARNESS_OPTIONS.map(({ value, label }) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
+                className="w-full"
+                options={HARNESS_OPTIONS}
+              />
             </label>
 
             {/* --- Branch tab --- */}
             {activeTab === 'branch' && (
               <form onSubmit={handleBranchSubmit}>
                 <label className="mb-3 block">
-                  <span className="mb-1 block text-xs text-slate-400">
+                  <span className="mb-1 block text-xs text-fg-2">
                     Base branch{' '}
-                    <span className="text-slate-600">
+                    <span className="text-fg-3">
                       (optional, defaults to project default)
                     </span>
                   </span>
-                  <input
+                  <Input
                     type="text"
                     value={baseBranch}
                     onChange={(e) => setBaseBranch(e.target.value)}
                     placeholder="e.g. main"
                     disabled={isStreaming}
-                    className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-slate-500 focus:outline-none disabled:opacity-50"
+                    mono
+                    className="w-full"
                   />
                 </label>
 
                 <label className="mb-4 block">
-                  <span className="mb-1 block text-xs text-slate-400">
+                  <span className="mb-1 block text-xs text-fg-2">
                     Branch name{' '}
-                    <span className="text-slate-600">
+                    <span className="text-fg-3">
                       (optional, auto-generated if blank)
                     </span>
                   </span>
-                  <input
+                  <Input
                     type="text"
                     value={customBranch}
                     onChange={(e) => setCustomBranch(e.target.value)}
                     placeholder="e.g. agent/paris"
                     disabled={isStreaming}
-                    className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-slate-500 focus:outline-none disabled:opacity-50"
+                    mono
+                    className="w-full"
                   />
                 </label>
 
                 <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={handleClose}
-                    className="rounded px-3 py-1.5 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                  >
+                  <Button type="button" variant="ghost" onClick={handleClose}>
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="submit"
+                    variant="primary"
                     disabled={!projectId || isStreaming}
-                    className="rounded bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isStreaming ? 'Creating…' : 'Create'}
-                  </button>
+                  </Button>
                 </div>
               </form>
             )}
@@ -424,9 +421,7 @@ export function NewWorkspaceDialog({
             {activeTab !== 'branch' && (
               <div data-testid={`${activeTab}-list`}>
                 {listLoading && (
-                  <p className="py-4 text-center text-xs text-slate-500">
-                    Loading…
-                  </p>
+                  <p className="py-4 text-center text-xs text-fg-3">Loading…</p>
                 )}
 
                 {/* No-account (or error) empty state — the invoke rejected. GitHub tabs
@@ -436,13 +431,13 @@ export function NewWorkspaceDialog({
                   activeTab !== 'linear' && (
                     <div
                       data-testid="github-empty"
-                      className="rounded border border-slate-700 bg-slate-950 px-3 py-4 text-center"
+                      className="rounded-2 border border-border-1 bg-surface-well px-3 py-4 text-center"
                     >
-                      <p className="text-sm text-slate-300">
+                      <p className="text-sm text-fg-2">
                         Connect GitHub to list{' '}
                         {activeTab === 'pr' ? 'pull requests' : 'issues'}.
                       </p>
-                      <p className="mt-1 text-[11px] text-slate-500">
+                      <p className="mt-1 text-xs text-fg-3">
                         No GitHub account is connected for this project.
                       </p>
                     </div>
@@ -454,38 +449,38 @@ export function NewWorkspaceDialog({
                   activeTab === 'linear' && (
                     <div
                       data-testid="linear-connect"
-                      className="rounded border border-slate-700 bg-slate-950 px-3 py-4"
+                      className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
                     >
-                      <p className="text-sm text-slate-300">Connect Linear</p>
-                      <p className="mt-1 text-[11px] text-slate-500">
+                      <p className="text-sm text-fg-2">Connect Linear</p>
+                      <p className="mt-1 text-xs text-fg-3">
                         Paste a Linear API key (starts with{' '}
-                        <code className="text-slate-400">lin_api_</code>) to
-                        list your issues.
+                        <code className="text-fg-2">lin_api_</code>) to list
+                        your issues.
                       </p>
                       <div className="mt-2 flex gap-2">
-                        <input
+                        <Input
                           type="password"
                           value={linearToken}
                           onChange={(e) => setLinearToken(e.target.value)}
                           placeholder="lin_api_…"
                           disabled={connecting}
                           data-testid="linear-token-input"
-                          className="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-slate-500 focus:outline-none disabled:opacity-50"
+                          className="flex-1"
                         />
-                        <button
+                        <Button
                           type="button"
+                          variant="primary"
                           onClick={() => void handleConnectLinear()}
                           disabled={connecting || linearToken.trim() === ''}
                           data-testid="linear-connect-submit"
-                          className="rounded bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {connecting ? 'Connecting…' : 'Connect'}
-                        </button>
+                        </Button>
                       </div>
                       {connectError && (
                         <p
                           data-testid="linear-connect-error"
-                          className="mt-2 text-[11px] text-red-400"
+                          className="mt-2 text-xs text-danger"
                         >
                           {connectError}
                         </p>
@@ -507,12 +502,12 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectPr(pr)}
                             data-testid="pr-item"
                             data-pr-number={pr.number}
-                            className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-left hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="w-full rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:border-border-2 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <span className="block truncate text-sm text-slate-200">
+                            <span className="block truncate text-sm text-fg-1">
                               {pr.title}
                             </span>
-                            <span className="text-[11px] text-slate-500">
+                            <span className="text-xs text-fg-3">
                               #{pr.number}
                               {pr.author ? ` · ${pr.author}` : ''}
                             </span>
@@ -521,7 +516,7 @@ export function NewWorkspaceDialog({
                       ))}
                     </ul>
                   ) : (
-                    <p className="py-4 text-center text-xs text-slate-500">
+                    <p className="py-4 text-center text-xs text-fg-3">
                       No open pull requests.
                     </p>
                   ))}
@@ -540,12 +535,12 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectIssue(issue)}
                             data-testid="issue-item"
                             data-issue-number={issue.number}
-                            className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-left hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="w-full rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:border-border-2 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <span className="block truncate text-sm text-slate-200">
+                            <span className="block truncate text-sm text-fg-1">
                               {issue.title}
                             </span>
-                            <span className="text-[11px] text-slate-500">
+                            <span className="text-xs text-fg-3">
                               #{issue.number}
                             </span>
                           </button>
@@ -553,7 +548,7 @@ export function NewWorkspaceDialog({
                       ))}
                     </ul>
                   ) : (
-                    <p className="py-4 text-center text-xs text-slate-500">
+                    <p className="py-4 text-center text-xs text-fg-3">
                       No open issues.
                     </p>
                   ))}
@@ -572,12 +567,12 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectLinearIssue(issue)}
                             data-testid="linear-issue-item"
                             data-issue-id={issue.id}
-                            className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-left hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="w-full rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:border-border-2 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <span className="block truncate text-sm text-slate-200">
+                            <span className="block truncate text-sm text-fg-1">
                               {issue.identifier} · {issue.title}
                             </span>
-                            <span className="text-[11px] text-slate-500">
+                            <span className="text-xs text-fg-3">
                               {issue.state ?? 'no state'}
                             </span>
                           </button>
@@ -585,7 +580,7 @@ export function NewWorkspaceDialog({
                       ))}
                     </ul>
                   ) : (
-                    <p className="py-4 text-center text-xs text-slate-500">
+                    <p className="py-4 text-center text-xs text-fg-3">
                       No Linear issues.
                     </p>
                   ))}
@@ -594,8 +589,8 @@ export function NewWorkspaceDialog({
 
             {/* Phase status line */}
             {phaseMessage && (
-              <p className="mt-3 text-xs text-slate-400">
-                <span className="mr-1 inline-block h-2 w-2 animate-spin rounded-full border border-slate-400 border-t-transparent align-middle" />
+              <p className="mt-3 text-xs text-fg-2">
+                <span className="mr-1 inline-block h-2 w-2 animate-spin rounded-full border border-accent border-t-transparent align-middle" />
                 {phaseMessage}
               </p>
             )}
@@ -609,7 +604,7 @@ export function NewWorkspaceDialog({
 
             {/* Error */}
             {error && (
-              <p className="mt-3 rounded border border-red-800 bg-red-950/40 px-2 py-1.5 text-xs text-red-400">
+              <p className="mt-3 rounded-2 border border-danger/30 bg-danger-muted px-2 py-1.5 text-xs text-danger">
                 {error}
               </p>
             )}

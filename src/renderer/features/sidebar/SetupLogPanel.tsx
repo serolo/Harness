@@ -27,13 +27,13 @@ export function SetupLogPanel({
 
   return (
     <div
-      className="h-40 overflow-y-auto rounded border border-slate-700 bg-slate-950 p-2 font-mono text-[11px] leading-relaxed text-slate-300"
+      className="h-40 overflow-y-auto rounded-2 border border-border-1 bg-surface-well p-2 font-mono text-xs leading-relaxed text-fg-2"
       data-testid="setup-log"
       aria-label="Setup log output"
       aria-live="polite"
     >
       {lines.length === 0 ? (
-        <span className="text-slate-600">Waiting for output…</span>
+        <span className="text-fg-3">Waiting for output…</span>
       ) : (
         lines.map((line, i) => (
           // Lines may be empty (blank separator lines from the script); render

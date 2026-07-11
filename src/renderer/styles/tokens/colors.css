@@ -1,0 +1,126 @@
+/* Harness — color tokens.
+   Dark is the default (:root). Light mode via [data-theme="light"].
+   Base values evolved from src/renderer/app/theme.ts (#0b0e14 / #11151f / #1e2430 /
+   #e6e9ef / #8b93a7 / #5b8cff) — kept, with an extended ramp around them. */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- Base ramp (dark) ---- */
+  --bg-0: #07090d; /* deepest — terminal, code wells */
+  --bg-1: #0b0e14; /* app background (theme.ts bg) */
+  --bg-2: #11151f; /* raised surface — sidebar, panels (theme.ts surface) */
+  --bg-3: #171c29; /* hover surface, cards on panels */
+  --bg-4: #1f2534; /* active / selected surface */
+
+  --border-1: #1e2430; /* hairline divider (theme.ts border) */
+  --border-2: #2a3140; /* control borders, hover borders */
+
+  --fg-1: #e6e9ef; /* primary text (theme.ts text) */
+  --fg-2: #8b93a7; /* secondary / muted (theme.ts textMuted) */
+  --fg-3: #5c6478; /* tertiary — hints, timestamps */
+  --fg-disabled: #3e4453;
+
+  /* ---- Accent (interactive blue, theme.ts accent) ---- */
+  --accent: #5b8cff;
+  --accent-hover: #729cff;
+  --accent-active: #4a7bf0;
+  --accent-fg: #0b0e14; /* text on accent fills */
+  --accent-muted: rgba(91, 140, 255, 0.14);
+  --accent-border: rgba(91, 140, 255, 0.45);
+
+  /* ---- Status (workspace lifecycle + checks) ---- */
+  --status-idle: #6b7488;
+  --status-working: #d9a13c; /* amber — agent streaming */
+  --status-attention: #f0565f; /* red — needs user input */
+  --status-running: #3fb960; /* green — dev server live */
+  --status-archived: #3e4453;
+
+  --ok: #3fb960;
+  --ok-muted: rgba(63, 185, 96, 0.14);
+  --warn: #d9a13c;
+  --warn-muted: rgba(217, 161, 60, 0.14);
+  --danger: #f0565f;
+  --danger-hover: #ff6b73;
+  --danger-muted: rgba(240, 86, 95, 0.13);
+  --info: #5b8cff;
+  --info-muted: rgba(91, 140, 255, 0.14);
+
+  /* ---- Diff ---- */
+  --diff-add-bg: rgba(63, 185, 96, 0.12);
+  --diff-add-accent: #3fb960;
+  --diff-del-bg: rgba(240, 86, 95, 0.12);
+  --diff-del-accent: #f0565f;
+  --diff-hunk-bg: rgba(91, 140, 255, 0.08);
+
+  /* ---- Semantic aliases ---- */
+  --surface-app: var(--bg-1);
+  --surface-panel: var(--bg-2);
+  --surface-card: var(--bg-3);
+  --surface-well: var(--bg-0); /* terminal / code background */
+  --surface-overlay: #141926; /* dialogs, palette, menus */
+  --scrim: rgba(4, 6, 10, 0.6);
+  --text-body: var(--fg-1);
+  --text-muted: var(--fg-2);
+  --text-hint: var(--fg-3);
+  --link: var(--accent);
+  --link-hover: var(--accent-hover);
+  --focus-ring: rgba(91, 140, 255, 0.55);
+  --selection-bg: rgba(91, 140, 255, 0.28);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-0: #eceef2;
+  --bg-1: #f5f6f8;
+  --bg-2: #ffffff;
+  --bg-3: #f2f4f7;
+  --bg-4: #e8ebf1;
+
+  --border-1: #e4e7ed;
+  --border-2: #d2d7e0;
+
+  --fg-1: #1b202b;
+  --fg-2: #5d6575;
+  --fg-3: #8a91a1;
+  --fg-disabled: #b6bcc9;
+
+  --accent: #3d6ee8;
+  --accent-hover: #2f5fd8;
+  --accent-active: #2751bd;
+  --accent-fg: #ffffff;
+  --accent-muted: rgba(61, 110, 232, 0.1);
+  --accent-border: rgba(61, 110, 232, 0.4);
+
+  --status-idle: #8a91a1;
+  --status-working: #b57d17;
+  --status-attention: #d63a44;
+  --status-running: #1f9d4d;
+  --status-archived: #b6bcc9;
+
+  --ok: #1f9d4d;
+  --ok-muted: rgba(31, 157, 77, 0.1);
+  --warn: #b57d17;
+  --warn-muted: rgba(181, 125, 23, 0.12);
+  --danger: #d63a44;
+  --danger-hover: #c02832;
+  --danger-muted: rgba(214, 58, 68, 0.09);
+  --info: #3d6ee8;
+  --info-muted: rgba(61, 110, 232, 0.1);
+
+  --diff-add-bg: rgba(31, 157, 77, 0.1);
+  --diff-add-accent: #1f9d4d;
+  --diff-del-bg: rgba(214, 58, 68, 0.09);
+  --diff-del-accent: #d63a44;
+  --diff-hunk-bg: rgba(61, 110, 232, 0.07);
+
+  --surface-app: var(--bg-1);
+  --surface-panel: var(--bg-2);
+  --surface-card: var(--bg-2);
+  --surface-well: #f0f1f4;
+  --surface-overlay: #ffffff;
+  --scrim: rgba(23, 28, 38, 0.35);
+  --focus-ring: rgba(61, 110, 232, 0.45);
+  --selection-bg: rgba(61, 110, 232, 0.2);
+}

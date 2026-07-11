@@ -13,9 +13,9 @@ const OP_LABEL: Record<FileEditChipProps['op'], string> = {
 };
 
 const OP_CLASS: Record<FileEditChipProps['op'], string> = {
-  create: 'text-emerald-400',
-  modify: 'text-amber-300',
-  delete: 'text-red-400',
+  create: 'text-ok',
+  modify: 'text-warn',
+  delete: 'text-danger',
 };
 
 export function FileEditChip({
@@ -24,13 +24,13 @@ export function FileEditChip({
 }: FileEditChipProps): React.JSX.Element {
   return (
     <div
-      className="my-1 inline-flex items-center gap-2 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-xs"
+      className="my-1 inline-flex items-center gap-2 rounded-2 border border-border-1 bg-surface-card px-2 py-1 text-xs"
       data-testid="file-edit-chip"
       data-op={op}
     >
       <span className={OP_CLASS[op]}>●</span>
-      <span className="font-mono text-slate-200">{path}</span>
-      <span className="text-slate-500">{OP_LABEL[op]}</span>
+      <span className="font-mono text-fg-1">{path}</span>
+      <span className="text-fg-3">{OP_LABEL[op]}</span>
     </div>
   );
 }

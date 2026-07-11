@@ -16,7 +16,7 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): React.JSX.Element {
   if (!workspaceId) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+        className="flex h-full items-center justify-center p-6 text-base text-fg-3"
         data-testid="chat-empty"
       >
         Select a workspace to begin.

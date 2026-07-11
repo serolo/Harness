@@ -6,6 +6,7 @@ import type { AgentMode, Attachment } from '@shared/harness';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useSelectedHarnessCapabilities } from '@renderer/stores/harness';
 import { useComposerStore } from '@renderer/stores/composer';
+import { Button, Input, Select, Textarea } from '@renderer/components/ui';
 import { AttachmentBar } from './AttachmentBar';
 
 export interface ComposerProps {
@@ -80,7 +81,7 @@ export function Composer({
 
   return (
     <div
-      className="border-t border-slate-800 bg-slate-900"
+      className="border-t border-border-1 bg-surface-panel"
       data-testid="composer"
     >
       <AttachmentBar
@@ -90,8 +91,8 @@ export function Composer({
         }
       />
       <div className="flex items-end gap-2 p-3">
-        <textarea
-          className="min-h-[42px] flex-1 resize-y rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-600 focus:border-slate-500 focus:outline-none"
+        <Textarea
+          className="min-h-[42px] flex-1"
           rows={2}
           placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"
           value={text}
@@ -106,43 +107,36 @@ export function Composer({
           }}
         />
         <div className="flex flex-col gap-1">
-          <select
-            className="rounded-md border border-slate-700 bg-slate-950 px-1 py-1 text-xs text-slate-200"
+          <Select
+            options={modes.map((m) => ({ value: m.value, label: m.label }))}
             value={mode}
             data-testid="composer-mode"
             onChange={(e) => setMode(e.target.value as AgentMode)}
-          >
-            {modes.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
+          />
           {isBusy ? (
-            <button
-              type="button"
-              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500"
+            <Button
+              variant="danger"
               data-testid="composer-interrupt"
               onClick={() => void onInterrupt()}
             >
               Stop
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
-              className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white enabled:hover:bg-sky-500 disabled:opacity-40"
+            <Button
+              variant="primary"
               data-testid="composer-send"
               disabled={!canSend}
               onClick={send}
             >
               Send
-            </button>
+            </Button>
           )}
         </div>
       </div>
       <div className="flex items-center gap-2 px-3 pb-2">
-        <input
-          className="w-64 rounded border border-slate-800 bg-slate-950 px-2 py-0.5 text-xs text-slate-300 placeholder:text-slate-600"
+        <Input
+          mono
+          className="w-64"
           placeholder="Attach a file path…"
           value={pathDraft}
           data-testid="composer-attach-input"
@@ -154,14 +148,14 @@ export function Composer({
             }
           }}
         />
-        <button
-          type="button"
-          className="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
+        <Button
+          variant="secondary"
+          size="sm"
           data-testid="composer-attach"
           onClick={addPath}
         >
           + Attach
-        </button>
+        </Button>
       </div>
     </div>
   );

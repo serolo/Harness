@@ -6,31 +6,18 @@
  * index.html plus every renderer .ts/.tsx file) to generate the used utilities. No
  * Tailwind config content-glob change was needed — the existing globs already cover
  * every file this task creates.
+ *
+ * Design-system tokens (colors/type/spacing/elevation) load first as plain CSS custom
+ * properties; `tailwind.config.js` maps Tailwind utilities onto them (e.g. `bg-surface-panel`,
+ * `text-fg-2`) so components keep using `className`, not inline styles.
  */
+@import './styles/tokens.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/*
- * A couple of base rules the utility classes build on. Colors mirror `app/theme.ts`
- * (kept in sync by hand at this small size; Phase 6 can unify via CSS variables).
- */
-:root {
-  color-scheme: dark;
-}
 
 html,
 body,
 #root {
   height: 100%;
-}
-
-body {
-  margin: 0;
-  background-color: #0b0e14; /* theme.colors.bg */
-  color: #e6e9ef; /* theme.colors.text */
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
 }

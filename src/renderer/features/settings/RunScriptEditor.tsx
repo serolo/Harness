@@ -22,6 +22,8 @@ import type {
   SettingsProvenance,
 } from '@shared/settings';
 import type { McpServerConfig } from '@shared/harness';
+import { Badge, Button, Input, Select } from '@renderer/components/ui';
+import type { BadgeTone } from '@renderer/components/ui';
 
 export interface RunScriptEditorProps {
   /** The effective (merged) settings — source of the array/record initial values. */
@@ -32,12 +34,12 @@ export interface RunScriptEditorProps {
   onSet: (keyPath: string, value: unknown) => void;
 }
 
-/** Short label per provenance layer (mirrors SettingRow's badge vocabulary). */
-const LAYER_LABEL: Record<SettingLayer, string> = {
-  default: 'default',
-  user: 'user',
-  'project-shared': 'shared',
-  'project-local': 'local',
+/** Short label + Badge tone per provenance layer (mirrors SettingRow's badge vocabulary). */
+const LAYER_META: Record<SettingLayer, { label: string; tone: BadgeTone }> = {
+  default: { label: 'default', tone: 'neutral' },
+  user: { label: 'user', tone: 'accent' },
+  'project-shared': { label: 'shared', tone: 'ok' },
+  'project-local': { label: 'local', tone: 'warn' },
 };
 
 /** A small provenance pill for an array/record leaf. */
@@ -46,19 +48,22 @@ function ArrayBadge({
 }: {
   layer: SettingLayer | undefined;
 }): React.JSX.Element {
-  const effective = layer ?? 'default';
+  const meta = LAYER_META[layer ?? 'default'];
   return (
-    <span
-      className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
+    <Badge
+      tone={meta.tone}
+      className="shrink-0"
       data-testid="array-provenance-badge"
-      data-layer={effective}
+      data-layer={layer ?? 'default'}
     >
-      {LAYER_LABEL[effective]}
-    </span>
+      {meta.label}
+    </Badge>
   );
 }
 
-/** A compact text input used across the array editors (commits via `onChange`). */
+/** A compact, monospace text input used across the array editors (shell commands, env
+ *  keys, MCP invocations) — commits via `onChange`. Single-line: Enter blurs (commits)
+ *  rather than inserting a newline, so this stays an `Input`, not a `Textarea`. */
 function Cell({
   testId,
   value,
@@ -73,9 +78,10 @@ function Cell({
   onBlur: () => void;
 }): React.JSX.Element {
   return (
-    <input
+    <Input
       type="text"
-      className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600"
+      mono
+      className="min-w-0 flex-1 placeholder:text-fg-3"
       data-testid={testId}
       value={value}
       placeholder={placeholder}
@@ -95,7 +101,7 @@ export function RunScriptEditor({
 }: RunScriptEditorProps): React.JSX.Element {
   return (
     <section data-testid="run-script-editor">
-      <h3 className="px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-slate-500">
+      <h3 className="px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-caps text-fg-3">
         Scripts &amp; environment
       </h3>
       {/* Tolerate a partial effective object (like the panel's `getAtPath`): every leaf
@@ -159,18 +165,18 @@ function ScriptsEditor({
   return (
     <div data-testid="scripts-run-editor">
       <div className="mb-1 flex items-center gap-2">
-        <span className="text-xs font-medium text-slate-300">Run scripts</span>
+        <span className="text-xs font-medium text-fg-1">Run scripts</span>
         <ArrayBadge layer={layer} />
         <div className="flex-1" />
-        <select
-          className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200"
+        <Select
+          options={[
+            { value: 'single', label: 'one at a time' },
+            { value: 'concurrent', label: 'concurrent' },
+          ]}
           data-testid="scripts-run-mode"
           value={runMode}
           onChange={(e) => onSetMode(e.target.value as 'concurrent' | 'single')}
-        >
-          <option value="single">one at a time</option>
-          <option value="concurrent">concurrent</option>
-        </select>
+        />
       </div>
 
       <div className="flex flex-col gap-1">
@@ -201,30 +207,32 @@ function ScriptsEditor({
               onChange={(v) => patch(idx, 'label', v)}
               onBlur={() => commit(draft)}
             />
-            <button
-              type="button"
-              className="shrink-0 rounded border border-slate-700 px-1.5 py-1 text-[11px] text-rose-300 hover:bg-slate-800"
+            <Button
+              variant="secondary"
+              size="sm"
+              className="shrink-0 text-2xs text-danger hover:text-danger-hover"
               data-testid={`scripts-run-remove-${idx}`}
               aria-label={`Remove run script ${idx + 1}`}
               onClick={() => commit(draft.filter((_, i) => i !== idx))}
             >
               ✕
-            </button>
+            </Button>
           </div>
         ))}
         {draft.length === 0 ? (
-          <div className="text-[11px] text-slate-600">No run scripts.</div>
+          <div className="text-xs text-fg-3">No run scripts.</div>
         ) : null}
       </div>
 
-      <button
-        type="button"
-        className="mt-1 rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+      <Button
+        variant="secondary"
+        size="sm"
+        className="mt-1 text-2xs"
         data-testid="scripts-run-add"
         onClick={() => commit([...draft, { name: '', command: '' }])}
       >
         + Add run script
-      </button>
+      </Button>
     </div>
   );
 }
@@ -268,7 +276,7 @@ function EnvEditor({
   return (
     <div data-testid="env-editor">
       <div className="mb-1 flex items-center gap-2">
-        <span className="text-xs font-medium text-slate-300">
+        <span className="text-xs font-medium text-fg-1">
           Environment variables
         </span>
         <ArrayBadge layer={layer} />
@@ -294,31 +302,31 @@ function EnvEditor({
               onChange={(v) => patch(idx, 1, v)}
               onBlur={() => commit(draft)}
             />
-            <button
-              type="button"
-              className="shrink-0 rounded border border-slate-700 px-1.5 py-1 text-[11px] text-rose-300 hover:bg-slate-800"
+            <Button
+              variant="secondary"
+              size="sm"
+              className="shrink-0 text-2xs text-danger hover:text-danger-hover"
               data-testid={`env-remove-${idx}`}
               aria-label={`Remove env var ${idx + 1}`}
               onClick={() => commit(draft.filter((_, i) => i !== idx))}
             >
               ✕
-            </button>
+            </Button>
           </div>
         ))}
         {draft.length === 0 ? (
-          <div className="text-[11px] text-slate-600">
-            No environment overrides.
-          </div>
+          <div className="text-xs text-fg-3">No environment overrides.</div>
         ) : null}
       </div>
-      <button
-        type="button"
-        className="mt-1 rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+      <Button
+        variant="secondary"
+        size="sm"
+        className="mt-1 text-2xs"
         data-testid="env-add"
         onClick={() => commit([...draft, ['', '']])}
       >
         + Add variable
-      </button>
+      </Button>
     </div>
   );
 }
@@ -351,7 +359,7 @@ function McpEditor({
   return (
     <div data-testid="mcp-editor">
       <div className="mb-1 flex items-center gap-2">
-        <span className="text-xs font-medium text-slate-300">MCP servers</span>
+        <span className="text-xs font-medium text-fg-1">MCP servers</span>
         <ArrayBadge layer={layer} />
       </div>
       <div className="flex flex-col gap-1">
@@ -375,29 +383,31 @@ function McpEditor({
               onChange={(v) => patch(idx, 'command', v)}
               onBlur={() => commit(draft)}
             />
-            <button
-              type="button"
-              className="shrink-0 rounded border border-slate-700 px-1.5 py-1 text-[11px] text-rose-300 hover:bg-slate-800"
+            <Button
+              variant="secondary"
+              size="sm"
+              className="shrink-0 text-2xs text-danger hover:text-danger-hover"
               data-testid={`mcp-remove-${idx}`}
               aria-label={`Remove MCP server ${idx + 1}`}
               onClick={() => commit(draft.filter((_, i) => i !== idx))}
             >
               ✕
-            </button>
+            </Button>
           </div>
         ))}
         {draft.length === 0 ? (
-          <div className="text-[11px] text-slate-600">No MCP servers.</div>
+          <div className="text-xs text-fg-3">No MCP servers.</div>
         ) : null}
       </div>
-      <button
-        type="button"
-        className="mt-1 rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+      <Button
+        variant="secondary"
+        size="sm"
+        className="mt-1 text-2xs"
         data-testid="mcp-add"
         onClick={() => commit([...draft, { name: '', command: '' }])}
       >
         + Add MCP server
-      </button>
+      </Button>
     </div>
   );
 }

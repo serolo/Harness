@@ -6,8 +6,18 @@
 //
 // The IPC-OK indicator lives in the footer of the left rail so it's always visible as
 // the Phase 0 proof that the preload round trip works.
+//
+// Design system note (Harness Claude Design import, Batch A): a titlebar strip sits above
+// the 3-pane grid — `src/main/index.ts` now sets macOS `titleBarStyle: 'hiddenInset'` +
+// `trafficLightPosition`, so the strip reserves ~70px on the left for the native traffic
+// lights (no fake ones drawn) and carries `-webkit-app-region: drag` so the window is
+// draggable from any empty part of the bar; interactive children opt back out with
+// `-webkit-app-region: no-drag`. These are the one legitimate inline-`style` exception —
+// Tailwind has no utility for the WebKit app-region property.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Search, Settings as SettingsIcon } from 'lucide-react';
 import { invoke, onEvent } from '@renderer/ipc';
 import { Sidebar } from '@renderer/features/sidebar/Sidebar';
 import { IpcHealth } from '@renderer/components/IpcHealth';
@@ -18,6 +28,7 @@ import { ChecksPanel } from '@renderer/features/checks/ChecksPanel';
 import { SettingsPanel } from '@renderer/features/settings/SettingsPanel';
 import { CommandPalette } from '@renderer/features/palette/CommandPalette';
 import { OnboardingWizard } from '@renderer/features/onboarding/OnboardingWizard';
+import { Dialog, IconButton, Kbd } from '@renderer/components/ui';
 import {
   useCommands,
   type CommandActions,
@@ -29,7 +40,7 @@ import { useUiStore } from '@renderer/stores/ui';
 /** Empty-state placeholder used by the right context pane. */
 function PanePlaceholder({ label }: { label: string }): React.JSX.Element {
   return (
-    <div className="flex h-full items-center justify-center p-6 text-sm text-slate-600">
+    <div className="flex h-full items-center justify-center p-6 text-sm text-fg-3">
       {label}
     </div>
   );
@@ -44,9 +55,19 @@ const CENTER_TABS: { id: CenterTab; label: string }[] = [
   { id: 'diff', label: 'Diff' },
 ];
 
+// `-webkit-app-region` is a WebKit/Electron-only CSS property with no Tailwind utility —
+// the one sanctioned inline-style use. The installed `csstype` doesn't type it, hence the
+// double assertion rather than a direct `CSSProperties` literal (which would fail the
+// excess-property check).
+const DRAG_STYLE = { WebkitAppRegion: 'drag' } as unknown as CSSProperties;
+const NO_DRAG_STYLE = {
+  WebkitAppRegion: 'no-drag',
+} as unknown as CSSProperties;
+
 /** The top-level 3-pane grid: [rail | content | context]. */
 export function AppLayout(): React.JSX.Element {
   const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
+  const workspaces = useWorkspacesStore((s) => s.workspaces);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const [centerTab, setCenterTab] = useState<CenterTab>('chat');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -57,6 +78,11 @@ export function AppLayout(): React.JSX.Element {
 
   const togglePalette = useUiStore((s) => s.togglePalette);
   const setNewWorkspaceOpen = useUiStore((s) => s.setNewWorkspaceOpen);
+
+  const activeWorkspaceName = useMemo(
+    () => workspaces.find((w) => w.id === selectedWorkspaceId)?.name ?? null,
+    [workspaces, selectedWorkspaceId],
+  );
 
   // The shared action registry: the ⌘K palette renders + runs these, and the
   // `menu:action` dispatcher below runs the SAME `byId` entries, so a keyboard
@@ -135,86 +161,119 @@ export function AppLayout(): React.JSX.Element {
 
   return (
     <div
-      className="relative grid h-screen w-screen grid-cols-[240px_1fr_320px] bg-slate-950 text-slate-200"
+      className="relative flex h-screen w-screen flex-col bg-surface-app text-fg-2"
       data-testid="app-layout"
     >
-      {/* Left rail: sidebar + IPC health footer. */}
-      <aside className="flex flex-col border-r border-slate-800 bg-slate-900">
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <Sidebar />
-        </div>
-        <footer className="flex items-center justify-between gap-2 border-t border-slate-800 p-3">
-          <IpcHealth />
-          <button
-            type="button"
-            className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
-            data-testid="open-settings"
-            aria-label="Open settings"
-            onClick={() => setSettingsOpen(true)}
-          >
-            Settings
-          </button>
-        </footer>
-      </aside>
-
-      {/* Center content pane: Chat (Phase 2) / Terminal (Phase 3) tab switcher. */}
-      <main className="flex min-w-0 flex-col overflow-hidden bg-slate-950">
-        <div
-          className="flex items-center gap-1 border-b border-slate-800 px-2 py-1"
-          data-testid="center-tabs"
+      {/* Titlebar strip — left padding reserves room for the native macOS traffic lights
+          (trafficLightPosition {x:14,y:13} in src/main/index.ts); the bar itself is a drag
+          region so the window can be moved from any empty area. */}
+      <div
+        className="relative flex h-titlebar shrink-0 items-center border-b border-border-1 bg-surface-panel pl-[70px] pr-3"
+        style={DRAG_STYLE}
+        data-testid="titlebar"
+      >
+        <span className="pointer-events-none absolute inset-x-0 truncate text-center font-display text-sm font-semibold tracking-[-0.01em] text-fg-2">
+          Harness — {activeWorkspaceName ?? 'no workspace'}
+        </span>
+        <button
+          type="button"
+          onClick={togglePalette}
+          style={NO_DRAG_STYLE}
+          className="relative ml-auto flex items-center gap-1.5 rounded-2 px-2 py-1 text-xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2"
+          data-testid="titlebar-search"
+          aria-label="Open command palette"
         >
-          {CENTER_TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                centerTab === tab.id
-                  ? 'bg-slate-800 text-slate-100'
-                  : 'text-slate-400 hover:bg-slate-800/50'
-              }`}
-              data-testid={`center-tab-${tab.id}`}
-              aria-pressed={centerTab === tab.id}
-              onClick={() => setCenterTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-        <div className="min-h-0 flex-1">
-          {centerTab === 'chat' ? (
-            <ChatPanel workspaceId={selectedWorkspaceId} />
-          ) : centerTab === 'terminal' ? (
-            <TerminalPanel workspaceId={selectedWorkspaceId} />
-          ) : (
-            <DiffPanel workspaceId={selectedWorkspaceId} />
-          )}
-        </div>
-      </main>
+          <Search className="h-3.5 w-3.5" aria-hidden="true" />
+          Search
+          <Kbd keys="⌘K" />
+        </button>
+      </div>
 
-      {/* Right context panel: merge-readiness Checks for the selected workspace
-          (Phase 5). With no workspace selected the Phase-0 placeholder still shows. */}
-      <aside className="border-l border-slate-800 bg-slate-900">
-        {selectedWorkspaceId ? (
-          <ChecksPanel workspaceId={selectedWorkspaceId} />
-        ) : (
-          <PanePlaceholder label="Context panel" />
-        )}
-      </aside>
-
-      {/* Settings overlay (Phase 6) — a global, workspace-independent surface. */}
-      {settingsOpen ? (
-        <div
-          className="absolute inset-0 z-40 flex items-center justify-center bg-black/50"
-          data-testid="settings-overlay"
-          onClick={() => setSettingsOpen(false)}
-        >
-          <div
-            className="h-[80vh] w-[560px] max-w-[90vw] overflow-hidden rounded-lg border border-slate-800 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <SettingsPanel onClose={() => setSettingsOpen(false)} />
+      <div
+        className="grid min-h-0 flex-1 grid-cols-[var(--sidebar-width)_1fr_var(--context-width)]"
+        data-testid="app-panes"
+      >
+        {/* Left rail: sidebar + IPC health footer. */}
+        <aside className="flex flex-col border-r border-border-1 bg-surface-panel">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <Sidebar />
           </div>
-        </div>
+          <footer className="flex items-center justify-between gap-2 border-t border-border-1 p-3">
+            <IpcHealth />
+            <IconButton
+              label="Open settings"
+              size="sm"
+              data-testid="open-settings"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <SettingsIcon className="h-4 w-4" aria-hidden="true" />
+            </IconButton>
+          </footer>
+        </aside>
+
+        {/* Center content pane: Chat (Phase 2) / Terminal (Phase 3) tab switcher. */}
+        <main className="flex min-w-0 flex-col overflow-hidden bg-surface-app">
+          {/*
+            Visually mirrors `components/ui/Tabs` (bg-bg-4/text-fg-1 active,
+            text-fg-2/hover:bg-bg-3 inactive) but stays hand-rolled: the Tabs primitive
+            emits `aria-selected` with no per-tab `data-testid`, while AppLayout.nav.test.tsx
+            asserts `aria-pressed` on `center-tab-<id>` — preserving that contract took
+            priority over the primitive swap.
+          */}
+          <div
+            className="flex items-center gap-1 border-b border-border-1 px-2 py-1"
+            data-testid="center-tabs"
+          >
+            {CENTER_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`rounded-2 px-2.5 py-1 text-xs font-medium transition-colors duration-fast ease-out ${
+                  centerTab === tab.id
+                    ? 'bg-bg-4 text-fg-1'
+                    : 'text-fg-2 hover:bg-bg-3'
+                }`}
+                data-testid={`center-tab-${tab.id}`}
+                aria-pressed={centerTab === tab.id}
+                onClick={() => setCenterTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1">
+            {centerTab === 'chat' ? (
+              <ChatPanel workspaceId={selectedWorkspaceId} />
+            ) : centerTab === 'terminal' ? (
+              <TerminalPanel workspaceId={selectedWorkspaceId} />
+            ) : (
+              <DiffPanel workspaceId={selectedWorkspaceId} />
+            )}
+          </div>
+        </main>
+
+        {/* Right context panel: merge-readiness Checks for the selected workspace
+            (Phase 5). With no workspace selected the Phase-0 placeholder still shows. */}
+        <aside className="border-l border-border-1 bg-surface-panel">
+          {selectedWorkspaceId ? (
+            <ChecksPanel workspaceId={selectedWorkspaceId} />
+          ) : (
+            <PanePlaceholder label="Context panel" />
+          )}
+        </aside>
+      </div>
+
+      {/* Settings overlay (Phase 6) — a global, workspace-independent surface. Uses the
+          shared Dialog primitive for the scrim/panel chrome; SettingsPanel (a Batch D file)
+          renders its own header/close button inside, so no `title` is passed here. */}
+      {settingsOpen ? (
+        <Dialog
+          data-testid="settings-overlay"
+          onClose={() => setSettingsOpen(false)}
+          width={560}
+        >
+          <SettingsPanel onClose={() => setSettingsOpen(false)} />
+        </Dialog>
       ) : null}
 
       {/* ⌘K command palette (Phase 6, Track H2) — renders only when open (ui store). */}

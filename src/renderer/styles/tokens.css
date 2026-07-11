@@ -1,0 +1,9 @@
+/* Harness design-system token barrel — imported once from index.css, before the
+ * Tailwind directives, so `tailwind.config.js`'s var()-backed theme extension has
+ * these custom properties available at build time. Mirrors the Claude Design
+ * project's own `styles.css` import order. */
+@import './tokens/colors.css';
+@import './tokens/typography.css';
+@import './tokens/spacing.css';
+@import './tokens/elevation.css';
+@import './tokens/base.css';

@@ -48,7 +48,7 @@ function renderBlocks(text: string): React.ReactNode[] {
 function CodeBlock({ code }: { code: string }): React.JSX.Element {
   return (
     <pre
-      className="my-2 overflow-x-auto rounded-md bg-slate-950/70 p-3 text-xs text-slate-200 ring-1 ring-slate-800"
+      className="my-2 overflow-x-auto rounded-2 bg-surface-well p-3 font-mono text-sm text-fg-1 ring-1 ring-border-1"
       data-testid="code-block"
     >
       <code>{code.replace(/\n$/, '')}</code>
@@ -74,14 +74,14 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
         ordered ? (
           <ol
             key={`${baseKey}-ol-${i}`}
-            className="my-1 list-decimal pl-5 text-sm"
+            className="my-1 list-decimal pl-5 text-base text-fg-1"
           >
             {items}
           </ol>
         ) : (
           <ul
             key={`${baseKey}-ul-${i}`}
-            className="my-1 list-disc pl-5 text-sm"
+            className="my-1 list-disc pl-5 text-base text-fg-1"
           >
             {items}
           </ul>
@@ -91,7 +91,7 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
       out.push(
         <p
           key={`${baseKey}-p-${i}`}
-          className="my-1 whitespace-pre-wrap text-sm"
+          className="my-1 whitespace-pre-wrap text-base text-fg-1"
         >
           {renderInline(trimmed)}
         </p>,
@@ -121,7 +121,7 @@ function renderInline(text: string): React.ReactNode[] {
       nodes.push(
         <code
           key={key}
-          className="rounded bg-slate-800 px-1 py-0.5 text-[0.85em] text-amber-200"
+          className="rounded-1 bg-bg-4 px-1 py-0.5 font-mono text-[0.85em] text-warn"
         >
           {token.slice(1, -1)}
         </code>,
@@ -135,7 +135,7 @@ function renderInline(text: string): React.ReactNode[] {
             <a
               key={key}
               href={href}
-              className="text-sky-400 underline"
+              className="text-link underline hover:text-link-hover"
               target="_blank"
               rel="noreferrer"
             >
@@ -150,7 +150,7 @@ function renderInline(text: string): React.ReactNode[] {
       }
     } else if (token.startsWith('**')) {
       nodes.push(
-        <strong key={key} className="font-semibold text-slate-100">
+        <strong key={key} className="font-semibold text-fg-1">
           {token.slice(2, -2)}
         </strong>,
       );

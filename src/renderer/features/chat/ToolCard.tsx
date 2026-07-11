@@ -32,24 +32,24 @@ export function ToolCard({
 
   return (
     <div
-      className="my-1 rounded-md border border-slate-800 bg-slate-900/60"
+      className="my-1 rounded-3 border border-border-1 bg-surface-card"
       data-testid="tool-card"
       data-variant={variant}
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-2 py-1 text-left text-xs text-slate-300 hover:bg-slate-800/60"
+        className="flex w-full items-center gap-2 px-2 py-1 text-left text-xs text-fg-2 hover:bg-bg-3"
         aria-expanded={open}
       >
-        <span className="text-slate-500">{open ? '▾' : '▸'}</span>
+        <span className="text-fg-3">{open ? '▾' : '▸'}</span>
         <span className="font-medium">
           {variant === 'use' ? '🔧 ' : '↩ '}
           {title}
         </span>
       </button>
       {open && (
-        <pre className="overflow-x-auto border-t border-slate-800 p-2 text-[11px] text-slate-300">
+        <pre className="overflow-x-auto border-t border-border-1 p-2 font-mono text-xs text-fg-2">
           <code>{body}</code>
         </pre>
       )}

@@ -10,6 +10,7 @@
 
 import type { IdeName } from '@shared/ipc';
 import { invoke } from '@renderer/ipc';
+import { Button } from '@renderer/components/ui';
 import { RunPanel } from './RunPanel';
 import { TerminalTab } from './TerminalTab';
 import { useTerminalStore, type TerminalTabInfo } from './terminalStore';
@@ -44,7 +45,7 @@ export function TerminalPanel({
   if (!workspaceId) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+        className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
         data-testid="terminal-empty"
       >
         Select a workspace to open a terminal.
@@ -57,69 +58,62 @@ export function TerminalPanel({
   };
 
   const containerClass = bigTerminal
-    ? 'fixed inset-0 z-50 flex flex-col bg-slate-950'
-    : 'flex h-full flex-col bg-slate-950';
+    ? 'fixed inset-0 z-50 flex flex-col bg-surface-panel'
+    : 'flex h-full flex-col bg-surface-panel';
 
   return (
     <div className={containerClass} data-testid="terminal-panel">
       {/* Toolbar: new terminal, big-terminal toggle, open-in-IDE. */}
-      <div className="flex items-center gap-2 border-b border-slate-800 p-2">
-        <button
-          type="button"
-          className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
+      <div className="flex items-center gap-2 border-b border-border-1 p-2">
+        <Button
+          size="sm"
           data-testid="terminal-new"
           onClick={() => openTab(workspaceId)}
         >
           + Terminal
-        </button>
-        <button
-          type="button"
-          className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
+        </Button>
+        <Button
+          size="sm"
           data-testid="terminal-big-toggle"
           aria-pressed={bigTerminal}
           onClick={() => toggleBigTerminal()}
         >
           {bigTerminal ? 'Exit Big Terminal' : 'Big Terminal'}
-        </button>
+        </Button>
         <div className="ml-auto flex items-center gap-1">
           {IDES.map((ide) => (
-            <button
+            <Button
               key={ide.id}
-              type="button"
-              className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
+              size="sm"
               data-testid={`ide-open-${ide.id}`}
               onClick={() => openIde(ide.id)}
             >
               Open in {ide.label}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
 
       {/* Run-scripts overlay. */}
-      <div className="border-b border-slate-800">
+      <div className="border-b border-border-1">
         <RunPanel workspaceId={workspaceId} />
       </div>
 
       {/* Tab bar. */}
       <div
-        className="flex items-center gap-1 overflow-x-auto border-b border-slate-800 px-2 py-1"
+        className="flex items-center gap-1 overflow-x-auto border-b border-border-1 px-2 py-1"
         data-testid="terminal-tabs"
       >
         {tabs.length === 0 ? (
-          <span className="px-1 text-xs text-slate-600">
-            No terminals open.
-          </span>
+          <span className="px-1 text-xs text-fg-3">No terminals open.</span>
         ) : (
           tabs.map((tab) => {
             const active = tab.id === activeTabId;
             return (
               <div
                 key={tab.id}
-                className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-xs ${
-                  active
-                    ? 'bg-slate-800 text-slate-100'
-                    : 'text-slate-400 hover:bg-slate-800/50'
+                className={`flex items-center gap-1 rounded-2 px-2 py-0.5 text-xs transition-colors duration-fast ease-out ${
+                  active ? 'bg-bg-4 text-fg-1' : 'text-fg-2 hover:bg-bg-3'
                 }`}
               >
                 <button
@@ -131,7 +125,7 @@ export function TerminalPanel({
                 </button>
                 <button
                   type="button"
-                  className="text-slate-500 hover:text-slate-200"
+                  className="text-fg-3 hover:text-fg-1"
                   data-testid={`terminal-tab-close-${tab.id}`}
                   aria-label={`Close ${tab.title}`}
                   onClick={() => closeTab(workspaceId, tab.id)}
@@ -147,7 +141,7 @@ export function TerminalPanel({
       {/* Terminal surfaces: all mounted, only the active one visible. */}
       <div className="relative min-h-0 flex-1" data-testid="terminal-surfaces">
         {tabs.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-slate-600">
+          <div className="flex h-full items-center justify-center text-sm text-fg-3">
             Open a terminal to get a shell in this workspace.
           </div>
         ) : (

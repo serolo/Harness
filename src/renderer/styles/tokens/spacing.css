@@ -1,0 +1,28 @@
+/* Harness — spacing & shape tokens. Scale evolved from theme.ts (4/8/12/16/24),
+   extended upward. Comfortable density: panels breathe at 12–16px padding. */
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Corner radii */
+  --radius-1: 4px; /* keycaps, tiny chips */
+  --radius-2: 6px; /* buttons, inputs, list rows */
+  --radius-3: 8px; /* cards, panels-in-panels */
+  --radius-4: 10px; /* dialogs, command palette */
+  --radius-5: 14px; /* marketing cards */
+  --radius-full: 999px;
+
+  /* Fixed layout metrics (app shell) */
+  --sidebar-width: 240px;
+  --context-width: 320px;
+  --titlebar-height: 38px;
+  --control-height: 28px; /* default control */
+  --control-height-lg: 34px; /* primary CTAs, composer send */
+}

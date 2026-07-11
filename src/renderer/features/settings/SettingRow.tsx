@@ -6,20 +6,16 @@
 import { useEffect, useState } from 'react';
 
 import type { SettingLayer } from '@shared/settings';
+import { Badge, Input, Select, Switch } from '@renderer/components/ui';
+import type { BadgeTone } from '@renderer/components/ui';
 import type { FieldDef } from './fields';
 
-/** Short human label + tailwind accent per provenance layer. */
-const LAYER_META: Record<SettingLayer, { label: string; className: string }> = {
-  default: { label: 'default', className: 'bg-slate-800 text-slate-400' },
-  user: { label: 'user', className: 'bg-sky-900/60 text-sky-300' },
-  'project-shared': {
-    label: 'shared',
-    className: 'bg-emerald-900/60 text-emerald-300',
-  },
-  'project-local': {
-    label: 'local',
-    className: 'bg-amber-900/60 text-amber-300',
-  },
+/** Short human label + Badge tone per provenance layer. */
+const LAYER_META: Record<SettingLayer, { label: string; tone: BadgeTone }> = {
+  default: { label: 'default', tone: 'neutral' },
+  user: { label: 'user', tone: 'accent' },
+  'project-shared': { label: 'shared', tone: 'ok' },
+  'project-local': { label: 'local', tone: 'warn' },
 };
 
 export interface SettingRowProps {
@@ -40,13 +36,14 @@ function ProvenanceBadge({
 }): React.JSX.Element {
   const meta = LAYER_META[layer];
   return (
-    <span
-      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${meta.className}`}
+    <Badge
+      tone={meta.tone}
+      className="shrink-0"
       data-testid="provenance-badge"
       data-layer={layer}
     >
       {meta.label}
-    </span>
+    </Badge>
   );
 }
 
@@ -65,11 +62,11 @@ export function SettingRow({
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm text-slate-200">{field.label}</span>
+          <span className="truncate text-sm text-fg-1">{field.label}</span>
           <ProvenanceBadge layer={effectiveLayer} />
         </div>
         {field.hint ? (
-          <div className="text-[11px] text-slate-500">{field.hint}</div>
+          <div className="text-xs text-fg-3">{field.hint}</div>
         ) : null}
       </div>
       <div className="shrink-0">
@@ -93,30 +90,25 @@ function FieldControl({
 
   if (field.kind === 'boolean') {
     return (
-      <input
-        type="checkbox"
-        className="h-4 w-4 accent-sky-500"
-        data-testid={testId}
+      <Switch
         checked={value === true}
-        onChange={(e) => onSet(field.keyPath, e.target.checked)}
+        onChange={(checked) => onSet(field.keyPath, checked)}
+        data-testid={testId}
       />
     );
   }
 
   if (field.kind === 'select') {
     return (
-      <select
-        className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200"
+      <Select
+        options={(field.options ?? []).map((opt) => ({
+          value: opt,
+          label: opt,
+        }))}
         data-testid={testId}
         value={typeof value === 'string' ? value : ''}
         onChange={(e) => onSet(field.keyPath, e.target.value)}
-      >
-        {(field.options ?? []).map((opt) => (
-          <option key={opt} value={opt}>
-            {opt}
-          </option>
-        ))}
-      </select>
+      />
     );
   }
 
@@ -151,9 +143,9 @@ function TextControl({
   };
 
   return (
-    <input
+    <Input
       type="text"
-      className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200"
+      className="w-40"
       data-testid={testId}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}

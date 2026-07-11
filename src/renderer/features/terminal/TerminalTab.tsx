@@ -23,7 +23,7 @@ export function TerminalTab({
       ref={containerRef}
       data-testid="terminal-surface"
       data-active={active}
-      className={`absolute inset-0 overflow-hidden bg-slate-950 p-1 ${
+      className={`absolute inset-0 overflow-hidden bg-surface-well p-1 ${
         active ? '' : 'hidden'
       }`}
     />

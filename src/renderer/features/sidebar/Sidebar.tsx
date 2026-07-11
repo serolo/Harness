@@ -55,14 +55,14 @@ export function Sidebar(): React.JSX.Element {
 
       {/* Section header + New Workspace button */}
       <div className="flex items-center justify-between">
-        <h2 className="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <h2 className="px-1 text-xs font-semibold uppercase tracking-caps text-fg-3">
           Workspaces
         </h2>
         <button
           type="button"
           onClick={() => setDialogOpen(true)}
           disabled={selectedProjectId == null}
-          className="rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-slate-800 hover:text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-1 px-1.5 py-0.5 text-xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2 disabled:cursor-not-allowed disabled:opacity-40"
           data-testid="new-workspace-button"
           title={
             selectedProjectId == null
@@ -76,7 +76,7 @@ export function Sidebar(): React.JSX.Element {
 
       {/* Workspace list */}
       {!hasWorkspaces ? (
-        <p className="px-1 text-sm text-slate-500" data-testid="sidebar-empty">
+        <p className="px-1 text-sm text-fg-3" data-testid="sidebar-empty">
           No workspaces yet.
         </p>
       ) : (
@@ -101,7 +101,7 @@ export function Sidebar(): React.JSX.Element {
               <button
                 type="button"
                 onClick={() => setArchivedExpanded((v) => !v)}
-                className="w-full rounded px-2 py-1 text-left text-[11px] text-slate-600 hover:bg-slate-800 hover:text-slate-500"
+                className="w-full rounded-1 px-2 py-1 text-left text-xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2"
                 aria-expanded={archivedExpanded}
               >
                 {archivedExpanded ? '▾' : '▸'} Archived (

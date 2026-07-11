@@ -6,6 +6,7 @@
 // to the matching command. Purely presentational.
 
 import type { CheckItem } from '@shared/checks';
+import { Button } from '@renderer/components/ui';
 import { blockerCommandFor } from './useChecks';
 
 export interface BlockerListProps {
@@ -30,26 +31,27 @@ export function BlockerList({
 
   return (
     <ul
-      className="flex flex-col gap-1 border-b border-rose-900/40 bg-rose-950/30 p-2"
+      className="flex flex-col gap-1 border-b border-danger bg-danger-muted p-2"
       data-testid="blocker-list"
     >
       {actionable.map((item) => (
         <li
           key={item.source}
-          className="flex items-center justify-between gap-2 rounded-md px-2 py-1 text-xs"
+          className="flex items-center justify-between gap-2 rounded-2 px-2 py-1 text-xs"
           data-testid={`blocker-${item.source}`}
         >
-          <span className="min-w-0 flex-1 truncate text-rose-200">
+          <span className="min-w-0 flex-1 truncate text-danger">
             {item.label}
           </span>
-          <button
-            type="button"
-            className="shrink-0 rounded-md border border-rose-700 px-2 py-0.5 text-[11px] font-medium text-rose-100 hover:bg-rose-800/50"
+          <Button
+            variant="danger"
+            size="sm"
+            className="shrink-0 text-2xs"
             data-testid={`blocker-action-${item.source}`}
             onClick={() => onAction(item.suggestedAction as string)}
           >
             {item.suggestedAction}
-          </button>
+          </Button>
         </li>
       ))}
     </ul>

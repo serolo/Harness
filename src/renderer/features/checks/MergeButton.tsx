@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import type { MergeMethod } from '@shared/github';
+import { Button, Select } from '@renderer/components/ui';
 
 const METHODS: MergeMethod[] = ['merge', 'squash', 'rebase'];
 
@@ -42,7 +43,7 @@ export function MergeButton({
   if (merged) {
     return (
       <div
-        className="border-t border-slate-800 px-3 py-2 text-xs text-emerald-400"
+        className="border-t border-border-1 px-3 py-2 text-xs text-ok"
         data-testid="merge-success"
       >
         Merged. You can now archive this workspace.
@@ -51,29 +52,24 @@ export function MergeButton({
   }
 
   return (
-    <div className="flex items-center gap-2 border-t border-slate-800 px-3 py-2">
-      <select
-        className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 disabled:opacity-50"
+    <div className="flex items-center gap-2 border-t border-border-1 px-3 py-2">
+      <Select
+        options={METHODS.map((m) => ({ value: m, label: m }))}
         value={method}
         disabled={disabled || merging}
         data-testid="merge-method"
         onChange={(e) => setMethod(e.target.value as MergeMethod)}
-      >
-        {METHODS.map((m) => (
-          <option key={m} value={m}>
-            {m}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        className="flex-1 rounded-md bg-emerald-700 px-3 py-1 text-xs font-medium text-emerald-50 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
+      />
+      <Button
+        variant="primary"
+        size="sm"
+        className="flex-1"
         disabled={disabled || merging}
         data-testid="merge-button"
         onClick={() => void handleMerge()}
       >
         {merging ? 'Merging…' : 'Merge'}
-      </button>
+      </Button>
     </div>
   );
 }

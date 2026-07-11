@@ -5,20 +5,20 @@
 
 import type { CheckSeverity, CheckSource, CheckItem } from '@shared/checks';
 
-/** Tailwind text color per severity (blocker = rose/red, gating the merge). */
+/** Token text color per severity (blocker = danger, gating the merge). */
 const SEVERITY_TEXT: Record<CheckSeverity, string> = {
-  ok: 'text-emerald-400',
-  pending: 'text-sky-400',
-  warning: 'text-amber-400',
-  blocker: 'text-rose-400',
+  ok: 'text-ok',
+  pending: 'text-info',
+  warning: 'text-warn',
+  blocker: 'text-danger',
 };
 
-/** Tailwind dot color per severity. */
+/** Token dot color per severity. */
 const SEVERITY_DOT: Record<CheckSeverity, string> = {
-  ok: 'bg-emerald-500',
-  pending: 'bg-sky-500',
-  warning: 'bg-amber-500',
-  blocker: 'bg-rose-500',
+  ok: 'bg-ok',
+  pending: 'bg-info',
+  warning: 'bg-warn',
+  blocker: 'bg-danger',
 };
 
 /** Short uppercase tag shown per source (a text "icon" — no icon dep in this repo). */
@@ -46,7 +46,7 @@ export function SignalRow({ item }: SignalRowProps): React.JSX.Element {
         className={`h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[item.severity]}`}
         aria-hidden="true"
       />
-      <span className="w-10 shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500">
+      <span className="w-10 shrink-0 font-mono text-2xs uppercase tracking-caps text-fg-3">
         {SOURCE_TAG[item.source]}
       </span>
       <span

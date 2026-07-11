@@ -8,6 +8,7 @@
 
 import type { CheckDetails, CheckItem } from '@shared/checks';
 import type { ReviewThread } from '@shared/github';
+import { Button } from '@renderer/components/ui';
 import { SignalRow } from './SignalRow';
 import { BlockerList } from './BlockerList';
 import { PrCard } from './PrCard';
@@ -27,7 +28,7 @@ export function ChecksPanel({
   if (!workspaceId) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+        className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
         data-testid="checks-empty"
       >
         Select a workspace to view its checks.
@@ -38,7 +39,7 @@ export function ChecksPanel({
   if (error) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-rose-400"
+        className="flex h-full items-center justify-center p-6 text-sm text-danger"
         data-testid="checks-error"
       >
         Could not load checks.
@@ -49,7 +50,7 @@ export function ChecksPanel({
   if (loading && result === null) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+        className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
         data-testid="checks-loading"
       >
         Loading checks…
@@ -60,7 +61,7 @@ export function ChecksPanel({
   if (result === null) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+        className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
         data-testid="checks-none"
       >
         No checks available.
@@ -77,19 +78,16 @@ export function ChecksPanel({
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 flex-col bg-surface-panel"
       data-testid="checks-panel"
       data-state={result.state}
     >
       {/* Header: overall roll-up state. */}
-      <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
+      <div className="flex items-center justify-between border-b border-border-1 px-3 py-2">
+        <span className="text-xs font-medium uppercase tracking-caps text-fg-3">
           Checks
         </span>
-        <span
-          className="text-[11px] text-slate-500"
-          data-testid="checks-state-label"
-        >
+        <span className="text-xs text-fg-3" data-testid="checks-state-label">
           {result.state}
         </span>
       </div>
@@ -161,11 +159,11 @@ function CiDetail({
 }): React.JSX.Element | null {
   if (details.runs.length === 0) return null;
   return (
-    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-[11px] text-slate-400">
+    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-xs text-fg-2">
       {details.runs.map((run, idx) => (
         <li key={`${run.name}-${idx}`} className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate">{run.name}</span>
-          <span className="shrink-0 text-slate-500">
+          <span className="shrink-0 text-fg-3">
             {run.conclusion ?? 'running'}
           </span>
           {run.detailsUrl ? (
@@ -173,7 +171,7 @@ function CiDetail({
               href={run.detailsUrl}
               target="_blank"
               rel="noreferrer"
-              className="shrink-0 text-sky-400 underline"
+              className="shrink-0 text-link underline"
             >
               logs
             </a>
@@ -198,7 +196,7 @@ function ReviewDetail({
   if (unresolved.length === 0) return null;
 
   return (
-    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-[11px] text-slate-400">
+    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-xs text-fg-2">
       {unresolved.map((thread) => (
         <li key={thread.id} className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate">
@@ -206,14 +204,15 @@ function ReviewDetail({
               ? `${thread.path}${thread.line != null ? `:${thread.line}` : ''}`
               : 'thread'}
           </span>
-          <button
-            type="button"
-            className="shrink-0 rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+          <Button
+            variant="secondary"
+            size="sm"
+            className="shrink-0 text-2xs"
             data-testid={`resolve-thread-${thread.id}`}
             onClick={() => void onResolveThread(thread.id)}
           >
             Resolve
-          </button>
+          </Button>
         </li>
       ))}
     </ul>
@@ -227,17 +226,17 @@ function DeploymentDetail({
 }): React.JSX.Element | null {
   if (details.environments.length === 0) return null;
   return (
-    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-[11px] text-slate-400">
+    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-xs text-fg-2">
       {details.environments.map((env, idx) => (
         <li key={`${env.name}-${idx}`} className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate">{env.name}</span>
-          <span className="shrink-0 text-slate-500">{env.state}</span>
+          <span className="shrink-0 text-fg-3">{env.state}</span>
           {env.url ? (
             <a
               href={env.url}
               target="_blank"
               rel="noreferrer"
-              className="shrink-0 text-sky-400 underline"
+              className="shrink-0 text-link underline"
             >
               open
             </a>
@@ -256,7 +255,7 @@ function TodosDetail({
   const open = details.items.filter((todo) => !todo.done);
   if (open.length === 0) return null;
   return (
-    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-[11px] text-slate-400">
+    <ul className="flex flex-col gap-0.5 px-3 pb-1 pl-14 text-xs text-fg-2">
       {open.map((todo, idx) => (
         <li key={idx} className="truncate">
           {todo.body}

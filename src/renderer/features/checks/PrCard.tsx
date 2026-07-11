@@ -5,6 +5,7 @@
 // links open (`src/renderer/features/chat/markdown.tsx`).
 
 import type { CheckDetails } from '@shared/checks';
+import { Badge } from '@renderer/components/ui';
 
 /** The `pr`-source variant of the `CheckDetails` union. */
 type PrDetails = Extract<CheckDetails, { source: 'pr' }>;
@@ -18,10 +19,7 @@ export function PrCard({ details }: PrCardProps): React.JSX.Element {
   // to a simple empty note.
   if (details.number === undefined) {
     return (
-      <div
-        className="px-3 py-2 text-xs text-slate-500"
-        data-testid="pr-card-empty"
-      >
+      <div className="px-3 py-2 text-xs text-fg-3" data-testid="pr-card-empty">
         No pull request yet.
       </div>
     );
@@ -29,31 +27,27 @@ export function PrCard({ details }: PrCardProps): React.JSX.Element {
 
   return (
     <div
-      className="flex flex-col gap-1 border-b border-slate-800 px-3 py-2"
+      className="flex flex-col gap-1 border-b border-border-1 px-3 py-2"
       data-testid="pr-card"
     >
       <div className="flex items-center gap-2">
-        <span className="font-mono text-xs text-slate-400">
-          #{details.number}
-        </span>
+        <span className="font-mono text-xs text-fg-2">#{details.number}</span>
         {details.draft ? (
-          <span
-            className="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-300"
+          <Badge
+            tone="neutral"
+            className="uppercase"
             data-testid="pr-draft-badge"
           >
             Draft
-          </span>
+          </Badge>
         ) : null}
         {details.mergeableState ? (
-          <span
-            className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400"
-            data-testid="pr-mergeable-state"
-          >
+          <Badge tone="neutral" data-testid="pr-mergeable-state">
             {details.mergeableState}
-          </span>
+          </Badge>
         ) : null}
       </div>
-      <div className="truncate text-xs text-slate-200" title={details.title}>
+      <div className="truncate text-xs text-fg-1" title={details.title}>
         {details.title ?? 'Untitled PR'}
       </div>
       {details.url ? (
@@ -61,7 +55,7 @@ export function PrCard({ details }: PrCardProps): React.JSX.Element {
           href={details.url}
           target="_blank"
           rel="noreferrer"
-          className="text-[11px] text-sky-400 underline"
+          className="text-xs text-link underline"
           data-testid="pr-link"
         >
           View on GitHub

@@ -7,6 +7,7 @@
 import { useState } from 'react';
 
 import type { SettingLayer, SettingsIssue } from '@shared/settings';
+import { Button } from '@renderer/components/ui';
 import { useSettings } from './useSettings';
 import { SETTINGS_SECTIONS, getAtPath } from './fields';
 import { SettingRow } from './SettingRow';
@@ -24,26 +25,26 @@ export function SettingsPanel({
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col bg-slate-950 text-slate-200"
+      className="flex h-full min-h-0 flex-col bg-surface-overlay text-fg-1"
       data-testid="settings-panel"
     >
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-        <span className="text-sm font-semibold text-slate-100">Settings</span>
+      <div className="flex items-center justify-between border-b border-border-1 px-4 py-2.5">
+        <span className="text-sm font-semibold text-fg-1">Settings</span>
         {onClose ? (
-          <button
-            type="button"
-            className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+          <Button
+            variant="ghost"
+            size="sm"
             data-testid="settings-close"
             onClick={onClose}
           >
             Close
-          </button>
+          </Button>
         ) : null}
       </div>
 
       {error ? (
         <div
-          className="border-b border-rose-900/50 bg-rose-950/40 px-4 py-2 text-xs text-rose-300"
+          className="border-b border-danger bg-danger-muted px-4 py-2 text-xs text-danger"
           data-testid="settings-error"
         >
           {error.message}
@@ -55,14 +56,14 @@ export function SettingsPanel({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading && effective === null ? (
           <div
-            className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+            className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
             data-testid="settings-loading"
           >
             Loading settings…
           </div>
         ) : effective === null ? (
           <div
-            className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+            className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
             data-testid="settings-empty"
           >
             No settings available.
@@ -73,10 +74,10 @@ export function SettingsPanel({
               key={section.title}
               data-testid={`settings-section-${section.title.toLowerCase()}`}
             >
-              <h3 className="px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-slate-500">
+              <h3 className="px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-caps text-fg-3">
                 {section.title}
               </h3>
-              <div className="divide-y divide-slate-900">
+              <div className="divide-y divide-border-1">
                 {section.fields.map((field) => (
                   <SettingRow
                     key={field.keyPath}
@@ -131,7 +132,7 @@ function SettingsIssuesBanner({
 
   return (
     <div
-      className="border-b border-amber-900/50 bg-amber-950/40 px-4 py-2 text-xs text-amber-200"
+      className="border-b border-warn bg-warn-muted px-4 py-2 text-xs text-warn"
       data-testid="settings-issues"
     >
       <div className="flex items-center justify-between gap-2">
@@ -140,19 +141,20 @@ function SettingsIssuesBanner({
             ? '1 settings issue — a layer was skipped'
             : `${issues.length} settings issues — layers were skipped`}
         </span>
-        <button
-          type="button"
-          className="rounded px-2 py-0.5 text-amber-300/80 hover:bg-amber-900/40"
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-warn hover:bg-warn-muted hover:text-warn"
           data-testid="settings-issues-dismiss"
           onClick={() => setDismissed(signature)}
         >
           Dismiss
-        </button>
+        </Button>
       </div>
       <ul className="mt-1 flex flex-col gap-0.5">
         {issues.map((issue, idx) => (
           <li key={idx} data-testid="settings-issue" className="truncate">
-            <span className="text-amber-400">
+            <span className="font-medium">
               {shortFile(issue.file)}
               {issue.keyPath ? ` · ${issue.keyPath}` : ''}
             </span>{' '}

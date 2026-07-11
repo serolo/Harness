@@ -3,6 +3,7 @@
 // `diff:get` currently ignores the explicit ref (the UI + store are wired ahead of the
 // backend catching up, per the plan's Task-10 note).
 
+import { Select } from '@renderer/components/ui';
 import type { CommitInfo } from '@shared/review';
 
 export interface CommitFilterProps {
@@ -16,19 +17,19 @@ export function CommitFilter({
   value,
   onChange,
 }: CommitFilterProps): React.JSX.Element {
+  const options = [
+    { value: '', label: 'All changes (base..HEAD)' },
+    ...commits.map((c) => ({
+      value: c.sha,
+      label: `${c.shortSha} ${c.subject}`,
+    })),
+  ];
   return (
-    <select
-      className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 focus:border-slate-500 focus:outline-none"
+    <Select
       data-testid="commit-filter"
+      options={options}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}
-    >
-      <option value="">All changes (base..HEAD)</option>
-      {commits.map((c) => (
-        <option key={c.sha} value={c.sha}>
-          {c.shortSha} {c.subject}
-        </option>
-      ))}
-    </select>
+    />
   );
 }

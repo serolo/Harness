@@ -11,6 +11,7 @@
 
 import { useMemo, useState } from 'react';
 import { DiffEditor, type DiffOnMount } from '@monaco-editor/react';
+import { Button } from '@renderer/components/ui';
 import type { FileDiff } from '@shared/review';
 
 export interface DiffViewProps {
@@ -106,7 +107,7 @@ export function DiffView({
   if (!path) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+        className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
         data-testid="diff-view-empty"
       >
         Select a file to view its diff.
@@ -117,7 +118,7 @@ export function DiffView({
   if (loading || !fileDiff) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-500"
+        className="flex h-full items-center justify-center p-6 text-sm text-fg-2"
         data-testid="diff-view-loading"
       >
         Loading diff…
@@ -140,52 +141,47 @@ export function DiffView({
 
   return (
     <div className="flex h-full flex-col" data-testid="diff-view">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-1.5">
-        <span
-          className="truncate font-mono text-xs text-slate-400"
-          title={path}
-        >
+      <div className="flex items-center justify-between gap-2 border-b border-border-1 px-3 py-1.5">
+        <span className="truncate font-mono text-xs text-fg-2" title={path}>
           {path}
         </span>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800"
+          <Button
+            size="sm"
             data-testid="diff-view-toggle-layout"
             onClick={() => setSideBySide((v) => !v)}
           >
             {sideBySide ? 'Unified' : 'Side-by-side'}
-          </button>
-          <button
-            type="button"
-            className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800"
+          </Button>
+          <Button
+            size="sm"
             data-testid="diff-view-add-comment"
             aria-expanded={commentOpen}
             onClick={() => setCommentOpen((v) => !v)}
           >
             + Comment
-          </button>
+          </Button>
         </div>
       </div>
 
       {commentOpen && (
         <div
-          className="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/60 px-3 py-2"
+          className="flex flex-wrap items-center gap-2 border-b border-border-1 bg-surface-panel px-3 py-2"
           data-testid="comment-popover"
         >
-          <label className="flex items-center gap-1 text-[11px] text-slate-500">
+          <label className="flex items-center gap-1 text-xs text-fg-3">
             Line
             <input
               type="number"
               min={1}
-              className="w-16 rounded border border-slate-700 bg-slate-950 px-1.5 py-1 text-xs text-slate-200"
+              className="w-16 rounded-2 border border-border-2 bg-surface-well px-1.5 py-1 text-xs text-fg-1"
               value={lineDraft}
               data-testid="comment-line-input"
               onChange={(e) => setLineDraft(e.target.value)}
             />
           </label>
           <select
-            className="rounded border border-slate-700 bg-slate-950 px-1.5 py-1 text-xs text-slate-200"
+            className="rounded-2 border border-border-2 bg-surface-well px-1.5 py-1 text-xs text-fg-1"
             value={sideDraft}
             data-testid="comment-side-select"
             onChange={(e) => setSideDraft(e.target.value as 'old' | 'new')}
@@ -196,7 +192,7 @@ export function DiffView({
           <input
             type="text"
             placeholder="Comment…"
-            className="min-w-[180px] flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600"
+            className="min-w-[180px] flex-1 rounded-2 border border-border-2 bg-surface-well px-2 py-1 text-xs text-fg-1 placeholder:text-fg-3"
             value={bodyDraft}
             data-testid="comment-body-input"
             onChange={(e) => setBodyDraft(e.target.value)}
@@ -207,35 +203,34 @@ export function DiffView({
               }
             }}
           />
-          <button
-            type="button"
-            className="rounded bg-sky-600 px-2 py-1 text-xs font-medium text-white hover:bg-sky-500"
+          <Button
+            variant="primary"
+            size="sm"
             data-testid="comment-submit"
             onClick={submitComment}
           >
             Add
-          </button>
+          </Button>
         </div>
       )}
 
       <div className="min-h-0 flex-1">
         {isLarge && !forceShow ? (
           <div
-            className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-slate-500"
+            className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-fg-2"
             data-testid="diff-view-large-guard"
           >
             <p>
               This file has {totalLines.toLocaleString()} lines — rendering the
               full diff may be slow.
             </p>
-            <button
-              type="button"
-              className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800"
+            <Button
+              size="sm"
               data-testid="diff-view-show-anyway"
               onClick={() => setForceShow(true)}
             >
               Show anyway
-            </button>
+            </Button>
           </div>
         ) : (
           <DiffEditor

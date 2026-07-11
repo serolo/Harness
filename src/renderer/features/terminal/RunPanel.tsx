@@ -4,6 +4,7 @@
 // Data + stream lifecycle live in `useRun`; this component is presentational.
 
 import { useEffect, useRef } from 'react';
+import { Badge, Button } from '@renderer/components/ui';
 import { useRun, type RunView } from './useRun';
 
 export interface RunPanelProps {
@@ -21,7 +22,7 @@ function RunLog({ log }: { log: string }): React.JSX.Element {
     <pre
       ref={ref}
       data-testid="run-log"
-      className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-slate-800 bg-slate-950 p-2 font-mono text-xs text-slate-300"
+      className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-2 border border-border-1 bg-surface-well p-2 font-mono text-xs text-fg-2"
     >
       {log}
     </pre>
@@ -38,14 +39,9 @@ function RunBadge({
 }): React.JSX.Element {
   const ok = exit.code === 0;
   return (
-    <span
-      data-testid={`run-badge-${name}`}
-      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-        ok ? 'bg-emerald-900 text-emerald-200' : 'bg-red-900 text-red-200'
-      }`}
-    >
+    <Badge tone={ok ? 'ok' : 'danger'} data-testid={`run-badge-${name}`}>
       exit {exit.code ?? 'killed'} · {exit.durationMs}ms
-    </span>
+    </Badge>
   );
 }
 
@@ -54,7 +50,7 @@ export function RunPanel({ workspaceId }: RunPanelProps): React.JSX.Element {
 
   if (!workspaceId) {
     return (
-      <div className="p-3 text-xs text-slate-600" data-testid="run-panel-empty">
+      <div className="p-3 text-xs text-fg-3" data-testid="run-panel-empty">
         Select a workspace to run scripts.
       </div>
     );
@@ -63,7 +59,7 @@ export function RunPanel({ workspaceId }: RunPanelProps): React.JSX.Element {
   return (
     <div className="flex flex-col gap-2 p-3" data-testid="run-panel">
       {scripts.length === 0 ? (
-        <div className="text-xs text-slate-600" data-testid="run-empty">
+        <div className="text-xs text-fg-3" data-testid="run-empty">
           No run scripts configured for this workspace.
         </div>
       ) : (
@@ -74,9 +70,8 @@ export function RunPanel({ workspaceId }: RunPanelProps): React.JSX.Element {
             return (
               <div key={script.name} className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1 text-sm font-medium text-white enabled:hover:bg-sky-500 disabled:opacity-40"
+                  <Button
+                    variant="primary"
                     data-testid={`run-start-${script.name}`}
                     disabled={running}
                     onClick={() => void start(script.name)}
@@ -85,16 +80,15 @@ export function RunPanel({ workspaceId }: RunPanelProps): React.JSX.Element {
                       <span aria-hidden>{script.icon}</span>
                     ) : null}
                     <span>{script.label ?? script.name}</span>
-                  </button>
+                  </Button>
                   {running ? (
-                    <button
-                      type="button"
-                      className="rounded-md bg-red-600 px-2.5 py-1 text-sm font-medium text-white hover:bg-red-500"
+                    <Button
+                      variant="danger"
                       data-testid={`run-stop-${script.name}`}
                       onClick={() => void stop(script.name)}
                     >
                       Stop
-                    </button>
+                    </Button>
                   ) : null}
                   {view?.exit ? (
                     <RunBadge name={script.name} exit={view.exit} />

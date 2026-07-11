@@ -4,6 +4,7 @@
 // "no changes in this workspace". Wires `useDiff` + `useCheckpoints` to the presentational
 // sub-components; all main access happens inside those hooks via `@renderer/ipc`.
 
+import { Button } from '@renderer/components/ui';
 import { FileTree } from './FileTree';
 import { DiffView } from './DiffView';
 import { CommentRail } from './CommentRail';
@@ -38,7 +39,7 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
   if (!workspaceId) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-sm text-slate-600"
+        className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
         data-testid="diff-empty"
       >
         Select a workspace to view its diff.
@@ -50,32 +51,31 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
 
   return (
     <div className="flex h-full flex-col" data-testid="diff-panel">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-b border-border-1 px-3 py-2">
         <CommitFilter
           commits={commits}
           value={commitFilter}
           onChange={setCommitFilter}
         />
-        <button
-          type="button"
-          className="rounded-md border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800"
+        <Button
+          size="sm"
           data-testid="agent-review"
           onClick={() => void runReview()}
         >
           Agent review
-        </button>
+        </Button>
       </div>
 
       {!hasChanges ? (
         <div
-          className="flex flex-1 items-center justify-center p-6 text-sm text-slate-600"
+          className="flex flex-1 items-center justify-center p-6 text-sm text-fg-3"
           data-testid="diff-no-changes"
         >
           No changes in this workspace.
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <aside className="w-56 shrink-0 border-r border-slate-800">
+          <aside className="w-56 shrink-0 border-r border-border-1">
             <FileTree
               files={diffSet?.files ?? []}
               selectedPath={selectedPath}
@@ -93,7 +93,7 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
               }}
             />
           </div>
-          <aside className="w-72 shrink-0 border-l border-slate-800">
+          <aside className="w-72 shrink-0 border-l border-border-1">
             <CommentRail
               comments={comments}
               openCount={openComments.length}

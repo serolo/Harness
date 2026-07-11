@@ -1,6 +1,7 @@
 // FileTree — the `DiffSet.files` list: an A/M/D/R change badge + `+adds/-dels` stats
-// per file, click to select. Mirrors the slate-palette list styling used by the
-// sidebar's workspace list (dense rows, `data-testid` hooks, active-row highlight).
+// per file, click to select. Dense-row list styling shared with the sidebar's workspace
+// list (`data-testid` hooks, active-row highlight); the +adds/-dels stats and the A/D
+// badges use the `diff-add-accent`/`diff-del-accent` tokens (the diff-colors spec).
 
 import type { DiffFileEntry } from '@shared/review';
 
@@ -10,15 +11,16 @@ export interface FileTreeProps {
   onSelect: (path: string) => void;
 }
 
-/** Badge glyph + color per change kind (spec's A/M/D/R convention). */
+/** Badge glyph + color per change kind (spec's A/M/D/R convention). Added/deleted map to
+ * the diff-colors spec's add/del accents; modified/renamed use the warn/info semantics. */
 const CHANGE_BADGE: Record<
   DiffFileEntry['change'],
   { label: string; className: string }
 > = {
-  added: { label: 'A', className: 'text-emerald-400' },
-  modified: { label: 'M', className: 'text-amber-400' },
-  deleted: { label: 'D', className: 'text-red-400' },
-  renamed: { label: 'R', className: 'text-sky-400' },
+  added: { label: 'A', className: 'text-diff-add-accent' },
+  modified: { label: 'M', className: 'text-warn' },
+  deleted: { label: 'D', className: 'text-diff-del-accent' },
+  renamed: { label: 'R', className: 'text-info' },
 };
 
 export function FileTree({
@@ -29,7 +31,7 @@ export function FileTree({
   return (
     <div className="h-full overflow-y-auto" data-testid="diff-file-tree">
       {files.length === 0 ? (
-        <p className="p-3 text-xs text-slate-600">No changed files.</p>
+        <p className="p-3 text-xs text-fg-3">No changed files.</p>
       ) : (
         <ul>
           {files.map((f) => {
@@ -42,10 +44,8 @@ export function FileTree({
                   data-testid={`diff-file-${f.path}`}
                   aria-pressed={active}
                   onClick={() => onSelect(f.path)}
-                  className={`flex w-full items-center gap-2 border-b border-slate-800/60 px-2 py-1.5 text-left text-xs transition-colors ${
-                    active
-                      ? 'bg-slate-800 text-slate-100'
-                      : 'text-slate-300 hover:bg-slate-800/50'
+                  className={`flex w-full items-center gap-2 border-b border-border-1 px-2 py-1.5 text-left text-xs transition-colors duration-fast ease-out ${
+                    active ? 'bg-bg-4 text-fg-1' : 'text-fg-2 hover:bg-bg-3'
                   }`}
                   title={f.path}
                 >
@@ -59,11 +59,11 @@ export function FileTree({
                     {f.path}
                   </span>
                   <span
-                    className="shrink-0 font-mono text-[11px]"
+                    className="shrink-0 font-mono text-xs"
                     aria-hidden="true"
                   >
-                    <span className="text-emerald-500">+{f.additions}</span>{' '}
-                    <span className="text-red-500">-{f.deletions}</span>
+                    <span className="text-diff-add-accent">+{f.additions}</span>{' '}
+                    <span className="text-diff-del-accent">-{f.deletions}</span>
                   </span>
                 </button>
               </li>

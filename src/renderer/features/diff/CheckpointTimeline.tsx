@@ -7,6 +7,7 @@
 // mirrors `NewWorkspaceDialog`'s fixed-overlay + centered-panel pattern.
 
 import { useState } from 'react';
+import { Button } from '@renderer/components/ui';
 import type { Checkpoint } from '@shared/review';
 
 export interface CheckpointTimelineProps {
@@ -39,16 +40,13 @@ export function CheckpointTimeline({
   }
 
   return (
-    <div
-      className="border-t border-slate-800"
-      data-testid="checkpoint-timeline"
-    >
+    <div className="border-t border-border-1" data-testid="checkpoint-timeline">
       <div className="flex items-center gap-2 overflow-x-auto px-3 py-2">
-        <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        <span className="shrink-0 text-xs font-medium uppercase tracking-caps text-fg-3">
           Checkpoints
         </span>
         {checkpoints.length === 0 ? (
-          <span className="text-xs text-slate-600">None yet.</span>
+          <span className="text-xs text-fg-3">None yet.</span>
         ) : (
           checkpoints.map((cp) => {
             const turnIdx = turnIdxFromRefName(cp.refName);
@@ -56,20 +54,19 @@ export function CheckpointTimeline({
               <div
                 key={cp.id}
                 data-testid={`checkpoint-${turnIdx}`}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-xs"
+                className="flex shrink-0 items-center gap-1.5 rounded-2 border border-border-1 bg-surface-card px-2 py-1 text-xs"
               >
-                <span className="font-mono text-slate-400">#{turnIdx}</span>
-                <span className="font-mono text-slate-600">
+                <span className="font-mono text-fg-2">#{turnIdx}</span>
+                <span className="font-mono text-fg-3">
                   {cp.sha.slice(0, 7)}
                 </span>
-                <button
-                  type="button"
-                  className="rounded border border-slate-700 px-1.5 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800"
+                <Button
+                  size="sm"
                   data-testid={`checkpoint-revert-${turnIdx}`}
                   onClick={() => setConfirmTarget(cp)}
                 >
                   Revert to here
-                </button>
+                </Button>
               </div>
             );
           })
@@ -79,7 +76,7 @@ export function CheckpointTimeline({
       {confirmTarget && (
         <>
           <div
-            className="fixed inset-0 z-40 bg-black/60"
+            className="fixed inset-0 z-40 bg-scrim"
             aria-hidden="true"
             onClick={() => !reverting && setConfirmTarget(null)}
           />
@@ -91,38 +88,36 @@ export function CheckpointTimeline({
             data-testid="checkpoint-revert-dialog"
           >
             <div
-              className="relative w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-2xl"
+              className="relative w-full max-w-md rounded-4 border border-border-1 bg-surface-overlay p-4 shadow-4"
               onClick={(e) => e.stopPropagation()}
             >
-              <h2 className="mb-2 text-sm font-semibold text-slate-100">
+              <h2 className="mb-2 text-sm font-semibold text-fg-1">
                 Revert to checkpoint #
                 {turnIdxFromRefName(confirmTarget.refName)}?
               </h2>
-              <p className="mb-3 text-xs leading-relaxed text-slate-300">
+              <p className="mb-3 text-xs leading-relaxed text-fg-2">
                 This resets the worktree to this checkpoint — files added since
                 will be removed. Your current state is automatically backed up
                 first. Chat turns after this point will be truncated, and the
                 next turn starts a fresh session.
               </p>
               <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="rounded px-3 py-1.5 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                <Button
+                  variant="ghost"
                   onClick={() => setConfirmTarget(null)}
                   disabled={reverting}
                   data-testid="checkpoint-revert-cancel"
                 >
                   Cancel
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                </Button>
+                <Button
+                  variant="danger"
                   onClick={() => void confirmRevert()}
                   disabled={reverting}
                   data-testid="checkpoint-revert-confirm"
                 >
                   {reverting ? 'Reverting…' : 'Revert'}
-                </button>
+                </Button>
               </div>
             </div>
           </div>

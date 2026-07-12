@@ -2,6 +2,7 @@
 // (history + streaming) to the Transcript + Composer. Renders an empty state when no
 // workspace is selected.
 
+import { History, Plus } from 'lucide-react';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { useChat } from './useChat';
@@ -25,12 +26,33 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col" data-testid="chat-panel">
+    <div className="flex h-full min-h-0 flex-col bg-surface-app" data-testid="chat-panel">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-1 bg-surface-panel px-5">
+        <div className="flex h-full items-center gap-8">
+          <div className="flex h-full items-center border-b-2 border-accent px-1 text-sm font-semibold text-fg-1">
+            Claude
+          </div>
+          <button
+            type="button"
+            className="rounded-1 p-1 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+            aria-label="New chat"
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
+        <button
+          type="button"
+          className="rounded-1 p-1 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+          aria-label="Chat history"
+        >
+          <History className="h-4 w-4" aria-hidden />
+        </button>
+      </div>
       <Transcript turns={turns} />
       <Composer
         isBusy={isBusy}
-        onSend={(prompt, attachments, mode) =>
-          sendTurn(prompt, attachments, mode)
+        onSend={(prompt, attachments, mode, harness) =>
+          sendTurn(prompt, attachments, mode, harness)
         }
         onInterrupt={interrupt}
       />

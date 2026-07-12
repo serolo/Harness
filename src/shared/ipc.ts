@@ -7,8 +7,10 @@
 
 import type { AppError } from './errors';
 import type { ChecksResult } from './checks';
+import type { GitSshKey } from './git';
 import type {
   ConnectStatus,
+  GithubCliAuthStatus,
   GithubAccount,
   IssueListItem,
   MergeMethod,
@@ -121,6 +123,11 @@ export interface Commands {
   'project:add': { req: { localPath: string }; res: Project };
   /** List all registered projects, newest first. */
   'project:list': { req: void; res: Project[] };
+  /** Fetch latest refs, then list branches available as workspace base refs. */
+  'project:listBranches': {
+    req: { projectId: string };
+    res: { defaultBranch: string; branches: string[] };
+  };
   /** Open the OS directory picker; resolves the chosen path or null if cancelled. */
   'project:pickDirectory': { req: void; res: string | null };
   /** List a project's workspaces (archived filtered out unless `includeArchived`). */
@@ -209,6 +216,12 @@ export interface Commands {
   'github:accounts': { req: void; res: GithubAccount[] };
   /** Disconnect a GitHub integration and delete its ciphertext blob. */
   'github:disconnect': { req: { integrationId: string }; res: void };
+  /** Inspect local GitHub CLI auth state. Never returns a token. */
+  'github:cliStatus': { req: void; res: GithubCliAuthStatus };
+  /** Connect using the local `gh auth token`; token stays in main. */
+  'github:connectGhCli': { req: void; res: GithubAccount };
+  /** Discover local SSH identities for Git operations. Private key contents are never read. */
+  'git:sshKeys': { req: void; res: GitSshKey[] };
   /** Fetch the aggregated merge-readiness checks for a workspace (spec §5.5). */
   'checks:get': { req: { workspaceId: string }; res: ChecksResult };
   /** Open (or return) a pull request for a workspace's branch (spec §5.6, ⌘⇧P). */
@@ -422,6 +435,8 @@ export interface TurnStartArg {
   prompt: string;
   attachments: Attachment[];
   mode?: AgentMode;
+  /** Optional per-turn harness override; omitted means use the workspace's harness. */
+  harness?: HarnessId;
 }
 
 /**

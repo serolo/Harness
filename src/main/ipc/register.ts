@@ -24,6 +24,7 @@ import { basename } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 import { v7 as uuidv7 } from 'uuid';
+import { Octokit } from '@octokit/rest';
 import type {
   CommandChannel,
   CommandReq,
@@ -33,7 +34,8 @@ import type {
   StreamChunk,
 } from '@shared/ipc';
 import type { StreamSink } from '@shared/ipc';
-import type { AgentEvent, StartTurnOpts } from '@shared/harness';
+import type { AgentEvent, HarnessId, StartTurnOpts } from '@shared/harness';
+import type { SlashCommand } from '@shared/slash';
 import type { AppContext } from '../context';
 import { toAppError } from '../error';
 import { AppError, encodeAppErrorMessage } from '@shared/errors';
@@ -41,6 +43,8 @@ import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
 import { TodosRepo } from '../db/repos/todos';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
+import { githubCliAuthStatus, githubCliToken } from '../integrations/github/ghCli';
+import { discoverGitSshKeys } from '../git/sshKeys';
 import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
 import { repoDir } from '../paths';
@@ -56,6 +60,31 @@ import {
 
 /** Control channel the renderer invokes to begin a scoped stream. */
 const STREAM_START_CHANNEL = 'stream:start';
+
+const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
+  {
+    name: 'review',
+    template:
+      'Please review the current changes. Focus on correctness bugs, security issues, and missing tests.',
+    description: 'Review current changes',
+  },
+  {
+    name: 'fix-checks',
+    template:
+      'Investigate and fix the failing checks. Run the relevant tests again when done.\n\n$ARGS',
+    description: 'Fix failing checks',
+  },
+  {
+    name: 'explain',
+    template: 'Explain this code or behavior clearly.\n\n$ARGS',
+    description: 'Explain code or behavior',
+  },
+  {
+    name: 'plan',
+    template: 'Create a concise implementation plan for this task.\n\n$ARGS',
+    description: 'Create an implementation plan',
+  },
+];
 
 /**
  * Workspace ids whose merge-readiness checks the renderer has fetched (via `checks:get`).
@@ -141,6 +170,47 @@ function projectNameFromUrl(url: string): string {
   const last = segments[segments.length - 1] ?? '';
   const name = last.replace(/\.git$/, '');
   return name.length > 0 ? name : 'project';
+}
+
+/**
+ * Resolve the GitHub owner/repo for a project. Prefer the persisted origin URL, but
+ * fall back to the repo's current `origin` config so locally-added projects or remotes
+ * changed after registration still work in the PR/issue picker.
+ */
+async function githubRepoForProject(
+  ctx: AppContext,
+  project: { originUrl: string; repoPath: string },
+): Promise<{ owner: string; name: string }> {
+  const info = await ctx.git.open(project.repoPath);
+  if (info.originUrl !== '') {
+    try {
+      return parseOwnerName(info.originUrl);
+    } catch {
+      // Fall through to the persisted project URL below.
+    }
+  }
+
+  if (project.originUrl !== '') {
+    return parseOwnerName(project.originUrl);
+  }
+
+  throw new AppError(
+    'integration',
+    'project does not have a GitHub origin remote',
+  );
+}
+
+/**
+ * Resolve the GitHub API client according to local Settings semantics. If the GitHub
+ * CLI is authenticated, use that token first; otherwise fall back to the encrypted
+ * integration row. The token stays in main either way.
+ */
+async function githubClientForSettings(ctx: AppContext): Promise<Octokit> {
+  const cli = await githubCliAuthStatus();
+  if (cli.authenticated) {
+    return new Octokit({ auth: await githubCliToken() });
+  }
+  return ctx.integrations.github();
 }
 
 /**
@@ -277,8 +347,22 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           );
         }
 
+        const harnessOverride =
+          typeof arg.harness === 'string' ? (arg.harness as HarnessId) : undefined;
+        if (
+          harnessOverride !== undefined &&
+          !['claude_code', 'codex', 'cursor'].includes(harnessOverride)
+        ) {
+          throw new AppError('invalid_input', 'unknown harness', {
+            harness: harnessOverride,
+          });
+        }
+
         const settings = ctx.settings.get();
-        const sessionId = await ctx.recorder.latestSessionId(arg.workspaceId);
+        const sessionId =
+          harnessOverride === undefined || harnessOverride === workspace.harness
+            ? await ctx.recorder.latestSessionId(arg.workspaceId)
+            : undefined;
         const opts: StartTurnOpts = {
           workspaceDir: workspace.worktreePath,
           prompt: arg.prompt,
@@ -305,6 +389,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           arg.workspaceId,
           opts,
           agentSink,
+          harnessOverride,
         );
         const turnId = ctx.harness.getActiveTurnId(arg.workspaceId) ?? '';
         sink.push({ kind: 'started', turnId, sessionId: handle.sessionId });
@@ -641,6 +726,25 @@ export function registerIpc(ctx: AppContext): void {
 
   // project:list — all registered projects, newest first.
   handle('project:list', async () => new ProjectsRepo(ctx.db).list());
+
+  // project:listBranches — refresh origin refs first, then list all local + origin
+  // branches that can be used as workspace base refs.
+  handle('project:listBranches', async (req) => {
+    if (typeof req.projectId !== 'string' || req.projectId === '') {
+      throw new AppError('invalid_input', 'projectId is required');
+    }
+    const project = await new ProjectsRepo(ctx.db).getById(req.projectId);
+    if (project === null) {
+      throw new AppError('not_found', 'project not found', {
+        projectId: req.projectId,
+      });
+    }
+    if (project.originUrl !== '') {
+      await ctx.git.fetch(project.repoPath);
+    }
+    const branches = await ctx.git.listBranches(project.repoPath);
+    return { defaultBranch: project.defaultBranch, branches };
+  });
 
   // workspace:list/get/archive/restore — delegate to the WorkspaceManager, the sole
   // owner of workspace lifecycle + status transitions (README §6.4).
@@ -1011,6 +1115,27 @@ export function registerIpc(ctx: AppContext): void {
     await ctx.integrations.disconnect(req.integrationId);
   });
 
+  // github:cliStatus — local gh auth detection for Settings > Git. Token-free.
+  handle('github:cliStatus', async () => githubCliAuthStatus());
+
+  // github:connectGhCli — imports the local `gh auth token` into the encrypted
+  // integration store. The token never crosses IPC or reaches the renderer.
+  handle('github:connectGhCli', async () => {
+    const token = await githubCliToken();
+    let account: GithubAccount | null = null;
+    await ctx.integrations.connectGithub('pat', { token }, (frame) => {
+      if (frame.kind === 'connected') account = frame.account;
+    });
+    if (account === null) {
+      throw new AppError('integration', 'GitHub CLI connection did not complete');
+    }
+    return account;
+  });
+
+  // git:sshKeys — read-only SSH identity discovery for Settings > Git. The scanner
+  // reads config/public-key metadata only; it never reads private key contents.
+  handle('git:sshKeys', async () => discoverGitSshKeys());
+
   // --- Phase 7: Linear (mirrors github:*). Heightened-scrutiny (secrets): the plaintext
   // API key stays in LinearService/SecretStore — rows map to the token-free LinearAccount,
   // and every handler narrows its untrusted payload. Linear-dependent handlers degrade to a
@@ -1150,8 +1275,11 @@ export function registerIpc(ctx: AppContext): void {
         projectId: req.projectId,
       });
     }
-    const octokit = await ctx.integrations.github();
-    const client = new GithubClient(octokit, parseOwnerName(project.originUrl));
+    const octokit = await githubClientForSettings(ctx);
+    const client = new GithubClient(
+      octokit,
+      await githubRepoForProject(ctx, project),
+    );
     return client.listPrs();
   });
 
@@ -1167,8 +1295,11 @@ export function registerIpc(ctx: AppContext): void {
         projectId: req.projectId,
       });
     }
-    const octokit = await ctx.integrations.github();
-    const client = new GithubClient(octokit, parseOwnerName(project.originUrl));
+    const octokit = await githubClientForSettings(ctx);
+    const client = new GithubClient(
+      octokit,
+      await githubRepoForProject(ctx, project),
+    );
     return client.listIssues();
   });
 
@@ -1227,10 +1358,15 @@ export function registerIpc(ctx: AppContext): void {
   // Each named prompt template becomes a `/name` command the composer can expand.
   handle('slash:list', async () => {
     const prompts = ctx.settings.get().agent.prompts;
-    return Object.entries(prompts).map(([name, template]) => ({
+    const custom = Object.entries(prompts).map(([name, template]) => ({
       name,
       template,
     }));
+    const customNames = new Set(custom.map((cmd) => cmd.name));
+    return [
+      ...custom,
+      ...DEFAULT_SLASH_COMMANDS.filter((cmd) => !customNames.has(cmd.name)),
+    ];
   });
 
   // deepLink:resolve — parse an `harness://…` URL into a nav target (null if

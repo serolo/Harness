@@ -4,7 +4,13 @@
 // `@renderer/ipc` (README §10) — never `window.api`/`ipcRenderer` directly.
 
 import { useCallback, useEffect } from 'react';
-import type { AgentEvent, Attachment, AgentMode, Usage } from '@shared/harness';
+import type {
+  AgentEvent,
+  Attachment,
+  AgentMode,
+  HarnessId,
+  Usage,
+} from '@shared/harness';
 import type { ChatHistory } from '@shared/ipc';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useChatStore, type RenderedTurn } from '@renderer/stores/chat';
@@ -36,6 +42,7 @@ export interface UseChat {
     prompt: string,
     attachments: Attachment[],
     mode?: AgentMode,
+    harness?: HarnessId,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
 }
@@ -79,15 +86,20 @@ export function useChat(workspaceId: string | null): UseChat {
       prompt: string,
       attachments: Attachment[],
       mode?: AgentMode,
+      harness?: HarnessId,
     ): Promise<void> => {
       if (!workspaceId) return;
+      const pendingTurnId = `pending:${Date.now()}:${Math.random()}`;
+      let started = false;
+      startTurn(workspaceId, pendingTurnId, '');
       setBusy(workspaceId, true);
       try {
         await subscribeStream(
           'turn:start',
-          { workspaceId, prompt, attachments, mode },
+          { workspaceId, prompt, attachments, mode, harness },
           (chunk) => {
             if (chunk.kind === 'started') {
+              started = true;
               startTurn(workspaceId, chunk.turnId, chunk.sessionId);
               return;
             }
@@ -104,6 +116,7 @@ export function useChat(workspaceId: string | null): UseChat {
         );
       } catch (err) {
         // Stream-level failure: record a terminal error so the UI recovers.
+        if (!started) startTurn(workspaceId, pendingTurnId, '');
         appendEvent(workspaceId, {
           kind: 'error',
           message: err instanceof Error ? err.message : 'turn failed',

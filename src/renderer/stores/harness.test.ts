@@ -4,7 +4,7 @@
 // stubbed `window.api` (the only main-process access point), mirroring ChatPanel.test.tsx.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
 import type { HarnessId } from '@shared/harness';
@@ -62,6 +62,7 @@ function installApi(opts: { fail?: boolean } = {}): ApiStub {
         ? Promise.reject(new Error('detect failed'))
         : Promise.resolve(HARNESS_LIST);
     }
+    if (channel === 'slash:list') return Promise.resolve([]);
     return Promise.resolve(undefined);
   });
   const api: ApiStub = {
@@ -147,7 +148,7 @@ describe('useHarnessStore', () => {
 });
 
 describe('Composer plan-mode gate (capability-driven, per selected workspace)', () => {
-  /** Render the composer for a workspace on `harness`; returns its mode <select>. */
+  /** Render the composer for a workspace on `harness`; returns its plan button. */
   async function renderComposerFor(harness: HarnessId): Promise<HTMLElement> {
     installApi();
     useWorkspacesStore.setState({
@@ -161,32 +162,39 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
         onInterrupt: () => {},
       }),
     );
-    return screen.findByTestId('composer-mode');
+    return screen.findByTestId('composer-plan');
   }
 
-  /** Current mode-<option> labels (re-queried so `waitFor` sees async updates). */
-  function modeLabels(select: HTMLElement): string[] {
-    return within(select)
-      .getAllByRole('option')
-      .map((o) => o.textContent ?? '');
-  }
-
-  it('shows Plan when the selected harness supports it (claude_code)', async () => {
-    const select = await renderComposerFor('claude_code');
-    await waitFor(() => expect(modeLabels(select)).toContain('Plan'));
+  it('enables Plan when the selected harness supports it (claude_code)', async () => {
+    const plan = await renderComposerFor('claude_code');
+    await waitFor(() => expect(plan).not.toBeDisabled());
+    fireEvent.click(plan);
+    expect(plan).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('hides Plan when the selected harness lacks it (codex)', async () => {
-    const select = await renderComposerFor('codex');
-    // Plan is shown optimistically until harness:list resolves, then removed.
-    await waitFor(() => expect(modeLabels(select)).not.toContain('Plan'));
-    // Non-plan modes remain.
-    expect(within(select).getByText('Default')).toBeInTheDocument();
-    expect(within(select).getByText('Auto-accept')).toBeInTheDocument();
+  it('disables Plan when the selected harness lacks it (codex)', async () => {
+    const plan = await renderComposerFor('codex');
+    await waitFor(() => expect(plan).toBeDisabled());
   });
 
-  it('hides Plan for cursor (all structured flags false)', async () => {
-    const select = await renderComposerFor('cursor');
-    await waitFor(() => expect(modeLabels(select)).not.toContain('Plan'));
+  it('disables Plan for cursor (all structured flags false)', async () => {
+    const plan = await renderComposerFor('cursor');
+    await waitFor(() => expect(plan).toBeDisabled());
+  });
+
+  it('lists runnable models from harness:list', async () => {
+    await renderComposerFor('claude_code');
+    fireEvent.click(await screen.findByTestId('composer-model'));
+
+    expect(await screen.findByTestId('composer-model-menu')).toBeInTheDocument();
+    expect(screen.getByTestId('composer-model-claude_code')).toHaveTextContent(
+      'Claude Code',
+    );
+    expect(screen.getByTestId('composer-model-codex')).toHaveTextContent(
+      'Codex',
+    );
+    expect(screen.getByTestId('composer-model-cursor')).toHaveTextContent(
+      'Cursor',
+    );
   });
 });

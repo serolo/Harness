@@ -43,6 +43,11 @@ beforeAll(async () => {
   writeFileSync(join(sourceRepo, 'README.md'), '# test repo');
   await g(sourceRepo, 'add', '.');
   await g(sourceRepo, 'commit', '-m', 'initial commit');
+  await g(sourceRepo, 'checkout', '-b', 'release');
+  writeFileSync(join(sourceRepo, 'release.txt'), 'release branch');
+  await g(sourceRepo, 'add', '.');
+  await g(sourceRepo, 'commit', '-m', 'release commit');
+  await g(sourceRepo, 'checkout', 'main');
 });
 
 afterAll(() => {
@@ -72,6 +77,14 @@ describe('GitService.clone', () => {
   it('open(clonedPath).originUrl is non-empty (points at the source)', async () => {
     const info = await git.open(cloneDir);
     expect(info.originUrl).toBeTruthy();
+  });
+
+  it('listBranches returns local and origin-tracking branch refs', async () => {
+    const branches = await git.listBranches(cloneDir);
+    expect(branches).toContain('main');
+    expect(branches).toContain('origin/main');
+    expect(branches).toContain('origin/release');
+    expect(branches).not.toContain('origin/HEAD');
   });
 
   it('forwards progress events when onProgress is provided', async () => {

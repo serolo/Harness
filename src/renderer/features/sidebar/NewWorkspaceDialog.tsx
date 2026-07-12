@@ -72,6 +72,38 @@ function linearIssuePrompt(issue: LinearIssue): string {
   return `${issue.identifier} ${issue.title}\n\n${issue.url}`;
 }
 
+/**
+ * Treat GitHub auth as global app configuration. Settings may show a valid GitHub CLI
+ * session even before it has been imported into the encrypted integration store; the
+ * picker needs a stored integration for API calls, so import from `gh` on demand.
+ */
+async function ensureGithubConnected(): Promise<boolean> {
+  const accounts = await invoke('github:accounts', undefined);
+  if (accounts.length > 0) return true;
+
+  let cliAuthenticated = false;
+  try {
+    const cli = await invoke('github:cliStatus', undefined);
+    cliAuthenticated = cli.authenticated;
+  } catch (err) {
+    if (!isMissingIpcHandler(err)) throw err;
+  }
+
+  if (!cliAuthenticated) return false;
+
+  try {
+    await invoke('github:connectGhCli', undefined);
+    return true;
+  } catch (err) {
+    if (isMissingIpcHandler(err)) return false;
+    throw err;
+  }
+}
+
+function isMissingIpcHandler(err: unknown): boolean {
+  return err instanceof Error && /No handler registered/i.test(err.message);
+}
+
 export interface NewWorkspaceDialogProps {
   /** The project to create the workspace under. Must be set before submission. */
   projectId: string | null;
@@ -93,7 +125,9 @@ export function NewWorkspaceDialog({
   // Form state
   const [activeTab, setActiveTab] = useState<SourceTab>('branch');
   const [baseBranch, setBaseBranch] = useState('');
-  const [customBranch, setCustomBranch] = useState('');
+  const [baseBranches, setBaseBranches] = useState<string[]>([]);
+  const [branchListLoading, setBranchListLoading] = useState(false);
+  const [branchListError, setBranchListError] = useState<string | null>(null);
   const [harness, setHarness] = useState<HarnessId>('claude_code');
 
   // PR / issue list state (loaded lazily when the matching tab opens).
@@ -103,6 +137,11 @@ export function NewWorkspaceDialog({
   const [listLoading, setListLoading] = useState(false);
   // Set when a list fetch rejects (typically "no account connected") → empty state.
   const [listError, setListError] = useState<string | null>(null);
+
+  // GitHub inline-connect affordance (shown in the GitHub empty state — no account yet).
+  // `githubReload` bumps to re-run the list-load effect after a successful connect.
+  const [githubToken, setGithubToken] = useState('');
+  const [githubReload, setGithubReload] = useState(0);
 
   // Linear inline-connect affordance (shown in the Linear empty state — no account yet).
   // `linearReload` bumps to re-run the list-load effect after a successful connect.
@@ -127,6 +166,48 @@ export function NewWorkspaceDialog({
     };
   }, []);
 
+  // Load base branches for the Branch tab. The main command fetches origin before
+  // returning refs so the select reflects the latest local + remote branch list.
+  useEffect(() => {
+    if (projectId === null || activeTab !== 'branch') return;
+
+    let active = true;
+    setBranchListLoading(true);
+    setBranchListError(null);
+
+    void invoke('project:listBranches', { projectId })
+      .then(({ defaultBranch, branches }) => {
+        if (!active) return;
+        setBaseBranches(branches);
+        setBaseBranch((prev) => {
+          if (prev !== '' && branches.includes(prev)) return prev;
+          if (branches.includes(defaultBranch)) return defaultBranch;
+          const remoteDefault = `origin/${defaultBranch}`;
+          if (branches.includes(remoteDefault)) return remoteDefault;
+          return branches[0] ?? '';
+        });
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        setBaseBranches([]);
+        setBaseBranch('');
+        setBranchListError(
+          isMissingIpcHandler(err)
+            ? 'Restart the app to load the latest branch list support.'
+            : err instanceof Error
+              ? err.message
+              : String(err),
+        );
+      })
+      .finally(() => {
+        if (active) setBranchListLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, projectId]);
+
   // Load the PR/issue list when its tab becomes active. A rejected invoke (no
   // connected account, offline) is caught and surfaced as the inline empty state.
   useEffect(() => {
@@ -137,19 +218,31 @@ export function NewWorkspaceDialog({
     setListLoading(true);
     setListError(null);
 
-    const load =
-      activeTab === 'pr'
-        ? invoke('github:listPrs', { projectId }).then((rows) => {
-            if (active) setPrs(rows);
-          })
-        : activeTab === 'issue'
-          ? invoke('github:listIssues', { projectId }).then((rows) => {
-              if (active) setIssues(rows);
-            })
-          : // 'linear' — issues for the active Linear account (project-agnostic).
-            invoke('linear:listIssues', {}).then((rows) => {
-              if (active) setLinearIssues(rows);
-            });
+    const load = (async (): Promise<void> => {
+      if (activeTab === 'pr' || activeTab === 'issue') {
+        const connected = await ensureGithubConnected();
+        if (!connected) {
+          if (active) setListError('no GitHub account connected');
+          return;
+        }
+      }
+
+      if (activeTab === 'pr') {
+        const rows = await invoke('github:listPrs', { projectId });
+        if (active) setPrs(rows);
+        return;
+      }
+
+      if (activeTab === 'issue') {
+        const rows = await invoke('github:listIssues', { projectId });
+        if (active) setIssues(rows);
+        return;
+      }
+
+      // 'linear' — issues for the active Linear account (project-agnostic).
+      const rows = await invoke('linear:listIssues', {});
+      if (active) setLinearIssues(rows);
+    })();
 
     void load
       .catch((err: unknown) => {
@@ -163,7 +256,7 @@ export function NewWorkspaceDialog({
     return () => {
       active = false;
     };
-  }, [activeTab, projectId, linearReload]);
+  }, [activeTab, projectId, githubReload, linearReload]);
 
   function handleClose(): void {
     abortRef.current?.abort();
@@ -221,9 +314,9 @@ export function NewWorkspaceDialog({
 
   function handleBranchSubmit(e: React.FormEvent): void {
     e.preventDefault();
+    if (baseBranch.trim() === '') return;
     void runCreate({
-      ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
-      ...(customBranch.trim() ? { branch: customBranch.trim() } : {}),
+      baseBranch: baseBranch.trim(),
       harness,
       sourceKind: 'branch',
     });
@@ -261,6 +354,38 @@ export function NewWorkspaceDialog({
     void runCreate({ harness, sourceKind: 'branch' }, (workspaceId) =>
       setPendingPrompt(workspaceId, prompt),
     );
+  }
+
+  /**
+   * Connect a GitHub account inline (PAT paste) when PR/issue listing reports none. Drives
+   * the `github:connect` stream; on the terminal `connected` frame, clears the token and
+   * bumps `githubReload` to refetch the active GitHub list. The token lives only in local
+   * state — never logged.
+   */
+  async function handleConnectGithub(): Promise<void> {
+    const token = githubToken.trim();
+    if (token === '' || connecting) return;
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      await subscribeStream(
+        'github:connect',
+        { mode: 'pat', token },
+        (chunk) => {
+          if (chunk.kind === 'connected') {
+            setGithubToken('');
+            setListError(null);
+            setGithubReload((k) => k + 1);
+          } else if (chunk.kind === 'error') {
+            setConnectError(chunk.message);
+          }
+        },
+      );
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConnecting(false);
+    }
   }
 
   /**
@@ -368,39 +493,33 @@ export function NewWorkspaceDialog({
               <form onSubmit={handleBranchSubmit}>
                 <label className="mb-3 block">
                   <span className="mb-1 block text-xs text-fg-2">
-                    Base branch{' '}
-                    <span className="text-fg-3">
-                      (optional, defaults to project default)
-                    </span>
+                    Base branch
                   </span>
-                  <Input
-                    type="text"
+                  <Select
                     value={baseBranch}
                     onChange={(e) => setBaseBranch(e.target.value)}
-                    placeholder="e.g. main"
-                    disabled={isStreaming}
-                    mono
+                    disabled={isStreaming || branchListLoading}
                     className="w-full"
+                    data-testid="base-branch-select"
+                    options={
+                      branchListLoading
+                        ? [{ value: '', label: 'Loading branches...' }]
+                        : baseBranches.map((branch) => ({
+                            value: branch,
+                            label: branch,
+                          }))
+                    }
                   />
                 </label>
 
-                <label className="mb-4 block">
-                  <span className="mb-1 block text-xs text-fg-2">
-                    Branch name{' '}
-                    <span className="text-fg-3">
-                      (optional, auto-generated if blank)
-                    </span>
-                  </span>
-                  <Input
-                    type="text"
-                    value={customBranch}
-                    onChange={(e) => setCustomBranch(e.target.value)}
-                    placeholder="e.g. agent/paris"
-                    disabled={isStreaming}
-                    mono
-                    className="w-full"
-                  />
-                </label>
+                {branchListError !== null && (
+                  <p
+                    data-testid="branch-list-error"
+                    className="mb-3 rounded-2 border border-danger/30 bg-danger-muted px-2 py-1.5 text-xs text-danger"
+                  >
+                    {branchListError}
+                  </p>
+                )}
 
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" onClick={handleClose}>
@@ -409,7 +528,13 @@ export function NewWorkspaceDialog({
                   <Button
                     type="submit"
                     variant="primary"
-                    disabled={!projectId || isStreaming}
+                    disabled={
+                      !projectId ||
+                      isStreaming ||
+                      branchListLoading ||
+                      branchListError !== null ||
+                      baseBranch.trim() === ''
+                    }
                   >
                     {isStreaming ? 'Creating…' : 'Create'}
                   </Button>
@@ -429,18 +554,59 @@ export function NewWorkspaceDialog({
                 {!listLoading &&
                   listError !== null &&
                   activeTab !== 'linear' && (
-                    <div
-                      data-testid="github-empty"
-                      className="rounded-2 border border-border-1 bg-surface-well px-3 py-4 text-center"
-                    >
-                      <p className="text-sm text-fg-2">
-                        Connect GitHub to list{' '}
-                        {activeTab === 'pr' ? 'pull requests' : 'issues'}.
-                      </p>
-                      <p className="mt-1 text-xs text-fg-3">
-                        No GitHub account is connected for this project.
-                      </p>
-                    </div>
+                    listError === 'no GitHub account connected' ? (
+                      <div
+                        data-testid="github-empty"
+                        className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
+                      >
+                        <p className="text-sm text-fg-2 text-center">
+                          Connect GitHub to list{' '}
+                          {activeTab === 'pr' ? 'pull requests' : 'issues'}.
+                        </p>
+                        <p className="mt-1 text-center text-xs text-fg-3">
+                          Paste a GitHub personal access token with repo access.
+                        </p>
+                        <div className="mt-2 flex gap-2">
+                          <Input
+                            type="password"
+                            value={githubToken}
+                            onChange={(e) => setGithubToken(e.target.value)}
+                            placeholder="github_pat_…"
+                            disabled={connecting}
+                            data-testid="github-token-input"
+                            className="flex-1"
+                          />
+                          <Button
+                            type="button"
+                            variant="primary"
+                            onClick={() => void handleConnectGithub()}
+                            disabled={connecting || githubToken.trim() === ''}
+                            data-testid="github-connect-submit"
+                          >
+                            {connecting ? 'Connecting…' : 'Connect'}
+                          </Button>
+                        </div>
+                        {connectError && (
+                          <p
+                            data-testid="github-connect-error"
+                            className="mt-2 text-xs text-danger"
+                          >
+                            {connectError}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <div
+                        data-testid="github-list-error"
+                        className="rounded-2 border border-danger/30 bg-danger-muted px-3 py-4"
+                      >
+                        <p
+                          className="text-xs text-danger"
+                        >
+                          {listError}
+                        </p>
+                      </div>
+                    )
                   )}
 
                 {/* Linear no-account empty state: inline API-key connect. */}

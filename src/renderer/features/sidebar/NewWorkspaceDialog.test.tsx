@@ -7,7 +7,7 @@
 //    `workspace:create` stream with `sourceKind:'pr'` and `sourceRef` = the PR number.
 //  - From-issue selecting one seeds a one-time `pendingPrompt` in the composer store.
 //  - No connected account: the list invoke rejects → the inline "Connect GitHub" empty
-//    state renders instead of crashing the dialog.
+//    state renders and can connect without crashing the dialog.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -55,6 +55,8 @@ const LINEAR_ISSUES: LinearIssue[] = [
   },
 ];
 
+const BRANCHES = ['main', 'origin/main', 'origin/release'];
+
 /**
  * Install a stubbed window.api. `invoke` dispatches on channel; `prReject`/`issueReject`
  * make the corresponding list fetch reject (to exercise the no-account empty state).
@@ -65,21 +67,48 @@ function installApi(opts?: {
   prReject?: boolean;
   issueReject?: boolean;
   linearReject?: boolean;
+  githubCliAuthenticated?: boolean;
   createdId?: string;
 }): ApiStub {
   const createdId = opts?.createdId ?? 'ws-new';
+  // GitHub starts unconnected iff either GitHub list should reject; a successful
+  // `github:connect` flips this so the subsequent list reload resolves.
+  let githubConnected = !opts?.prReject && !opts?.issueReject;
+  const githubCliAuthenticated = opts?.githubCliAuthenticated ?? false;
   // Linear starts unconnected iff `linearReject`; a successful `linear:connect` flips this
   // so the subsequent `linear:listIssues` (triggered by the reload) resolves.
   let linearConnected = !opts?.linearReject;
 
   const invoke = vi.fn((channel: string) => {
+    if (channel === 'project:listBranches') {
+      return Promise.resolve({ defaultBranch: 'main', branches: BRANCHES });
+    }
+    if (channel === 'github:accounts') {
+      return Promise.resolve(
+        githubConnected ? [{ id: 'gh-1', login: 'octo', kind: 'github' }] : [],
+      );
+    }
+    if (channel === 'github:cliStatus') {
+      return Promise.resolve({
+        available: true,
+        authenticated: githubCliAuthenticated,
+        login: githubCliAuthenticated ? 'octo' : undefined,
+      });
+    }
+    if (channel === 'github:connectGhCli') {
+      if (!githubCliAuthenticated) {
+        return Promise.reject(new Error('GitHub CLI is not authenticated'));
+      }
+      githubConnected = true;
+      return Promise.resolve({ id: 'gh-1', login: 'octo', kind: 'github' });
+    }
     if (channel === 'github:listPrs') {
-      return opts?.prReject
+      return !githubConnected
         ? Promise.reject(new Error('no GitHub account'))
         : Promise.resolve(PRS);
     }
     if (channel === 'github:listIssues') {
-      return opts?.issueReject
+      return !githubConnected
         ? Promise.reject(new Error('no GitHub account'))
         : Promise.resolve(ISSUES);
     }
@@ -103,6 +132,14 @@ function installApi(opts?: {
         onChunk({
           kind: 'created',
           workspace: { id: createdId, projectId: PROJECT_ID },
+        });
+      }
+      if (channel === 'github:connect') {
+        // Simulate a successful PAT connect: flip the flag then emit the terminal frame.
+        githubConnected = true;
+        onChunk({
+          kind: 'connected',
+          account: { id: 'gh-1', login: 'octo' },
         });
       }
       if (channel === 'linear:connect') {
@@ -138,6 +175,34 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete (window as unknown as { api?: unknown }).api;
   resetStores();
+});
+
+describe('NewWorkspaceDialog — Branch tab', () => {
+  it('loads fetched branches into the base branch select and creates from the selected branch', async () => {
+    const api = installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('base-branch-select')).toHaveValue('main');
+    });
+    expect(api.invoke).toHaveBeenCalledWith('project:listBranches', {
+      projectId: PROJECT_ID,
+    });
+
+    fireEvent.change(screen.getByTestId('base-branch-select'), {
+      target: { value: 'origin/release' },
+    });
+    fireEvent.click(screen.getByText('Create'));
+
+    await waitFor(() => {
+      expect(api.stream).toHaveBeenCalled();
+    });
+    const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
+    expect(call).toBeDefined();
+    const arg = call?.[1] as { sourceKind?: string; baseBranch?: string };
+    expect(arg.sourceKind).toBe('branch');
+    expect(arg.baseBranch).toBe('origin/release');
+  });
 });
 
 describe('NewWorkspaceDialog — From PR tab', () => {
@@ -202,7 +267,7 @@ describe('NewWorkspaceDialog — From issue tab', () => {
 });
 
 describe('NewWorkspaceDialog — no connected account', () => {
-  it('renders the Connect GitHub empty state when the PR list invoke rejects', async () => {
+  it('renders the Connect GitHub empty state and reloads PRs after connecting', async () => {
     installApi({ prReject: true });
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
 
@@ -214,6 +279,31 @@ describe('NewWorkspaceDialog — no connected account', () => {
     // The dialog itself is still mounted (did not crash).
     expect(screen.getByTestId('new-workspace-dialog')).toBeInTheDocument();
     expect(screen.queryAllByTestId('pr-item').length).toBe(0);
+
+    fireEvent.change(screen.getByTestId('github-token-input'), {
+      target: { value: 'github_pat_secret123' },
+    });
+    fireEvent.click(screen.getByTestId('github-connect-submit'));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('pr-item').length).toBe(PRS.length);
+    });
+  });
+
+  it('uses an authenticated GitHub CLI session from global settings before listing PRs', async () => {
+    const api = installApi({
+      prReject: true,
+      githubCliAuthenticated: true,
+    });
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('source-tab-pr'));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('pr-item').length).toBe(PRS.length);
+    });
+    expect(api.invoke).toHaveBeenCalledWith('github:cliStatus', undefined);
+    expect(api.invoke).toHaveBeenCalledWith('github:connectGhCli', undefined);
   });
 });
 

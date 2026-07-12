@@ -8,6 +8,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ChatPanel } from './ChatPanel';
 import { useChatStore } from '@renderer/stores/chat';
 import type { ChatHistory, HarnessInfo, TurnStreamChunk } from '@shared/ipc';
+import type { SlashCommand } from '@shared/slash';
 
 interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
@@ -31,12 +32,28 @@ const HARNESS_LIST: HarnessInfo[] = [
 function installApi(opts: {
   history?: ChatHistory;
   stream?: ApiStub['stream'];
+  slashCommands?: SlashCommand[];
 }): ApiStub {
   const invoke = vi.fn((channel: string) => {
     if (channel === 'chat:history')
       return Promise.resolve(opts.history ?? { turns: [] });
     if (channel === 'harness:list') return Promise.resolve(HARNESS_LIST);
     if (channel === 'turn:interrupt') return Promise.resolve(undefined);
+    if (channel === 'slash:list')
+      return Promise.resolve(
+        opts.slashCommands ?? [
+          {
+            name: 'review',
+            template: 'Review the current changes.',
+            description: 'Review current changes',
+          },
+          {
+            name: 'fix-checks',
+            template: 'Fix checks\n\n$ARGS',
+            description: 'Investigate failing checks',
+          },
+        ],
+      );
     return Promise.resolve(undefined);
   });
   const api: ApiStub = {
@@ -187,5 +204,60 @@ describe('ChatPanel streaming', () => {
 
     // Clean up the pending stream promise.
     capturedResolve?.();
+  });
+
+  it('shows a pre-start stream error instead of dropping it', async () => {
+    const stream = vi.fn(() => Promise.reject(new Error('claude not available')));
+    installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'work' } });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    expect(await screen.findByText('claude not available')).toBeInTheDocument();
+    expect(screen.getByTestId('turn-divider')).toHaveAttribute(
+      'data-status',
+      'error',
+    );
+  });
+
+  it('shows configured skills when typing slash and inserts the selected prompt', async () => {
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '/' } });
+
+    expect(await screen.findByTestId('slash-menu')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('slash-command-review'));
+
+    expect(input).toHaveValue('Review the current changes.');
+  });
+
+  it('expands slash commands with args before starting a turn', async () => {
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        _onChunk: (c: TurnStreamChunk) => void,
+      ) => Promise.resolve(),
+    );
+    const api = installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('slash:list', undefined),
+    );
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '/fix-checks rerun CI' } });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() => expect(stream).toHaveBeenCalled());
+    expect(stream.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        prompt: 'Fix checks\n\nrerun CI',
+      }),
+    );
   });
 });

@@ -69,6 +69,26 @@ function installApi(issues: SettingsIssue[] = []): Installed {
         return Promise.resolve(PROVENANCE);
       case 'settings:getIssues':
         return Promise.resolve(issues);
+      case 'git:sshKeys':
+        return Promise.resolve([
+          {
+            path: '/Users/test/.ssh/id_ed25519',
+            publicKeyPath: '/Users/test/.ssh/id_ed25519.pub',
+            type: 'ssh-ed25519',
+            fingerprint: 'SHA256:test',
+            source: 'ssh-dir',
+          },
+        ]);
+      case 'github:accounts':
+        return Promise.resolve([]);
+      case 'github:cliStatus':
+        return Promise.resolve({
+          available: true,
+          authenticated: true,
+          login: 'octo',
+        });
+      case 'github:connectGhCli':
+        return Promise.resolve({ id: 'gh-1', login: 'octo', kind: 'github' });
       case 'settings:set':
         return Promise.resolve(EFFECTIVE);
       default:
@@ -98,8 +118,10 @@ describe('SettingsPanel rendering', () => {
     installApi();
     render(<SettingsPanel />);
 
+    fireEvent.click(await screen.findByTestId('settings-nav-git'));
+
     // A text row shows the effective value.
-    const branch = await screen.findByTestId('setting-input-git.branchPrefix');
+    const branch = screen.getByTestId('setting-input-git.branchPrefix');
     expect(branch).toHaveValue('agent');
 
     // Provenance badge reflects the supplying layer.
@@ -120,7 +142,8 @@ describe('SettingsPanel writes', () => {
     const { api } = installApi();
     render(<SettingsPanel />);
 
-    const select = await screen.findByTestId('setting-input-git.mergeStrategy');
+    fireEvent.click(await screen.findByTestId('settings-nav-git'));
+    const select = screen.getByTestId('setting-input-git.mergeStrategy');
     fireEvent.change(select, { target: { value: 'rebase' } });
 
     await waitFor(() =>
@@ -154,7 +177,8 @@ describe('SettingsPanel writes', () => {
     const { api } = installApi();
     render(<SettingsPanel />);
 
-    const input = await screen.findByTestId('setting-input-git.branchPrefix');
+    fireEvent.click(await screen.findByTestId('settings-nav-git'));
+    const input = screen.getByTestId('setting-input-git.branchPrefix');
     fireEvent.change(input, { target: { value: 'feature' } });
     // No write yet — only on blur.
     expect(
@@ -176,6 +200,8 @@ describe('RunScriptEditor (Track B2)', () => {
   it('adds, edits, and removes a run script via settings:set (whole-array writes)', async () => {
     const { api } = installApi();
     render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-environment'));
 
     // Add an (empty) run script — a whole-array write appending one entry.
     const add = await screen.findByTestId('scripts-run-add');
@@ -218,6 +244,8 @@ describe('RunScriptEditor (Track B2)', () => {
   it('writes run_mode and an env variable as whole-value writes', async () => {
     const { api } = installApi();
     render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-environment'));
 
     const mode = await screen.findByTestId('scripts-run-mode');
     fireEvent.change(mode, { target: { value: 'concurrent' } });
@@ -274,7 +302,7 @@ describe('SettingsPanel validation issues banner', () => {
   it('renders no banner when every layer parsed cleanly', async () => {
     installApi([]);
     render(<SettingsPanel />);
-    await screen.findByTestId('setting-input-git.branchPrefix');
+    await screen.findByTestId('setting-input-notifications.onError');
     expect(screen.queryByTestId('settings-issues')).toBeNull();
   });
 });
@@ -284,7 +312,7 @@ describe('SettingsPanel settings:changed subscription', () => {
     const { api, listeners, unsubscribe } = installApi();
     const { unmount } = render(<SettingsPanel />);
 
-    await screen.findByTestId('setting-input-git.branchPrefix');
+    await screen.findByTestId('setting-input-notifications.onError');
     const before = api.invoke.mock.calls.filter(
       (c) => c[0] === 'settings:getEffective',
     ).length;

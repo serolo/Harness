@@ -57,19 +57,23 @@ export function SettingRow({
 
   return (
     <div
-      className="flex items-center gap-3 px-3 py-2"
+      className="grid min-h-[92px] grid-cols-[minmax(0,1fr)_240px] items-center gap-8 py-5"
       data-testid={`setting-row-${field.keyPath}`}
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm text-fg-1">{field.label}</span>
+          <span className="truncate text-base font-semibold text-fg-1">
+            {field.label}
+          </span>
           <ProvenanceBadge layer={effectiveLayer} />
         </div>
         {field.hint ? (
-          <div className="text-xs text-fg-3">{field.hint}</div>
+          <div className="mt-1 text-sm leading-relaxed text-fg-2">
+            {field.hint}
+          </div>
         ) : null}
       </div>
-      <div className="shrink-0">
+      <div className="flex shrink-0 justify-end">
         <FieldControl field={field} value={value} onSet={onSet} />
       </div>
     </div>
@@ -105,6 +109,7 @@ function FieldControl({
           value: opt,
           label: opt,
         }))}
+        className="w-full"
         data-testid={testId}
         value={typeof value === 'string' ? value : ''}
         onChange={(e) => onSet(field.keyPath, e.target.value)}
@@ -145,7 +150,7 @@ function TextControl({
   return (
     <Input
       type="text"
-      className="w-40"
+      className="w-full"
       data-testid={testId}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}

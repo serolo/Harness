@@ -643,6 +643,36 @@ export class GitService {
   }
 
   /**
+   * List local heads and origin-tracking refs that can be used as base refs.
+   *
+   * Values are returned in the exact short ref form git accepts (`main`,
+   * `feature/x`, `origin/main`, ...). `origin/HEAD` is excluded because it is a
+   * symbolic convenience ref, not a branch the user should choose directly.
+   */
+  async listBranches(repoPath: string): Promise<string[]> {
+    const args = [
+      '-C',
+      repoPath,
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/heads',
+      'refs/remotes/origin',
+    ];
+    try {
+      const result = await execa('git', args);
+      const seen = new Set<string>();
+      for (const line of result.stdout.split('\n')) {
+        const branch = line.trim();
+        if (branch === '' || branch === 'origin/HEAD') continue;
+        seen.add(branch);
+      }
+      return [...seen].sort((a, b) => a.localeCompare(b));
+    } catch (e) {
+      throw toGitError(e, `git ${args.join(' ')}`);
+    }
+  }
+
+  /**
    * Fetch a pull request's head into a local branch (spec §5.6 create-from-PR).
    *
    * Runs `git -C <repoPath> fetch origin pull/<prNumber>/head:<localBranch>`. GitHub

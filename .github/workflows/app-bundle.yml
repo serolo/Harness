@@ -1,0 +1,54 @@
+name: App Bundle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    # v1 packaging is macOS-only, and native modules need to be rebuilt on the
+    # same platform used to produce the distributable app bundle.
+    runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules for Electron ABI
+        run: npx @electron/rebuild -f -w better-sqlite3,node-pty
+
+      - name: Run repository gate
+        run: npm run check
+
+      - name: Create macOS app bundle
+        run: npm run package
+
+      - name: Upload app bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Harness-macOS-${{ github.sha }}
+          path: |
+            dist/mac/*.app
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest*.yml
+          if-no-files-found: error
+          retention-days: 14

@@ -48,7 +48,7 @@ function renderBlocks(text: string): React.ReactNode[] {
 function CodeBlock({ code }: { code: string }): React.JSX.Element {
   return (
     <pre
-      className="my-2 overflow-x-auto rounded-2 bg-surface-well p-3 font-mono text-sm text-fg-1 ring-1 ring-border-1"
+      className="my-4 overflow-x-auto rounded-3 border border-border-1 bg-surface-well p-4 font-mono text-[15px] leading-7 text-fg-1"
       data-testid="code-block"
     >
       <code>{code.replace(/\n$/, '')}</code>
@@ -64,6 +64,22 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
     const trimmed = block.trim();
     if (trimmed === '') return;
     const lines = trimmed.split('\n');
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      const level = heading[1].length;
+      const className =
+        level === 1
+          ? 'mb-4 mt-8 text-3xl font-bold leading-tight text-fg-1'
+          : level === 2
+            ? 'mb-3 mt-7 text-2xl font-bold leading-tight text-fg-1'
+            : 'mb-2 mt-6 text-xl font-semibold leading-snug text-fg-1';
+      out.push(
+        <h2 key={`${baseKey}-h-${i}`} className={className}>
+          {renderInline(heading[2])}
+        </h2>,
+      );
+      return;
+    }
     const isList = lines.every((l) => /^\s*([-*]|\d+\.)\s+/.test(l));
     if (isList) {
       const ordered = /^\s*\d+\.\s+/.test(lines[0]);
@@ -74,14 +90,14 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
         ordered ? (
           <ol
             key={`${baseKey}-ol-${i}`}
-            className="my-1 list-decimal pl-5 text-base text-fg-1"
+            className="my-4 list-decimal space-y-2 pl-7 text-[21px] leading-[1.55] text-fg-1"
           >
             {items}
           </ol>
         ) : (
           <ul
             key={`${baseKey}-ul-${i}`}
-            className="my-1 list-disc pl-5 text-base text-fg-1"
+            className="my-4 list-disc space-y-2 pl-7 text-[21px] leading-[1.55] text-fg-1"
           >
             {items}
           </ul>
@@ -91,7 +107,7 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
       out.push(
         <p
           key={`${baseKey}-p-${i}`}
-          className="my-1 whitespace-pre-wrap text-base text-fg-1"
+          className="my-4 whitespace-pre-wrap text-[21px] leading-[1.55] text-fg-1"
         >
           {renderInline(trimmed)}
         </p>,
@@ -121,7 +137,7 @@ function renderInline(text: string): React.ReactNode[] {
       nodes.push(
         <code
           key={key}
-          className="rounded-1 bg-bg-4 px-1 py-0.5 font-mono text-[0.85em] text-warn"
+          className="rounded-2 border border-border-2 bg-bg-4 px-1.5 py-0.5 font-mono text-[0.88em] text-fg-1"
         >
           {token.slice(1, -1)}
         </code>,

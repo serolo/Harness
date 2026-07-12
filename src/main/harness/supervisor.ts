@@ -111,6 +111,7 @@ export class HarnessSupervisor {
     workspaceId: string,
     opts: StartTurnOpts,
     sink: StreamSink<AgentEvent>,
+    harnessOverride?: HarnessId,
   ): Promise<TurnHandle> {
     if (this.registry.has(workspaceId)) {
       throw new AppError(
@@ -124,12 +125,13 @@ export class HarnessSupervisor {
     if (!workspace) {
       throw new AppError('not_found', 'workspace not found', { workspaceId });
     }
-    const adapter = this.adapters.get(workspace.harness);
+    const harnessId = harnessOverride ?? workspace.harness;
+    const adapter = this.adapters.get(harnessId);
     if (!adapter) {
       throw new AppError(
         'harness',
-        `no harness registered for id "${workspace.harness}"`,
-        { workspaceId, harness: workspace.harness },
+        `no harness registered for id "${harnessId}"`,
+        { workspaceId, harness: harnessId },
       );
     }
 

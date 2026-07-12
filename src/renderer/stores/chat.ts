@@ -81,6 +81,15 @@ export const useChatStore = create<ChatState>((set) => ({
         sessionId: sessionId || undefined,
         events: [],
       };
+      const last = turns[turns.length - 1];
+      if (last?.turnId.startsWith('pending:') && last.status === 'streaming') {
+        return {
+          byWorkspace: {
+            ...state.byWorkspace,
+            [workspaceId]: [...turns.slice(0, -1), { ...turn, events: last.events }],
+          },
+        };
+      }
       return {
         byWorkspace: { ...state.byWorkspace, [workspaceId]: [...turns, turn] },
       };

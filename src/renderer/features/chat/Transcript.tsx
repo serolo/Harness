@@ -70,17 +70,26 @@ export function Transcript({ turns }: TranscriptProps): React.JSX.Element {
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="min-h-0 flex-1 space-y-1 overflow-y-auto px-4 py-3"
+      className="min-h-0 flex-1 overflow-y-auto px-6 pb-8 pt-8"
       data-testid="transcript"
     >
-      {turns.map((turn) => (
-        <div key={turn.turnId} data-testid="turn" data-status={turn.status}>
-          {turn.events.map((event, i) =>
-            renderEvent(event, `${turn.turnId}-${i}`),
-          )}
-          <TurnDivider status={turn.status} usage={turn.usage} />
-        </div>
-      ))}
+      <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8">
+        {turns.map((turn) => (
+          <div
+            key={turn.turnId}
+            className="space-y-5"
+            data-testid="turn"
+            data-status={turn.status}
+          >
+            <div className="space-y-5">
+              {turn.events.map((event, i) =>
+                renderEvent(event, `${turn.turnId}-${i}`),
+              )}
+            </div>
+            <TurnDivider status={turn.status} usage={turn.usage} />
+          </div>
+        ))}
+      </div>
       <div ref={endRef} />
     </div>
   );

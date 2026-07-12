@@ -270,7 +270,7 @@ export function AppLayout(): React.JSX.Element {
         <Dialog
           data-testid="settings-overlay"
           onClose={() => setSettingsOpen(false)}
-          width={560}
+          width={1120}
         >
           <SettingsPanel onClose={() => setSettingsOpen(false)} />
         </Dialog>

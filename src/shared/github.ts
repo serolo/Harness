@@ -17,6 +17,18 @@ export interface GithubAccount {
   kind: 'github';
 }
 
+/** Local GitHub CLI authentication state. Never carries a token. */
+export interface GithubCliAuthStatus {
+  /** Whether the `gh` executable was found. */
+  available: boolean;
+  /** Whether `gh auth status` reports an authenticated github.com account. */
+  authenticated: boolean;
+  /** Best-effort account login parsed from gh output. */
+  login?: string;
+  /** Human-readable status/error text, token-free. */
+  message?: string;
+}
+
 /** Merge strategy for `pr:merge` (spec §5.6). */
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 

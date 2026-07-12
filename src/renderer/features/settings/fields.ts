@@ -37,12 +37,18 @@ export const SETTINGS_SECTIONS: readonly SectionDef[] = [
   {
     title: 'Git',
     fields: [
-      { keyPath: 'git.branchPrefix', label: 'Branch prefix', kind: 'text' },
+      {
+        keyPath: 'git.branchPrefix',
+        label: 'Branch prefix',
+        kind: 'text',
+        hint: 'Prefix used for new agent-created branches.',
+      },
       {
         keyPath: 'git.mergeStrategy',
         label: 'Merge strategy',
         kind: 'select',
         options: ['merge', 'squash', 'rebase'],
+        hint: 'Default strategy used by the Merge button.',
       },
     ],
   },
@@ -54,12 +60,14 @@ export const SETTINGS_SECTIONS: readonly SectionDef[] = [
         label: 'Default harness',
         kind: 'select',
         options: ['claude_code', 'codex', 'cursor'],
+        hint: 'Harness used for new workspaces unless one is selected.',
       },
       {
         keyPath: 'agent.mode',
         label: 'Run mode',
         kind: 'select',
         options: ['plan', 'default', 'auto_accept'],
+        hint: 'Default agent behavior for new turns.',
       },
       {
         keyPath: 'agent.harnessImpl',
@@ -75,19 +83,27 @@ export const SETTINGS_SECTIONS: readonly SectionDef[] = [
     fields: [
       {
         keyPath: 'notifications.enabled',
-        label: 'Enable notifications',
+        label: 'Desktop notifications',
         kind: 'boolean',
+        hint: 'Get notified when AI finishes working in a chat.',
       },
       {
         keyPath: 'notifications.onTurnComplete',
-        label: 'On turn complete',
+        label: 'Completion notifications',
         kind: 'boolean',
+        hint: 'Notify when a turn completes cleanly.',
       },
-      { keyPath: 'notifications.onError', label: 'On error', kind: 'boolean' },
+      {
+        keyPath: 'notifications.onError',
+        label: 'Error notifications',
+        kind: 'boolean',
+        hint: 'Notify when a turn ends with an error.',
+      },
       {
         keyPath: 'notifications.onNeedsAttention',
-        label: 'On needs attention',
+        label: 'Needs attention',
         kind: 'boolean',
+        hint: 'Notify when a turn needs attention.',
       },
     ],
   },

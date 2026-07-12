@@ -157,9 +157,11 @@ const RESOLVE_THREAD_MUTATION = `
 `;
 
 /**
- * Parse a git origin URL into `{ owner, name }`. Handles both HTTPS
- * (`https://github.com/OWNER/REPO(.git)`) and SSH (`git@github.com:OWNER/REPO(.git)`)
- * forms, stripping a trailing `.git` and tolerating a trailing slash.
+ * Parse a git origin URL into `{ owner, name }`. Handles HTTPS
+ * (`https://github.com/OWNER/REPO(.git)`) plus SSH forms
+ * (`git@github.com:OWNER/REPO(.git)` and ssh-config host aliases such as
+ * `git@github-work:OWNER/REPO(.git)`), stripping a trailing `.git` and tolerating
+ * a trailing slash.
  *
  * @throws {AppError} code `integration` on an unparseable / non-github.com URL.
  */
@@ -170,11 +172,11 @@ export function parseOwnerName(originUrl: string): {
   // Trim surrounding whitespace and any trailing slashes before matching.
   const trimmed = originUrl.trim().replace(/\/+$/, '');
   // Non-greedy repo capture + optional `.git` suffix, anchored so the whole string is
-  // consumed. Works for both `https://github.com/o/r(.git)` and `git@github.com:o/r(.git)`.
+  // consumed.
   const https = /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(
     trimmed,
   );
-  const ssh = /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(trimmed);
+  const ssh = /^git@[^:]+:([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(trimmed);
   const match = https ?? ssh;
   if (!match || !match[1] || !match[2]) {
     throw new AppError(

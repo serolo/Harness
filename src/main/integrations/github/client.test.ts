@@ -96,6 +96,13 @@ describe('parseOwnerName', () => {
     });
   });
 
+  it('parses an ssh-config host alias origin', () => {
+    expect(parseOwnerName('git@github-work:o/r.git')).toEqual({
+      owner: 'o',
+      name: 'r',
+    });
+  });
+
   it('tolerates a trailing slash', () => {
     expect(parseOwnerName('https://github.com/o/r/')).toEqual({
       owner: 'o',

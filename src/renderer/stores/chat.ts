@@ -16,6 +16,9 @@ export interface RenderedTurn {
   turnId: string;
   status: TurnStatus;
   sessionId?: string;
+  prompt?: string;
+  startedAt: number;
+  endedAt?: number;
   events: AgentEvent[];
   usage?: Usage;
 }
@@ -29,7 +32,12 @@ export interface ChatState {
   /** Replace a workspace's transcript (from `chat:history`). */
   hydrate: (workspaceId: string, turns: RenderedTurn[]) => void;
   /** Begin a new streaming turn (from the `started` stream frame). */
-  startTurn: (workspaceId: string, turnId: string, sessionId: string) => void;
+  startTurn: (
+    workspaceId: string,
+    turnId: string,
+    sessionId: string,
+    meta?: { prompt?: string; startedAt?: number },
+  ) => void;
   /** Append one event to the workspace's latest (streaming) turn, coalescing text. */
   appendEvent: (workspaceId: string, event: AgentEvent) => void;
   /** Finalize the latest turn with a terminal status (+ usage from turn_end). */
@@ -72,13 +80,15 @@ export const useChatStore = create<ChatState>((set) => ({
       byWorkspace: { ...state.byWorkspace, [workspaceId]: turns },
     })),
 
-  startTurn: (workspaceId, turnId, sessionId) =>
+  startTurn: (workspaceId, turnId, sessionId, meta) =>
     set((state) => {
       const turns = state.byWorkspace[workspaceId] ?? [];
       const turn: RenderedTurn = {
         turnId,
         status: 'streaming',
         sessionId: sessionId || undefined,
+        prompt: meta?.prompt,
+        startedAt: meta?.startedAt ?? Date.now(),
         events: [],
       };
       const last = turns[turns.length - 1];
@@ -86,7 +96,15 @@ export const useChatStore = create<ChatState>((set) => ({
         return {
           byWorkspace: {
             ...state.byWorkspace,
-            [workspaceId]: [...turns.slice(0, -1), { ...turn, events: last.events }],
+            [workspaceId]: [
+              ...turns.slice(0, -1),
+              {
+                ...turn,
+                prompt: turn.prompt ?? last.prompt,
+                startedAt: meta?.startedAt ?? last.startedAt,
+                events: last.events,
+              },
+            ],
           },
         };
       }
@@ -111,7 +129,12 @@ export const useChatStore = create<ChatState>((set) => ({
       const turns = state.byWorkspace[workspaceId] ?? [];
       if (turns.length === 0) return state;
       const next = turns.slice();
-      next[next.length - 1] = { ...next[next.length - 1], status, usage };
+      next[next.length - 1] = {
+        ...next[next.length - 1],
+        status,
+        usage,
+        endedAt: Date.now(),
+      };
       return {
         byWorkspace: { ...state.byWorkspace, [workspaceId]: next },
       };

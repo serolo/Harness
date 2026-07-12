@@ -63,6 +63,7 @@ import { repoDir } from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
 import { resolveDeepLink } from '../deeplink';
 import { buildEnv } from '../process/env';
+import { discoverNativeSlashCommands } from '../slash/native';
 import type { PtyChunk } from '../pty';
 import {
   createStream,
@@ -95,6 +96,11 @@ const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
     name: 'plan',
     template: 'Create a concise implementation plan for this task.\n\n$ARGS',
     description: 'Create an implementation plan',
+  },
+  {
+    name: 'clear',
+    template: 'Clear the current chat transcript and context.',
+    description: 'Clear chat history and context',
   },
 ];
 
@@ -708,6 +714,12 @@ export function registerIpc(ctx: AppContext): void {
     electron: process.versions.electron,
   }));
 
+  handle('ui:setZoomLevel', async (req, event) => {
+    const level = Math.max(-3, Math.min(3, req.level));
+    event.sender.setZoomLevel(level);
+    return undefined;
+  });
+
   // app:echoStream — the request/response half of the demo. The actual chunks flow
   // over the `app:echoStream` StreamChannel (started via `stream:start`); this command
   // exists so the contract has the { req; res } pair and so a caller can trigger a
@@ -798,6 +810,20 @@ export function registerIpc(ctx: AppContext): void {
     }
     const turns = await ctx.recorder.history(req.workspaceId);
     return { turns };
+  });
+
+  // chat:clear — clear persisted transcript and resume context for a workspace.
+  handle('chat:clear', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (!workspace) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    await ctx.recorder.clear(req.workspaceId);
   });
 
   // harness:detect — probe a registered harness CLI.
@@ -1489,18 +1515,30 @@ export function registerIpc(ctx: AppContext): void {
     return ctx.settings.set(req.layer, req.keyPath, req.value);
   });
 
-  // slash:list — the slash-command catalogue built from `agent.prompts` (spec §5.4).
+  // slash:list — settings prompts plus provider-native Claude/Codex commands/skills.
   // Each named prompt template becomes a `/name` command the composer can expand.
-  handle('slash:list', async () => {
+  handle('slash:list', async (req) => {
     const prompts = ctx.settings.get().agent.prompts;
     const custom = Object.entries(prompts).map(([name, template]) => ({
       name,
       template,
     }));
+    const workspace =
+      req && 'workspaceId' in req && req.workspaceId
+        ? await ctx.workspaces.get(req.workspaceId)
+        : null;
+    const native = await discoverNativeSlashCommands({
+      harness: req && 'harness' in req ? req.harness : workspace?.harness,
+      workspaceDir: workspace?.worktreePath,
+    });
     const customNames = new Set(custom.map((cmd) => cmd.name));
+    const nativeNames = new Set(native.map((cmd) => cmd.name));
     return [
       ...custom,
-      ...DEFAULT_SLASH_COMMANDS.filter((cmd) => !customNames.has(cmd.name)),
+      ...native.filter((cmd) => !customNames.has(cmd.name)),
+      ...DEFAULT_SLASH_COMMANDS.filter(
+        (cmd) => !customNames.has(cmd.name) && !nativeNames.has(cmd.name),
+      ),
     ];
   });
 

@@ -202,6 +202,40 @@ describe('TurnsRepo revert semantics (Phase 4)', () => {
       0, 1,
     ]);
   });
+
+  it('clearWorkspaceHistory hides all turns without deleting FK-referenced rows', async () => {
+    db = openDb(dbFile);
+    const turns = new TurnsRepo(db);
+    const wsId = await seedWorkspace(db);
+    const turn = await turns.create({
+      workspaceId: wsId,
+      idx: 0,
+      status: 'completed',
+    });
+    await db
+      .insertInto('checkpoints')
+      .values({
+        id: 'cp-clear',
+        workspace_id: wsId,
+        turn_id: turn.id,
+        ref_name: `refs/checkpoints/${wsId}/0`,
+        sha: 'abc123',
+        created_at: Date.now(),
+      })
+      .execute();
+
+    await turns.clearWorkspaceHistory(wsId);
+
+    expect(await turns.listByWorkspace(wsId)).toEqual([]);
+    expect(await turns.getById(turn.id)).not.toBeNull();
+    const checkpoint = await db
+      .selectFrom('checkpoints')
+      .select('id')
+      .where('id', '=', 'cp-clear')
+      .executeTakeFirst();
+    expect(checkpoint?.id).toBe('cp-clear');
+    expect(await turns.latestSessionId(wsId)).toBeUndefined();
+  });
 });
 
 describe('EventsRepo round-trip', () => {

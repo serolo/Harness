@@ -10,7 +10,7 @@ import { ToolCard } from './ToolCard';
 import { FileEditChip } from './FileEditChip';
 import { TodoList } from './TodoList';
 import { ErrorCard } from './ErrorCard';
-import { TurnDivider } from './TurnDivider';
+import { TurnActivity } from './TurnActivity';
 
 export interface TranscriptProps {
   turns: RenderedTurn[];
@@ -39,7 +39,7 @@ function renderEvent(event: AgentEvent, key: string): React.JSX.Element | null {
     case 'error':
       return <ErrorCard key={key} message={event.message} />;
     case 'turn_end':
-      return null; // represented by the TurnDivider
+      return null; // represented by the TurnActivity
     default:
       return null;
   }
@@ -81,12 +81,19 @@ export function Transcript({ turns }: TranscriptProps): React.JSX.Element {
             data-testid="turn"
             data-status={turn.status}
           >
+            <TurnActivity
+              prompt={turn.prompt}
+              status={turn.status}
+              events={turn.events}
+              startedAt={turn.startedAt}
+              endedAt={turn.endedAt}
+              usage={turn.usage}
+            />
             <div className="space-y-5">
               {turn.events.map((event, i) =>
                 renderEvent(event, `${turn.turnId}-${i}`),
               )}
             </div>
-            <TurnDivider status={turn.status} usage={turn.usage} />
           </div>
         ))}
       </div>

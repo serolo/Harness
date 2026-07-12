@@ -117,6 +117,8 @@ export type WorkspaceCreateEvent =
 export interface Commands {
   'app:ping': { req: void; res: 'ok' };
   'app:info': { req: void; res: AppInfo };
+  /** Set the focused renderer's zoom level. Level 0 is 100%. */
+  'ui:setZoomLevel': { req: { level: number }; res: void };
   // Streaming demo command — kicks off the `app:echoStream` scoped stream.
   // The actual chunks flow over the StreamChannels entry of the same name.
   'app:echoStream': { req: { text: string }; res: void };
@@ -153,6 +155,8 @@ export interface Commands {
    * open. Fetching it also clears a `needs_attention` workspace back to `idle` (D4).
    */
   'chat:history': { req: { workspaceId: string }; res: ChatHistory };
+  /** Clear a workspace's persisted chat transcript and resume context. */
+  'chat:clear': { req: { workspaceId: string }; res: void };
   /** Probe whether a registered harness CLI is installed/authenticated. */
   'harness:detect': { req: { id: HarnessId }; res: DetectResult };
   /** List registered harnesses with capabilities + a detect summary. */
@@ -278,8 +282,11 @@ export interface Commands {
   'settings:schema': { req: void; res: EffectiveSettings };
 
   // --- Phase 6: polish — slash / deep links / auto-update / onboarding (APPEND-ONLY) ---
-  /** The slash-command catalogue built from `settings.agent.prompts` (spec §5.4). */
-  'slash:list': { req: void; res: SlashCommand[] };
+  /** The slash-command catalogue built from settings plus provider-native commands. */
+  'slash:list': {
+    req: void | { workspaceId?: string; harness?: HarnessId };
+    res: SlashCommand[];
+  };
   /** Parse an `harness://…` deep link into a nav target, or null if unroutable. */
   'deepLink:resolve': { req: { url: string }; res: DeepLinkTarget | null };
   /** Check for an application update; returns the current updater status (spec §6.5). */

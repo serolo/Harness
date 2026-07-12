@@ -145,6 +145,10 @@ module that resolves these.
 | **5** | GitHub, Checks, PR Flow | M5 | 0, 1, 4 | 6 |
 | **6** | Config, Settings UI, Polish | M6 | 0 (+ touches all) | 5 |
 | **7** | v1.1: Codex/Cursor + Linear + scale | v1.1 | 2, 5 | — |
+| **8** | Harness conformance test bench | *(post-v1.1, §12)* | 2, 7 | — |
+| **9** | Mid-turn steer & message queue | *(post-v1.1, §12)* | 2, 8 | 10 |
+| **10** | Policy engine upgrade | *(post-v1.1, §12)* | 4, 5, 6 | 9 |
+| **11** | Cross-workspace multi-agent dispatch (4a only) | *(post-v1.1, §12)* | 1, 5, 10 | — |
 
 ```
         ┌────────────┐
@@ -173,7 +177,7 @@ module that resolves these.
 ```
 
 **MVP = Phases 0–4.** Complete-feeling product = through Phase 5. Phase 6 hardens/finishes;
-Phase 7 is v1.1.
+Phase 7 is v1.1. Phases 8–11 are a later, independently-scoped roadmap — see §12.
 
 ---
 
@@ -432,3 +436,36 @@ Carried from spec §9 — each tagged to the phase that must decide:
 - **Team-shared settings distribution** → Phase 6 (project shared layer covers v1).
 - **safeStorage vs keytar** for token storage → Phase 5 (default safeStorage; revisit if literal
   Keychain entries are required).
+
+---
+
+## 12. Phases 8–11: post-v1.1 meta-harness roadmap
+
+These four phases port ideas from the external OSS project
+[omnigent-ai/omnigent](https://github.com/omnigent-ai/omnigent) ("the open-source meta-harness
+for AI agents") into our own `src/main/harness/*` subsystem — explicitly excluding omnigent's
+server-side pieces (its FastAPI backend, DB/stores, multi-device sync, cloud deploy targets),
+which are out of scope for this app. Each phase is written up as its own self-contained document
+(same format as phase 0-7's files) so it can be handed to `/harness-plan` →
+`/harness-implement` → `/verify` → `/harness-review` independently, on its own schedule:
+
+| Phase | Doc | What it adds |
+|---|---|---|
+| 8 | [`phase-8-harness-conformance-bench.md`](./phase-8-harness-conformance-bench.md) | An executable conformance bench that catches a harness adapter's declared capabilities drifting from its observed behavior (mirrors omnigent's Layer 0/1/2 bench design). No user-facing change. |
+| 9 | [`phase-9-midturn-steer-queue.md`](./phase-9-midturn-steer-queue.md) | Let a user queue follow-up messages while a turn streams, edit/reorder/delete them, auto-flush on idle, and force-send ("steer") now — degrading gracefully to interrupt+resend for every harness that lacks true mid-turn injection. |
+| 10 | [`phase-10-policy-engine.md`](./phase-10-policy-engine.md) | A declarative ALLOW/DENY/ASK policy engine (blast-radius, spawn bounds) replacing today's CLI-flag-pass-through `PermissionPolicy`, with honest, explicit strength-labeling per enforcement point. |
+| 11 | [`phase-11-cross-workspace-dispatch.md`](./phase-11-cross-workspace-dispatch.md) | Human-click dispatch of sub-tasks from one workspace to another (each an ordinary worktree/turn), with an inbox and cross-vendor review — the "Polly" pattern, scoped to stay clear of the non-goal below. |
+
+**Dependency chain:** 8 → 9 → 10 → 11 (9 and 10 can run in parallel once 8 lands; 11 needs 10's
+guardrails). Each phase file states its own dependencies in full.
+
+**Non-goal tension (read before starting Phase 11 specifically):** `docs/parallel-agents-spec.md:30`
+documents "Building our own agent — we orchestrate existing CLIs" as an explicit non-goal.
+Phase 11 stays on the right side of that line by construction (every "dispatch" is just an
+ordinary workspace turn — see that phase's §1), but still requires a documented spec update and
+sign-off from the spec's owner before its code lands — see
+[`phase-11-cross-workspace-dispatch.md`](./phase-11-cross-workspace-dispatch.md) §1 for the full
+reasoning. Phases 8–10 have no such tension.
+
+**Status:** planning only as of this writing — no code for Phases 8–11 has been written yet. Each
+phase document is independently actionable whenever it's picked up.

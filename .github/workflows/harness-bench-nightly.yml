@@ -1,0 +1,46 @@
+name: Harness Bench (nightly)
+
+# Layer-2 conformance probes run the REAL harness CLIs against throwaway scratch repos, so
+# they are NOT part of the default gate (`ci.yml`) — they run on a schedule and on demand.
+# A missing CLI on the runner produces `skip` reports (never a failure), and the JSON
+# reports are uploaded as an artifact regardless of the job outcome.
+on:
+  schedule:
+    # 07:00 UTC daily (~nightly across US/EU timezones).
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  bench:
+    # macOS runner mirrors ci.yml: v1 is macOS-only and native modules rebuild against the
+    # Electron ABI on the platform we ship.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules for Electron ABI
+        run: npx @electron/rebuild -f -w better-sqlite3,node-pty
+
+      - name: Run Layer-2 live probes
+        env:
+          AGENTAPP_BENCH_LIVE: '1'
+          BENCH_REPORT_DIR: ${{ runner.temp }}/bench-reports
+        run: node scripts/vitest-electron.mjs run src/main/harness/bench/live-probes.test.ts
+
+      - name: Upload bench reports
+        # Always upload — a run that finds `drift`/`skip` is still a useful report, not a
+        # gate failure. Reports are JSON only (no secrets, no CLI output).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-bench-reports
+          path: ${{ runner.temp }}/bench-reports
+          if-no-files-found: warn

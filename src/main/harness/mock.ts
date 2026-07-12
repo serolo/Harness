@@ -15,6 +15,8 @@ import type {
   Harness,
   HarnessCapabilities,
   StartTurnOpts,
+  SteerableTurnHandle,
+  SteerResult,
   TurnHandle,
 } from '@shared/harness';
 import type { StreamSink } from '@shared/ipc';
@@ -36,6 +38,13 @@ export interface MockHarnessOptions {
   defaultDelayMs?: number;
   /** Version reported by `detect()`. */
   version?: string;
+  /**
+   * When true, `capabilities().supportsMidTurnSteer` is true and `startTurn` resolves a
+   * `SteerableTurnHandle` whose `steer(text)` injects a scripted event into the SAME live
+   * sink and resolves `'injected'`. This is the ONLY way Phase-9 tests exercise the
+   * true-injection path (no shipped adapter is steerable). Defaults to false.
+   */
+  steerable?: boolean;
 }
 
 /** Default script: stream a few text deltas from the prompt, a todo, then end. */
@@ -78,6 +87,7 @@ export class MockHarness implements Harness {
       script: options.script,
       defaultDelayMs: options.defaultDelayMs ?? 5,
       version: options.version ?? 'mock-1.0.0',
+      steerable: options.steerable ?? false,
     };
   }
 
@@ -87,6 +97,7 @@ export class MockHarness implements Harness {
       supportsMcp: true,
       supportsPlanMode: true,
       rawTerminalFallback: true,
+      supportsMidTurnSteer: this.opts.steerable,
     };
   }
 
@@ -156,6 +167,19 @@ export class MockHarness implements Harness {
     // Kick the script asynchronously so the caller has the handle before events flow.
     timer = setTimeout(emitNext, this.opts.defaultDelayMs);
 
-    return Promise.resolve({ sessionId, interrupt });
+    if (!this.opts.steerable) {
+      return Promise.resolve({ sessionId, interrupt });
+    }
+
+    // Steerable mode: inject a scripted marker event into the SAME live sink (true
+    // mid-turn injection — no new stream). Guard against pushing after the turn ended.
+    const steer = async (text: string): Promise<SteerResult> => {
+      if (finished || interrupted) return 'rejected';
+      sink.push({ kind: 'text', delta: `\n[steered] ${text}` });
+      return 'injected';
+    };
+
+    const steerable: SteerableTurnHandle = { sessionId, interrupt, steer };
+    return Promise.resolve(steerable);
   }
 }

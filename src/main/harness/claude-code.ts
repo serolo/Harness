@@ -55,6 +55,7 @@ export class ClaudeCodeHarness implements Harness {
       supportsMcp: true,
       supportsPlanMode: true,
       rawTerminalFallback: true,
+      supportsMidTurnSteer: false,
     };
   }
 

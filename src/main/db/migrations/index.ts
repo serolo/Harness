@@ -16,6 +16,7 @@ import { migration0003TurnsEvents } from './0003_turns_events';
 import { migration0005DiffReview } from './0005_diff_review';
 import { migration0006Integrations } from './0006_integrations';
 import { migration0007WorkspacePr } from './0007_workspace_pr';
+import { migration0008TurnQueue } from './0008_turn_queue';
 
 /**
  * One numbered migration. `up` receives the raw better-sqlite3 handle and runs
@@ -38,6 +39,7 @@ const migrations: readonly Migration[] = [
   migration0005DiffReview,
   migration0006Integrations,
   migration0007WorkspacePr,
+  migration0008TurnQueue,
 ];
 
 /** Read the current schema version from `PRAGMA user_version`. */

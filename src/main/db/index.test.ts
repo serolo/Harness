@@ -7,7 +7,7 @@
 // Electron-ABI test runner is wired correctly.
 //
 // Behavior under test (from the plan's Validation Gate + Acceptance Criteria):
-//   - Fresh DB: all migrations apply, user_version → latest (7), projects/workspaces + indexes exist.
+//   - Fresh DB: all migrations apply, user_version → latest (8), projects/workspaces + indexes exist.
 //   - Idempotent: re-opening the same file does not re-apply / error.
 //   - CRUD: insert+read a Project and a Workspace via the repos; fields + id/timestamp shape.
 //   - Constraints: unique (project_id, name) rejects duplicates; FK rejects a bogus project_id.
@@ -78,7 +78,7 @@ const UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe('migration runner (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 7 (latest) and core tables + indexes exist', () => {
+  it('applies all migrations: user_version becomes 8 (latest) and core tables + indexes exist', () => {
     db = openDb(dbFile);
     expect(existsSync(dbFile)).toBe(true);
 
@@ -87,7 +87,7 @@ describe('migration runner (fresh temp DB)', () => {
     try {
       // Latest shipped migration is 0005 (diff review); a fresh DB applies 0001→0005.
       const version = raw.pragma('user_version', { simple: true });
-      expect(version).toBe(7);
+      expect(version).toBe(8);
 
       const tables = raw
         .prepare(
@@ -134,7 +134,7 @@ describe('migration runner (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(7);
+      expect(raw.pragma('user_version', { simple: true })).toBe(8);
       // Exactly one projects table — a double-apply would have thrown "table already exists".
       const count = raw
         .prepare(

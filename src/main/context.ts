@@ -17,6 +17,7 @@ import type { GitService } from './git';
 import type { WorkspaceManager } from './workspace';
 import type { HarnessSupervisor } from './harness/supervisor';
 import type { TurnRecorder } from './harness/turns';
+import type { BenchReportStore } from './harness/bench/runner';
 import type { PtyService } from './pty';
 import type { ProcessRunner } from './process';
 import type { DiffService } from './diff';
@@ -70,4 +71,6 @@ export interface AppContext {
   onboarding: OnboardingService;
   /** Auto-update lifecycle (electron-updater; descoped/guarded) (Phase 6, README §6.5). */
   updater: UpdateService;
+  /** In-memory latest conformance-bench report per harness, read by `harness:benchReport` (Phase 8). */
+  benchReports: BenchReportStore;
 }

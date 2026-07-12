@@ -136,6 +136,23 @@ export interface TodosTable {
 }
 
 /**
+ * `queued_messages` table (migration 0008 — Phase 9). One unsent follow-up message
+ * queued for a workspace while a turn streams. `mode` is TEXT widened to the frozen
+ * `AgentMode` union (NULL → use the settings default at send time); `attachments_json`
+ * is the serialized `Attachment[]` (see header convention). `order_idx` is the 0-based,
+ * contiguous position within the workspace's queue.
+ */
+export interface QueuedMessagesTable {
+  id: string; // TEXT PRIMARY KEY — UUIDv7
+  workspace_id: string; // TEXT NOT NULL REFERENCES workspaces(id)
+  prompt: string; // TEXT NOT NULL
+  attachments_json: string; // TEXT NOT NULL — JSON.stringify(Attachment[])
+  mode: AgentMode | null; // TEXT — plan|default|auto_accept, NULL → settings default
+  order_idx: number; // INTEGER NOT NULL — 0-based position within the workspace queue
+  created_at: number; // INTEGER NOT NULL — epoch millis
+}
+
+/**
  * `integrations` table (migration 0006 — Phase 5). One connected external account
  * (GitHub/Linear, spec §3). `account_label` is the human login label (nullable for a
  * connection that carries none). `token_ref` is the safeStorage ciphertext file id —
@@ -164,4 +181,5 @@ export interface Database {
   diff_comments: DiffCommentsTable;
   todos: TodosTable;
   integrations: IntegrationsTable;
+  queued_messages: QueuedMessagesTable;
 }

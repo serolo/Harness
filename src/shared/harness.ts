@@ -70,6 +70,21 @@ export interface HarnessCapabilities {
   supportsMcp: boolean;
   supportsPlanMode: boolean;
   rawTerminalFallback: boolean;
+  // APPEND-ONLY (Phase 9): true when the CLI supports genuine mid-turn message
+  // injection (a `SteerableTurnHandle`). Drives whether "Steer now" injects into the
+  // live turn or degrades to interrupt+resend in the renderer.
+  supportsMidTurnSteer: boolean;
+}
+
+export type SteerResult = 'injected' | 'rejected';
+
+/**
+ * Optional — a TurnHandle MAY additionally satisfy this if the CLI supports genuine
+ * mid-turn message injection. Checked via runtime duck-typing (`'steer' in handle`); it
+ * NEVER widens the frozen 2-field TurnHandle contract itself.
+ */
+export interface SteerableTurnHandle extends TurnHandle {
+  steer(text: string): Promise<SteerResult>;
 }
 
 /** Result of probing whether a harness CLI is installed/authenticated. */

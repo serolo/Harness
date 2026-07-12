@@ -75,6 +75,7 @@ export class CodexHarness implements Harness {
       supportsMcp: true,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsMidTurnSteer: false,
     };
   }
 

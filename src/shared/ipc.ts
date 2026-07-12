@@ -6,6 +6,7 @@
 // They never reorder or rewrite existing entries.
 
 import type { AppError } from './errors';
+import type { BenchReport } from './bench';
 import type { ChecksResult } from './checks';
 import type { GitSshKey } from './git';
 import type {
@@ -25,8 +26,10 @@ import type {
   DetectResult,
   HarnessCapabilities,
   HarnessId,
+  SteerResult,
   Todo,
 } from './harness';
+import type { QueuedMessage } from './queue';
 import type {
   CreateWorkspaceReq,
   Project,
@@ -310,6 +313,54 @@ export interface Commands {
   };
   /** Settings-gated workflow-state transition (e.g. on PR open/merge). */
   'linear:transition': { req: { issueId: string; stateId: string }; res: void };
+
+  // --- Phase 8: harness conformance bench (APPEND-ONLY) ---
+  /**
+   * Latest conformance-bench report for a harness (diagnostics only), or `null` if none
+   * has been recorded this session. Read-only: the handler narrows `harnessId` to a known
+   * id and returns the stored report — it never RUNS the bench (Layer 1 runs in the test
+   * gate; Layer 2 runs env-gated nightly and writes into the store).
+   */
+  'harness:benchReport': {
+    req: { harnessId: HarnessId };
+    res: BenchReport | null;
+  };
+
+  // --- Phase 9: mid-turn steer + message queue (APPEND-ONLY) ---
+  /** List a workspace's queued follow-up messages, ordered by orderIdx. */
+  'queue:list': { req: { workspaceId: string }; res: QueuedMessage[] };
+  /** Enqueue a follow-up message (appended at the tail: orderIdx = max+1). */
+  'queue:enqueue': {
+    req: {
+      workspaceId: string;
+      prompt: string;
+      attachments: Attachment[];
+      mode?: AgentMode;
+    };
+    res: QueuedMessage;
+  };
+  /** Edit a still-unsent queued message's prompt/attachments/mode. */
+  'queue:update': {
+    req: {
+      id: string;
+      prompt?: string;
+      attachments?: Attachment[];
+      mode?: AgentMode;
+    };
+    res: QueuedMessage;
+  };
+  /** Reorder a workspace's queue; orderedIds MUST be a permutation of its current ids. */
+  'queue:reorder': {
+    req: { workspaceId: string; orderedIds: string[] };
+    res: void;
+  };
+  /** Remove a queued message. */
+  'queue:remove': { req: { id: string }; res: void };
+  /** Inject text into the live turn (true injection); throws typed conflict if not steerable. */
+  'turn:steer': {
+    req: { workspaceId: string; text: string };
+    res: SteerResult;
+  };
 }
 
 export type CommandChannel = keyof Commands;

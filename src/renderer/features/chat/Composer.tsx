@@ -27,6 +27,25 @@ export interface ComposerProps {
     harness?: HarnessId,
   ) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
+  /**
+   * Enqueue a follow-up while a turn is streaming (busy) instead of blocking. Wired by the
+   * parent to the queue store; when omitted, Send/Enter stays a no-op while busy.
+   */
+  onEnqueue?: (
+    prompt: string,
+    attachments: Attachment[],
+    mode: AgentMode,
+  ) => void | Promise<void>;
+  /**
+   * "Steer now": inject the composed text into the live turn (true injection when the
+   * harness supports it, else interrupt+resend). Wired by the parent to `useChat.steer`;
+   * attachments/mode ride along so the fallback resend preserves them.
+   */
+  onSteer?: (
+    text: string,
+    attachments: Attachment[],
+    mode: AgentMode,
+  ) => void | Promise<void>;
 }
 
 const MODEL_LABELS: Record<HarnessId, string> = {
@@ -52,6 +71,8 @@ export function Composer({
   disabled,
   onSend,
   onInterrupt,
+  onEnqueue,
+  onSteer,
 }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('');
   const [mode, setMode] = useState<AgentMode>('default');
@@ -136,6 +157,7 @@ export function Composer({
             supportsMcp: false,
             supportsPlanMode: false,
             rawTerminalFallback: false,
+            supportsMidTurnSteer: false,
           },
           detect: { installed: true, authenticated: true },
         },
@@ -146,8 +168,13 @@ export function Composer({
   }, [harnessInfoById, selectedModel]);
   const selectedHarnessInfo =
     selectedModel === undefined ? undefined : harnessInfoById[selectedModel];
-  const supportsPlan = selectedHarnessInfo?.capabilities.supportsPlanMode ?? true;
+  const supportsPlan =
+    selectedHarnessInfo?.capabilities.supportsPlanMode ?? true;
   const canSend = !isBusy && !disabled && text.trim().length > 0;
+  // "Steer now" is only actionable while a turn streams and there's text to inject. The
+  // capability drives BEHAVIOR (inject vs interrupt+resend) in the parent, not visibility.
+  const canSteer =
+    isBusy && !disabled && text.trim().length > 0 && onSteer !== undefined;
   const activeSlashQuery = slashQuery(text);
   const slashMatches = useMemo(
     () =>
@@ -168,18 +195,37 @@ export function Composer({
     }
   }, [mode, supportsPlan]);
 
-  function send(): void {
-    if (!canSend) return;
+  // Expand a leading slash-command against the catalogue; otherwise the raw text.
+  function composePrompt(): string {
     const parsedSlash = parseSlash(text.trim());
     const command =
       parsedSlash === null
         ? undefined
         : slashCommands.find((cmd) => cmd.name === parsedSlash.name);
-    const prompt =
-      parsedSlash !== null && command !== undefined
-        ? expandSlashTemplate(command.template, parsedSlash.args)
-        : text;
-    void onSend(prompt, attachments, mode, selectedHarness);
+    return parsedSlash !== null && command !== undefined
+      ? expandSlashTemplate(command.template, parsedSlash.args)
+      : text;
+  }
+
+  // Send when idle; while a turn streams, ENQUEUE the follow-up instead of blocking (the
+  // queue auto-flushes its head when the workspace goes idle). Enter routes here too.
+  function send(): void {
+    if (text.trim().length === 0 || disabled) return;
+    const prompt = composePrompt();
+    if (isBusy) {
+      if (!onEnqueue) return;
+      void onEnqueue(prompt, attachments, mode);
+    } else {
+      void onSend(prompt, attachments, mode, selectedHarness);
+    }
+    setText('');
+    setAttachments([]);
+  }
+
+  // "Steer now": hand the composed text to the parent's capability-aware steer path.
+  function steerNow(): void {
+    if (!canSteer) return;
+    void onSteer?.(composePrompt(), attachments, mode);
     setText('');
     setAttachments([]);
   }
@@ -201,10 +247,7 @@ export function Composer({
   }
 
   return (
-    <div
-      className="shrink-0 bg-surface-app px-6 pb-5"
-      data-testid="composer"
-    >
+    <div className="shrink-0 bg-surface-app px-6 pb-5" data-testid="composer">
       <div className="relative mx-auto w-full max-w-[1120px]">
         {slashOpen ? (
           <div
@@ -392,15 +435,27 @@ export function Composer({
                 <Plus className="h-5 w-5" aria-hidden />
               </button>
               {isBusy ? (
-                <button
-                  type="button"
-                  className="flex h-10 w-10 items-center justify-center rounded-2 bg-danger text-white transition-colors duration-fast ease-out hover:bg-danger-hover"
-                  data-testid="composer-interrupt"
-                  onClick={() => void onInterrupt()}
-                  aria-label="Stop"
-                >
-                  <span className="h-3 w-3 rounded-[2px] bg-white" />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="flex h-10 items-center justify-center rounded-2 border border-border-1 px-3 text-sm font-medium text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-45"
+                    data-testid="composer-steer"
+                    disabled={!canSteer}
+                    onClick={steerNow}
+                    aria-label="Steer now"
+                  >
+                    Steer now
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-10 w-10 items-center justify-center rounded-2 bg-danger text-white transition-colors duration-fast ease-out hover:bg-danger-hover"
+                    data-testid="composer-interrupt"
+                    onClick={() => void onInterrupt()}
+                    aria-label="Stop"
+                  >
+                    <span className="h-3 w-3 rounded-[2px] bg-white" />
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"

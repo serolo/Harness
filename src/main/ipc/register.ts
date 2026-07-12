@@ -34,7 +34,12 @@ import type {
   StreamChunk,
 } from '@shared/ipc';
 import type { StreamSink } from '@shared/ipc';
-import type { AgentEvent, HarnessId, StartTurnOpts } from '@shared/harness';
+import type {
+  AgentEvent,
+  AgentMode,
+  HarnessId,
+  StartTurnOpts,
+} from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
 import type { AppContext } from '../context';
 import { toAppError } from '../error';
@@ -42,8 +47,15 @@ import { AppError, encodeAppErrorMessage } from '@shared/errors';
 import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
 import { TodosRepo } from '../db/repos/todos';
+import {
+  QueuedMessagesRepo,
+  type QueuedMessagePatch,
+} from '../db/repos/queued-messages';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
-import { githubCliAuthStatus, githubCliToken } from '../integrations/github/ghCli';
+import {
+  githubCliAuthStatus,
+  githubCliToken,
+} from '../integrations/github/ghCli';
 import { discoverGitSshKeys } from '../git/sshKeys';
 import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
@@ -97,6 +109,11 @@ const trackedFocusRefreshIds = new Set<string>();
 /** Record a workspace id so a later window focus recomputes its checks (Phase 5). */
 function trackForFocusRefresh(workspaceId: string): void {
   trackedFocusRefreshIds.add(workspaceId);
+}
+
+/** Narrow an untrusted value to the frozen `AgentMode` union (Phase 9 queue handlers). */
+function isAgentMode(value: unknown): value is AgentMode {
+  return value === 'plan' || value === 'default' || value === 'auto_accept';
 }
 
 /**
@@ -348,7 +365,9 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
 
         const harnessOverride =
-          typeof arg.harness === 'string' ? (arg.harness as HarnessId) : undefined;
+          typeof arg.harness === 'string'
+            ? (arg.harness as HarnessId)
+            : undefined;
         if (
           harnessOverride !== undefined &&
           !['claude_code', 'codex', 'cursor'].includes(harnessOverride)
@@ -787,6 +806,17 @@ export function registerIpc(ctx: AppContext): void {
   // harness:list — registered harnesses with capabilities + detect summary.
   handle('harness:list', async () => ctx.harness.listHarnesses());
 
+  // harness:benchReport — read the latest conformance-bench report for a harness
+  // (diagnostics only, Phase 8). Read-only: narrow the untrusted `harnessId` to a known id
+  // and return the stored report (or null); this handler NEVER runs the bench.
+  handle('harness:benchReport', async (req) => {
+    const knownIds: readonly HarnessId[] = ['claude_code', 'codex', 'cursor'];
+    if (!knownIds.includes(req.harnessId)) {
+      throw new AppError('invalid_input', 'unknown harnessId');
+    }
+    return ctx.benchReports.get(req.harnessId) ?? null;
+  });
+
   // --- Phase 3: terminals + run scripts ---
   // Every handler validates/narrows its untrusted payload before acting. The `pty:open`
   // and `run:start` STREAMS above allocate the ids; these commands act on them by id.
@@ -1088,6 +1118,108 @@ export function registerIpc(ctx: AppContext): void {
     return new TodosRepo(ctx.db).toggle(req.id);
   });
 
+  // --- Phase 9: mid-turn steer + message queue ---
+  // Heightened-scrutiny: IPC boundary. Every handler narrows its untrusted payload first
+  // (non-empty ids/workspaceId, string prompts, array attachments, a known `mode` enum).
+  // No payload is ever interpolated into a shell/git string; `reorder`'s permutation check
+  // is enforced atomically in the repo (rejects a non-permutation).
+
+  // queue:list — a workspace's queued follow-up messages, ordered by orderIdx.
+  handle('queue:list', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    return new QueuedMessagesRepo(ctx.db).list(req.workspaceId);
+  });
+
+  // queue:enqueue — append a follow-up message at the tail of the workspace's queue.
+  handle('queue:enqueue', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (typeof req.prompt !== 'string' || req.prompt.trim() === '') {
+      throw new AppError('invalid_input', 'prompt is required');
+    }
+    if (!Array.isArray(req.attachments)) {
+      throw new AppError('invalid_input', 'attachments must be an array');
+    }
+    if (req.mode !== undefined && !isAgentMode(req.mode)) {
+      throw new AppError('invalid_input', 'mode is invalid');
+    }
+    return new QueuedMessagesRepo(ctx.db).enqueue({
+      workspaceId: req.workspaceId,
+      prompt: req.prompt,
+      attachments: req.attachments,
+      mode: req.mode,
+    });
+  });
+
+  // queue:update — edit a still-unsent queued message. Only provided keys are patched.
+  handle('queue:update', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    if (
+      req.prompt !== undefined &&
+      (typeof req.prompt !== 'string' || req.prompt.trim() === '')
+    ) {
+      throw new AppError('invalid_input', 'prompt must be a non-empty string');
+    }
+    if (req.attachments !== undefined && !Array.isArray(req.attachments)) {
+      throw new AppError('invalid_input', 'attachments must be an array');
+    }
+    if (req.mode !== undefined && !isAgentMode(req.mode)) {
+      throw new AppError('invalid_input', 'mode is invalid');
+    }
+    // Build the patch from only the present keys so unset fields stay untouched.
+    const patch: QueuedMessagePatch = {};
+    if (req.prompt !== undefined) patch.prompt = req.prompt;
+    if (req.attachments !== undefined) patch.attachments = req.attachments;
+    if (req.mode !== undefined) patch.mode = req.mode;
+    return new QueuedMessagesRepo(ctx.db).update(req.id, patch);
+  });
+
+  // queue:reorder — rewrite the workspace queue ordering. The repo enforces that
+  // `orderedIds` is an exact permutation of the current ids (rejects otherwise), atomically.
+  handle('queue:reorder', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (
+      !Array.isArray(req.orderedIds) ||
+      !req.orderedIds.every((id) => typeof id === 'string' && id !== '')
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'orderedIds must be an array of non-empty strings',
+      );
+    }
+    await new QueuedMessagesRepo(ctx.db).reorder(
+      req.workspaceId,
+      req.orderedIds,
+    );
+  });
+
+  // queue:remove — delete a queued message by id (idempotent if already gone).
+  handle('queue:remove', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    await new QueuedMessagesRepo(ctx.db).remove(req.id);
+  });
+
+  // turn:steer — inject text into the live turn (true injection). The supervisor throws a
+  // typed `conflict` when no active/steerable turn exists (the renderer owns the fallback).
+  handle('turn:steer', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (typeof req.text !== 'string' || req.text === '') {
+      throw new AppError('invalid_input', 'text is required');
+    }
+    return ctx.harness.steer(req.workspaceId, req.text);
+  });
+
   // --- Phase 5: GitHub + checks + PR (APPEND-ONLY) ---
   // Heightened-scrutiny: IPC boundary + secrets/tokens + network egress. Every handler
   // validates/narrows its untrusted payload first. Tokens NEVER cross to the renderer:
@@ -1127,7 +1259,10 @@ export function registerIpc(ctx: AppContext): void {
       if (frame.kind === 'connected') account = frame.account;
     });
     if (account === null) {
-      throw new AppError('integration', 'GitHub CLI connection did not complete');
+      throw new AppError(
+        'integration',
+        'GitHub CLI connection did not complete',
+      );
     }
     return account;
   });

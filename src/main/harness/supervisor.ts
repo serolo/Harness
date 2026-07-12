@@ -24,6 +24,8 @@ import type {
   Harness,
   HarnessId,
   StartTurnOpts,
+  SteerableTurnHandle,
+  SteerResult,
   Todo,
   TurnHandle,
 } from '@shared/harness';
@@ -243,6 +245,30 @@ export class HarnessSupervisor {
     if (live.handle) {
       await live.handle.interrupt();
     }
+  }
+
+  /**
+   * Inject text into the live turn for a workspace (TRUE mid-turn injection). Throws a
+   * typed `AppError('conflict')` — never a silent no-op — when no turn is active OR the
+   * live handle does not implement `steer` (duck-typed). The interrupt+resend FALLBACK is
+   * the renderer's job (§3.6), keeping main free of an auto-start-a-turn path. A successful
+   * `steer` pushes into the SAME live sink the open turn:start stream is on — no new stream.
+   */
+  async steer(workspaceId: string, text: string): Promise<SteerResult> {
+    const live = this.registry.get(workspaceId);
+    if (!live || !live.handle) {
+      throw new AppError('conflict', 'no active turn to steer', {
+        workspaceId,
+      });
+    }
+    if (!('steer' in live.handle)) {
+      throw new AppError(
+        'conflict',
+        'active turn does not support mid-turn steer',
+        { workspaceId },
+      );
+    }
+    return (live.handle as SteerableTurnHandle).steer(text);
   }
 
   /** True when a turn is currently streaming for the workspace. */

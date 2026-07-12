@@ -1,0 +1,3 @@
+{"type":"session_configured","session_id":"codex-sess-mcp-001","model":"codex-1"}
+{"type":"tool_call","name":"mcp__github__get_pr","arguments":{"owner":"acme","repo":"widgets","number":42}}
+{"type":"turn_complete","usage":{"input_tokens":210,"output_tokens":40}}

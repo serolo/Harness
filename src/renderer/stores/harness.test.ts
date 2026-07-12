@@ -23,6 +23,7 @@ const HARNESS_LIST: HarnessInfo[] = [
       supportsMcp: true,
       supportsPlanMode: true,
       rawTerminalFallback: true,
+      supportsMidTurnSteer: false,
     },
     detect: { installed: true, authenticated: true },
   },
@@ -33,6 +34,7 @@ const HARNESS_LIST: HarnessInfo[] = [
       supportsMcp: false,
       supportsPlanMode: false,
       rawTerminalFallback: false,
+      supportsMidTurnSteer: false,
     },
     detect: { installed: true, authenticated: true },
   },
@@ -43,6 +45,7 @@ const HARNESS_LIST: HarnessInfo[] = [
       supportsMcp: false,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsMidTurnSteer: false,
     },
     detect: { installed: true, authenticated: true },
   },
@@ -186,7 +189,9 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     await renderComposerFor('claude_code');
     fireEvent.click(await screen.findByTestId('composer-model'));
 
-    expect(await screen.findByTestId('composer-model-menu')).toBeInTheDocument();
+    expect(
+      await screen.findByTestId('composer-model-menu'),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('composer-model-claude_code')).toHaveTextContent(
       'Claude Code',
     );

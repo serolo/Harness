@@ -81,6 +81,7 @@ export class CursorHarness implements Harness {
       supportsMcp: false,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsMidTurnSteer: false,
     };
   }
 

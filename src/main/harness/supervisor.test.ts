@@ -273,3 +273,71 @@ describe('HarnessSupervisor turn lifecycle', () => {
     expect(seen[1]).toBe('mock-session-1');
   });
 });
+
+describe('HarnessSupervisor.steer', () => {
+  // A long-lived script keeps the turn active long enough to steer: a text delta,
+  // then a terminal turn_end held back by a large delay so the turn stays streaming
+  // while the test injects. `waitForFinalized` at the end drains it before teardown.
+  const longScript = () => [
+    { event: { kind: 'text', delta: 'x' } as AgentEvent, delayMs: 1000 },
+    { event: { kind: 'turn_end' } as AgentEvent, delayMs: 1000 },
+  ];
+
+  it('injects into the SAME live sink on a steerable turn and resolves "injected"', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const mock = new MockHarness({
+      steerable: true,
+      defaultDelayMs: 5,
+      script: longScript,
+    });
+    const h = await makeHarness(db, mock);
+    const { sink, done, events } = collectSink();
+
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, sink);
+    expect(h.supervisor.isActive(h.workspace.id)).toBe(true);
+
+    // True injection: resolves 'injected' AND the injected event lands on the SAME
+    // live sink the open turn:start stream is on (no new stream).
+    const result = await h.supervisor.steer(h.workspace.id, 'go left');
+    expect(result).toBe('injected');
+    await waitUntil(() =>
+      events.some(
+        (e) => e.kind === 'text' && e.delta === '\n[steered] go left',
+      ),
+    );
+
+    // Interrupt + drain so teardown doesn't race the pending terminal.
+    await h.supervisor.interrupt(h.workspace.id);
+    await done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+  });
+
+  it('throws a typed conflict on a non-steerable active turn (never a silent no-op)', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    // A normal mock (supportsMidTurnSteer: false) → the live handle has no `steer`.
+    const mock = new MockHarness({ defaultDelayMs: 5, script: longScript });
+    const h = await makeHarness(db, mock);
+    const { sink, done } = collectSink();
+
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, sink);
+    expect(h.supervisor.isActive(h.workspace.id)).toBe(true);
+
+    await expect(
+      h.supervisor.steer(h.workspace.id, 'go left'),
+    ).rejects.toMatchObject({ code: 'conflict' } as Partial<AppError>);
+
+    await h.supervisor.interrupt(h.workspace.id);
+    await done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+  });
+
+  it('throws a typed conflict when no turn is active', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const h = await makeHarness(db, new MockHarness({ steerable: true }));
+
+    expect(h.supervisor.isActive(h.workspace.id)).toBe(false);
+    await expect(
+      h.supervisor.steer(h.workspace.id, 'nothing to steer'),
+    ).rejects.toMatchObject({ code: 'conflict' } as Partial<AppError>);
+  });
+});

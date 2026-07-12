@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"sess-mcp-001","tools":["mcp__github__get_pr","Read"],"model":"claude-opus-4"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_30","name":"mcp__github__get_pr","input":{"owner":"acme","repo":"widgets","number":42}}]},"session_id":"sess-mcp-001"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_30","content":"{\"title\":\"Add widget\",\"state\":\"open\"}"}]}}
+{"type":"result","subtype":"success","result":"Fetched the PR via MCP.","session_id":"sess-mcp-001","usage":{"input_tokens":210,"output_tokens":40},"is_error":false}

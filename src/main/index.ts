@@ -40,6 +40,7 @@ import { CodexHarness } from './harness/codex';
 import { CursorHarness } from './harness/cursor';
 import type { RawPtySpawner } from './harness/raw-terminal';
 import { MockHarness } from './harness/mock';
+import { BenchReportStore } from './harness/bench/runner';
 import type { Harness } from '@shared/harness';
 import { PtyService } from './pty';
 import { ProcessRegistry, ProcessRunner } from './process';
@@ -469,6 +470,9 @@ function createAppContext(): AppContext {
     prWorkflow,
     onboarding,
     updater,
+    // Phase 8: in-memory conformance-bench report store. Empty until the env-gated Layer-2
+    // suite writes into it; `harness:benchReport` reads it (no work done at startup).
+    benchReports: new BenchReportStore(),
   };
 
   return ctx;

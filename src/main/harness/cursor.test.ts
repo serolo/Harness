@@ -117,6 +117,7 @@ describe('CursorHarness — capabilities & identity', () => {
       supportsMcp: false,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsMidTurnSteer: false,
     });
   });
 

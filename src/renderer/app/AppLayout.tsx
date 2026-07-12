@@ -63,6 +63,24 @@ const DRAG_STYLE = { WebkitAppRegion: 'drag' } as unknown as CSSProperties;
 const NO_DRAG_STYLE = {
   WebkitAppRegion: 'no-drag',
 } as unknown as CSSProperties;
+const ZOOM_STORAGE_KEY = 'harness.ui.zoomLevel';
+const MIN_ZOOM_LEVEL = -3;
+const MAX_ZOOM_LEVEL = 3;
+
+function clampZoomLevel(level: number): number {
+  return Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, level));
+}
+
+function readStoredZoomLevel(): number {
+  try {
+    const raw = window.localStorage.getItem(ZOOM_STORAGE_KEY);
+    if (raw === null) return 0;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? clampZoomLevel(parsed) : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /** The top-level 3-pane grid: [rail | content | context]. */
 export function AppLayout(): React.JSX.Element {
@@ -71,6 +89,7 @@ export function AppLayout(): React.JSX.Element {
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const [centerTab, setCenterTab] = useState<CenterTab>('chat');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(readStoredZoomLevel);
 
   const navTarget = useNavStore((s) => s.target);
   const navigate = useNavStore((s) => s.navigate);
@@ -113,6 +132,44 @@ export function AppLayout(): React.JSX.Element {
   const { byId } = useCommands(actions);
   const byIdRef = useRef(byId);
   byIdRef.current = byId;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ZOOM_STORAGE_KEY, String(zoomLevel));
+    } catch {
+      /* Best-effort preference; zoom still applies for this session. */
+    }
+    void invoke('ui:setZoomLevel', { level: zoomLevel }).catch(() => {
+      /* Zoom shortcuts should never destabilize the app shell. */
+    });
+  }, [zoomLevel]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (!event.metaKey && !event.ctrlKey) return;
+      if (event.altKey) return;
+
+      if (event.key === '+' || event.key === '=') {
+        event.preventDefault();
+        setZoomLevel((level) => clampZoomLevel(level + 0.5));
+        return;
+      }
+
+      if (event.key === '-' || event.key === '_') {
+        event.preventDefault();
+        setZoomLevel((level) => clampZoomLevel(level - 0.5));
+        return;
+      }
+
+      if (event.key === '0') {
+        event.preventDefault();
+        setZoomLevel(0);
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // Deep-link intake: a `nav:deepLink` broadcast (main resolved an `harness://…` URL)
   // becomes a pending nav target in the store. Torn down on unmount (no listener leak).

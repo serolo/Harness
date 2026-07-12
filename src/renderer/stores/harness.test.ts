@@ -63,6 +63,17 @@ function installApi(opts: { fail?: boolean } = {}): ApiStub {
         : Promise.resolve(HARNESS_LIST);
     }
     if (channel === 'slash:list') return Promise.resolve([]);
+    if (channel === 'github:listIssues') {
+      return Promise.resolve([
+        {
+          number: 7,
+          title: 'Crash on boot',
+          url: 'https://github.com/acme/repo/issues/7',
+          state: 'open',
+        },
+      ]);
+    }
+    if (channel === 'linear:listIssues') return Promise.resolve([]);
     return Promise.resolve(undefined);
   });
   const api: ApiStub = {
@@ -152,8 +163,19 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
   async function renderComposerFor(harness: HarnessId): Promise<HTMLElement> {
     installApi();
     useWorkspacesStore.setState({
+      projects: [
+        {
+          id: 'p1',
+          name: 'repo',
+          originUrl: 'git@github.com:acme/repo.git',
+          defaultBranch: 'main',
+          repoPath: '/tmp/repo',
+          createdAt: 0,
+        },
+      ],
       workspaces: [makeWorkspace(harness)],
       selectedWorkspaceId: 'ws1',
+      selectedProjectId: 'p1',
     });
     render(
       React.createElement(Composer, {
@@ -196,5 +218,81 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     expect(screen.getByTestId('composer-model-cursor')).toHaveTextContent(
       'Cursor',
     );
+  });
+
+  it('closes the model menu when pressing outside it', async () => {
+    await renderComposerFor('claude_code');
+    fireEvent.click(await screen.findByTestId('composer-model'));
+
+    expect(await screen.findByTestId('composer-model-menu')).toBeInTheDocument();
+
+    fireEvent.pointerDown(document.body);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('composer-model-menu')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('lets Claude workspaces choose the full effort range', async () => {
+    await renderComposerFor('claude_code');
+    fireEvent.click(await screen.findByTestId('composer-effort'));
+
+    expect(await screen.findByTestId('composer-effort-menu')).toBeInTheDocument();
+    expect(screen.getByTestId('composer-effort-low')).toHaveTextContent('Low');
+    expect(screen.getByTestId('composer-effort-max')).toHaveTextContent('Max');
+
+    fireEvent.click(screen.getByTestId('composer-effort-low'));
+
+    expect(screen.getByTestId('composer-effort')).toHaveTextContent('Low');
+  });
+
+  it('uses Codex effort levels for Codex workspaces', async () => {
+    await renderComposerFor('codex');
+    fireEvent.click(await screen.findByTestId('composer-effort'));
+
+    expect(await screen.findByTestId('composer-effort-menu')).toBeInTheDocument();
+    expect(screen.getByTestId('composer-effort-medium')).toHaveTextContent(
+      'Medium',
+    );
+    expect(screen.getByTestId('composer-effort-xhigh')).toHaveTextContent(
+      'Extra High',
+    );
+    expect(screen.queryByTestId('composer-effort-max')).not.toBeInTheDocument();
+  });
+
+  it('adds file attachments from the plus menu', async () => {
+    await renderComposerFor('claude_code');
+    fireEvent.click(await screen.findByTestId('composer-plus'));
+    fireEvent.click(await screen.findByTestId('composer-plus-attachment'));
+    fireEvent.change(await screen.findByTestId('composer-plus-attach-input'), {
+      target: { value: 'src/app.ts' },
+    });
+    fireEvent.click(screen.getByTestId('composer-plus-attach-add'));
+
+    expect(await screen.findByTestId('attachment-bar')).toHaveTextContent(
+      'src/app.ts',
+    );
+  });
+
+  it('links issues from the plus menu into the draft', async () => {
+    await renderComposerFor('claude_code');
+    fireEvent.click(await screen.findByTestId('composer-plus'));
+    fireEvent.click(await screen.findByTestId('composer-plus-issue'));
+    fireEvent.click(await screen.findByTestId('composer-issue-github-7'));
+
+    expect(
+      (screen.getByTestId('composer-input') as HTMLTextAreaElement).value,
+    ).toContain('GitHub issue #7 - Crash on boot');
+  });
+
+  it('links workspaces from the plus menu into the draft', async () => {
+    await renderComposerFor('claude_code');
+    fireEvent.click(await screen.findByTestId('composer-plus'));
+    fireEvent.click(await screen.findByTestId('composer-plus-workspaces'));
+    fireEvent.click(await screen.findByTestId('composer-workspace-ws1'));
+
+    expect(
+      (screen.getByTestId('composer-input') as HTMLTextAreaElement).value,
+    ).toContain('Context: workspace athens');
   });
 });

@@ -24,6 +24,8 @@ function historyToTurns(history: ChatHistory): RenderedTurn[] {
     turnId: t.id,
     status: t.status,
     sessionId: t.sessionId ?? undefined,
+    startedAt: t.startedAt,
+    endedAt: t.endedAt ?? undefined,
     events: t.events.map((e) => e.event),
     usage:
       t.inputTokens != null || t.outputTokens != null
@@ -43,8 +45,10 @@ export interface UseChat {
     attachments: Attachment[],
     mode?: AgentMode,
     harness?: HarnessId,
+    displayPrompt?: string,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
+  clear: () => Promise<void>;
 }
 
 /**
@@ -64,6 +68,7 @@ export function useChat(workspaceId: string | null): UseChat {
   const appendEvent = useChatStore((s) => s.appendEvent);
   const endTurn = useChatStore((s) => s.endTurn);
   const setBusy = useChatStore((s) => s.setBusy);
+  const reset = useChatStore((s) => s.reset);
 
   // Hydrate the transcript from persisted history on open / workspace change.
   useEffect(() => {
@@ -87,11 +92,14 @@ export function useChat(workspaceId: string | null): UseChat {
       attachments: Attachment[],
       mode?: AgentMode,
       harness?: HarnessId,
+      displayPrompt?: string,
     ): Promise<void> => {
       if (!workspaceId) return;
       const pendingTurnId = `pending:${Date.now()}:${Math.random()}`;
+      const startedAt = Date.now();
+      const shownPrompt = displayPrompt ?? prompt;
       let started = false;
-      startTurn(workspaceId, pendingTurnId, '');
+      startTurn(workspaceId, pendingTurnId, '', { prompt: shownPrompt, startedAt });
       setBusy(workspaceId, true);
       try {
         await subscribeStream(
@@ -100,7 +108,10 @@ export function useChat(workspaceId: string | null): UseChat {
           (chunk) => {
             if (chunk.kind === 'started') {
               started = true;
-              startTurn(workspaceId, chunk.turnId, chunk.sessionId);
+              startTurn(workspaceId, chunk.turnId, chunk.sessionId, {
+                prompt: shownPrompt,
+                startedAt,
+              });
               return;
             }
             const event: AgentEvent = chunk.event;
@@ -116,7 +127,12 @@ export function useChat(workspaceId: string | null): UseChat {
         );
       } catch (err) {
         // Stream-level failure: record a terminal error so the UI recovers.
-        if (!started) startTurn(workspaceId, pendingTurnId, '');
+        if (!started) {
+          startTurn(workspaceId, pendingTurnId, '', {
+            prompt: shownPrompt,
+            startedAt,
+          });
+        }
         appendEvent(workspaceId, {
           kind: 'error',
           message: err instanceof Error ? err.message : 'turn failed',
@@ -134,5 +150,11 @@ export function useChat(workspaceId: string | null): UseChat {
     await invoke('turn:interrupt', { workspaceId });
   }, [workspaceId]);
 
-  return { turns, isBusy, sendTurn, interrupt };
+  const clear = useCallback(async (): Promise<void> => {
+    if (!workspaceId) return;
+    await invoke('chat:clear', { workspaceId });
+    reset(workspaceId);
+  }, [workspaceId, reset]);
+
+  return { turns, isBusy, sendTurn, interrupt, clear };
 }

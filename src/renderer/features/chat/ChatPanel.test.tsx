@@ -39,6 +39,7 @@ function installApi(opts: {
       return Promise.resolve(opts.history ?? { turns: [] });
     if (channel === 'harness:list') return Promise.resolve(HARNESS_LIST);
     if (channel === 'turn:interrupt') return Promise.resolve(undefined);
+    if (channel === 'chat:clear') return Promise.resolve(undefined);
     if (channel === 'slash:list')
       return Promise.resolve(
         opts.slashCommands ?? [
@@ -126,8 +127,48 @@ describe('ChatPanel reconstruction', () => {
     expect(await screen.findByText('world')).toBeInTheDocument();
     expect(screen.getByTestId('tool-card')).toBeInTheDocument();
     expect(screen.getByTestId('todo-list')).toBeInTheDocument();
-    const divider = screen.getByTestId('turn-divider');
-    expect(divider).toHaveAttribute('data-status', 'completed');
+    const activity = screen.getByTestId('turn-activity');
+    expect(activity).toHaveAttribute('data-status', 'completed');
+    expect(screen.getByTestId('turn-elapsed')).toHaveTextContent('0.0s');
+  });
+
+  it('clears the visible transcript for the current workspace', async () => {
+    const history: ChatHistory = {
+      turns: [
+        {
+          id: 't1',
+          workspaceId: 'ws1',
+          idx: 0,
+          status: 'completed',
+          sessionId: 'sess-1',
+          mode: 'default',
+          startedAt: 1,
+          endedAt: 2,
+          inputTokens: null,
+          outputTokens: null,
+          events: [
+            {
+              id: 'e1',
+              turnId: 't1',
+              kind: 'text',
+              ts: 1,
+              event: { kind: 'text', delta: 'Clear me' },
+            },
+          ],
+        },
+      ],
+    };
+    installApi({ history });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByText('Clear me')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('chat-clear'));
+
+    await waitFor(() =>
+      expect(screen.queryByText('Clear me')).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('turn-activity')).not.toBeInTheDocument();
   });
 });
 
@@ -160,10 +201,38 @@ describe('ChatPanel streaming', () => {
 
     expect(await screen.findByText('Streaming reply')).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByTestId('turn-divider')).toHaveAttribute(
+      expect(screen.getByTestId('turn-activity')).toHaveAttribute(
         'data-status',
         'completed',
       ),
+    );
+    expect(screen.getByTestId('turn-prompt')).toHaveTextContent('hi there');
+  });
+
+  it('sends the typed prompt when Enter is pressed in the composer', async () => {
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (c: TurnStreamChunk) => void,
+      ) => {
+        onChunk({ kind: 'started', turnId: 't-enter', sessionId: 'sess-enter' });
+        onChunk({ kind: 'event', event: { kind: 'turn_end', usage: {} } });
+        return Promise.resolve();
+      },
+    );
+    installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'send from enter' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: false });
+
+    await waitFor(() => expect(stream).toHaveBeenCalled());
+    expect(stream.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        prompt: 'send from enter',
+      }),
     );
   });
 
@@ -215,14 +284,16 @@ describe('ChatPanel streaming', () => {
     fireEvent.change(input, { target: { value: 'work' } });
     fireEvent.click(screen.getByTestId('composer-send'));
 
-    expect(await screen.findByText('claude not available')).toBeInTheDocument();
-    expect(screen.getByTestId('turn-divider')).toHaveAttribute(
+    expect(await screen.findByTestId('error-card')).toHaveTextContent(
+      'claude not available',
+    );
+    expect(screen.getByTestId('turn-activity')).toHaveAttribute(
       'data-status',
       'error',
     );
   });
 
-  it('shows configured skills when typing slash and inserts the selected prompt', async () => {
+  it('shows configured skills when typing slash and inserts the selected skill name', async () => {
     installApi({});
 
     render(<ChatPanel workspaceId="ws1" />);
@@ -232,7 +303,38 @@ describe('ChatPanel streaming', () => {
     expect(await screen.findByTestId('slash-menu')).toBeInTheDocument();
     fireEvent.click(await screen.findByTestId('slash-command-review'));
 
-    expect(input).toHaveValue('Review the current changes.');
+    expect(input).toHaveValue('/review ');
+  });
+
+  it('clears chat from /clear without starting a model turn', async () => {
+    const api = installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '/clear' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: false });
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('chat:clear', {
+        workspaceId: 'ws1',
+      }),
+    );
+    expect(api.stream).not.toHaveBeenCalled();
+    expect(input).toHaveValue('');
+  });
+
+  it('opens context usage details from the context button', async () => {
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-context-usage'));
+
+    expect(await screen.findByTestId('composer-context-popover')).toBeInTheDocument();
+    expect(screen.getByText('Context')).toBeInTheDocument();
+    expect(screen.getByText('Free space')).toBeInTheDocument();
+    expect(screen.getByText('Messages')).toBeInTheDocument();
+    expect(screen.getByText('Skills')).toBeInTheDocument();
   });
 
   it('expands slash commands with args before starting a turn', async () => {
@@ -247,7 +349,10 @@ describe('ChatPanel streaming', () => {
 
     render(<ChatPanel workspaceId="ws1" />);
     await waitFor(() =>
-      expect(api.invoke).toHaveBeenCalledWith('slash:list', undefined),
+      expect(api.invoke).toHaveBeenCalledWith(
+        'slash:list',
+        expect.objectContaining({ workspaceId: 'ws1' }),
+      ),
     );
     const input = await screen.findByTestId('composer-input');
     fireEvent.change(input, { target: { value: '/fix-checks rerun CI' } });
@@ -258,6 +363,9 @@ describe('ChatPanel streaming', () => {
       expect.objectContaining({
         prompt: 'Fix checks\n\nrerun CI',
       }),
+    );
+    expect(screen.getByTestId('turn-prompt')).toHaveTextContent(
+      '/fix-checks rerun CI',
     );
   });
 });

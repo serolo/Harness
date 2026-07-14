@@ -182,6 +182,10 @@ describe('HarnessSupervisor turn lifecycle', () => {
     expect(turns).toHaveLength(1);
     expect(turns[0].status).toBe('completed');
     expect(turns[0].outputTokens).toBe(34);
+    expect(turns[0].events[0]?.event).toEqual({
+      kind: 'user_message',
+      text: 'do the thing',
+    });
   });
 
   it('rejects a concurrent turn with AppError(conflict)', async () => {

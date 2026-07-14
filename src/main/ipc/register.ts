@@ -36,14 +36,20 @@ import type {
 import type { StreamSink } from '@shared/ipc';
 import type { AgentEvent, HarnessId, StartTurnOpts } from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
+import type { DiffQuery } from '@shared/review';
 import type { AppContext } from '../context';
 import { toAppError } from '../error';
 import { AppError, encodeAppErrorMessage } from '@shared/errors';
 import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
 import { TodosRepo } from '../db/repos/todos';
+import { MODEL_PATTERN, type TaskState } from '@shared/tasks';
+import { emitAll } from './events';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
-import { githubCliAuthStatus, githubCliToken } from '../integrations/github/ghCli';
+import {
+  githubCliAuthStatus,
+  githubCliToken,
+} from '../integrations/github/ghCli';
 import { discoverGitSshKeys } from '../git/sshKeys';
 import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
@@ -51,7 +57,6 @@ import { repoDir } from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
 import { resolveDeepLink } from '../deeplink';
 import { buildEnv } from '../process/env';
-import { discoverNativeSlashCommands } from '../slash/native';
 import type { PtyChunk } from '../pty';
 import {
   createStream,
@@ -105,6 +110,31 @@ function trackForFocusRefresh(workspaceId: string): void {
   trackedFocusRefreshIds.add(workspaceId);
 }
 
+/** Narrow a renderer-provided Git comparison before any ref reaches git. */
+function validateDiffQuery(req: DiffQuery): void {
+  if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+    throw new AppError('invalid_input', 'workspaceId is required');
+  }
+  if (typeof req.targetRef !== 'string' || req.targetRef === '') {
+    throw new AppError('invalid_input', 'targetRef is required');
+  }
+  if (
+    !req.scope ||
+    (req.scope.kind !== 'all' &&
+      req.scope.kind !== 'uncommitted' &&
+      req.scope.kind !== 'commit')
+  ) {
+    throw new AppError('invalid_input', 'unknown diff scope');
+  }
+  if (
+    req.scope.kind === 'commit' &&
+    (typeof req.scope.sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(req.scope.sha))
+  ) {
+    throw new AppError('invalid_input', 'commit sha must be 40 hex characters');
+  }
+}
+
 /**
  * Snapshot of the workspace ids to recompute checks for on window focus. Returned as an
  * array copy so the caller can iterate without racing further `checks:get` calls that
@@ -112,6 +142,34 @@ function trackForFocusRefresh(workspaceId: string): void {
  */
 export function focusRefreshWorkspaceIds(): string[] {
   return [...trackedFocusRefreshIds];
+}
+
+/** States a task can be `runNow`/`markDone` from (anything but `running`/`done`). */
+const RUNNABLE_TASK_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'pending',
+  'scheduled',
+  'missed',
+  'error',
+  'queued',
+]);
+
+/** Narrow an untrusted string to the closed `AgentMode` set. */
+function isAgentMode(value: unknown): boolean {
+  return value === 'plan' || value === 'default' || value === 'auto_accept';
+}
+
+/** True when a task may be fired / marked done (state gate for `task:runNow`/`markDone`). */
+function isRunnableState(state: TaskState): boolean {
+  return RUNNABLE_TASK_STATES.has(state);
+}
+
+/** Broadcast `task:changed` for a workspace to every open renderer (Phase 12). */
+function emitTaskChanged(workspaceId: string): void {
+  emitAll(
+    BrowserWindow.getAllWindows().map((w) => w.webContents),
+    'task:changed',
+    { workspaceId },
+  );
 }
 
 /**
@@ -354,7 +412,9 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
 
         const harnessOverride =
-          typeof arg.harness === 'string' ? (arg.harness as HarnessId) : undefined;
+          typeof arg.harness === 'string'
+            ? (arg.harness as HarnessId)
+            : undefined;
         if (
           harnessOverride !== undefined &&
           !['claude_code', 'codex', 'cursor'].includes(harnessOverride)
@@ -686,7 +746,7 @@ function registerStreamControl(ctx: AppContext): void {
  */
 export function registerIpc(ctx: AppContext): void {
   // app:ping — the renderer health check (flips the "IPC OK" indicator).
-  handle('app:ping', async () => 'ok');
+  handle('app:ping', async () => 'ok' as const);
 
   // app:info — static app/version info.
   handle('app:info', async () => ({
@@ -694,12 +754,6 @@ export function registerIpc(ctx: AppContext): void {
     version: app.getVersion(),
     electron: process.versions.electron,
   }));
-
-  handle('ui:setZoomLevel', async (req, event) => {
-    const level = Math.max(-3, Math.min(3, req.level));
-    event.sender.setZoomLevel(level);
-    return undefined;
-  });
 
   // app:echoStream — the request/response half of the demo. The actual chunks flow
   // over the `app:echoStream` StreamChannel (started via `stream:start`); this command
@@ -793,7 +847,6 @@ export function registerIpc(ctx: AppContext): void {
     return { turns };
   });
 
-  // chat:clear — clear persisted transcript and resume context for a workspace.
   handle('chat:clear', async (req) => {
     if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
       throw new AppError('invalid_input', 'workspaceId is required');
@@ -955,6 +1008,48 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
     return ctx.diff.commits(req.workspaceId);
+  });
+
+  // diff:menu — comparison target choices + counts + recent commits. The optional
+  // target must still be a non-empty string; DiffService then allowlists it against
+  // refs returned by `git for-each-ref` before using it.
+  handle('diff:menu', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (
+      req.targetRef !== undefined &&
+      (typeof req.targetRef !== 'string' || req.targetRef === '')
+    ) {
+      throw new AppError('invalid_input', 'targetRef must be a branch name');
+    }
+    return ctx.diff.menu(req.workspaceId, req.targetRef);
+  });
+
+  // Scoped list and per-file content. Both validate the complete query; the service
+  // additionally proves target/commit membership against repository-derived refs.
+  handle('diff:query', async (req) => {
+    validateDiffQuery(req);
+    const gitDiff = await ctx.diff.getDiffForQuery(req);
+    return {
+      baseRef: gitDiff.baseRef,
+      headRef: gitDiff.headRef,
+      files: gitDiff.files.map((f) => ({
+        path: f.path,
+        oldPath: f.oldPath,
+        change: f.change,
+        additions: f.additions,
+        deletions: f.deletions,
+      })),
+    };
+  });
+
+  handle('diff:fileQuery', async (req) => {
+    validateDiffQuery(req);
+    if (typeof req.path !== 'string' || req.path === '') {
+      throw new AppError('invalid_input', 'path is required');
+    }
+    return ctx.diff.fileDiffForQuery(req, req.path);
   });
 
   // comment:create — an inline diff comment (starts `open`). Narrow every field.
@@ -1153,7 +1248,10 @@ export function registerIpc(ctx: AppContext): void {
       if (frame.kind === 'connected') account = frame.account;
     });
     if (account === null) {
-      throw new AppError('integration', 'GitHub CLI connection did not complete');
+      throw new AppError(
+        'integration',
+        'GitHub CLI connection did not complete',
+      );
     }
     return account;
   });
@@ -1380,30 +1478,17 @@ export function registerIpc(ctx: AppContext): void {
     return ctx.settings.set(req.layer, req.keyPath, req.value);
   });
 
-  // slash:list — settings prompts plus provider-native Claude/Codex commands/skills.
-  // Each named prompt template becomes a `/name` command the composer can expand.
-  handle('slash:list', async (req) => {
+  // slash:list — settings prompts plus built-in default commands.
+  handle('slash:list', async () => {
     const prompts = ctx.settings.get().agent.prompts;
     const custom = Object.entries(prompts).map(([name, template]) => ({
       name,
       template,
     }));
-    const workspace =
-      req && 'workspaceId' in req && req.workspaceId
-        ? await ctx.workspaces.get(req.workspaceId)
-        : null;
-    const native = await discoverNativeSlashCommands({
-      harness: req && 'harness' in req ? req.harness : workspace?.harness,
-      workspaceDir: workspace?.worktreePath,
-    });
     const customNames = new Set(custom.map((cmd) => cmd.name));
-    const nativeNames = new Set(native.map((cmd) => cmd.name));
     return [
       ...custom,
-      ...native.filter((cmd) => !customNames.has(cmd.name)),
-      ...DEFAULT_SLASH_COMMANDS.filter(
-        (cmd) => !customNames.has(cmd.name) && !nativeNames.has(cmd.name),
-      ),
+      ...DEFAULT_SLASH_COMMANDS.filter((cmd) => !customNames.has(cmd.name)),
     ];
   });
 
@@ -1428,6 +1513,158 @@ export function registerIpc(ctx: AppContext): void {
   // update:install — quit + install a downloaded update. Rejects with a typed AppError
   // (through the boundary) when updates are unsupported or nothing is downloaded yet.
   handle('update:install', async () => ctx.updater.install());
+
+  // --- Phase 12: scheduled tasks (APPEND-ONLY) ---
+  // HEIGHTENED-SCRUTINY (IPC boundary): every handler narrows its untrusted payload
+  // before acting — non-empty strings, `scheduledAt` a POSITIVE integer (a past time is
+  // allowed; it simply fires on the next tick), `mode` in the closed AgentMode set,
+  // `model` against MODEL_PATTERN (rejecting whitespace/shell metacharacters BEFORE the
+  // string can reach spawn argv), and `origin` in its closed set. Every mutating handler
+  // broadcasts `task:changed { workspaceId }` so open renderers refetch.
+
+  // task:list — a workspace's scheduled tasks (created_at ASC).
+  handle('task:list', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    return ctx.tasks.list(req.workspaceId);
+  });
+
+  // task:create — create a task (state derived from whether a time is given). Validates
+  // every field and verifies the workspace exists before persisting.
+  handle('task:create', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (typeof req.prompt !== 'string' || req.prompt.trim() === '') {
+      throw new AppError('invalid_input', 'prompt is required');
+    }
+    if (
+      req.scheduledAt !== undefined &&
+      (!Number.isInteger(req.scheduledAt) || req.scheduledAt <= 0)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'scheduledAt must be a positive integer (epoch millis)',
+      );
+    }
+    if (req.mode !== undefined && !isAgentMode(req.mode)) {
+      throw new AppError(
+        'invalid_input',
+        'mode must be plan|default|auto_accept',
+      );
+    }
+    if (req.model !== undefined && !MODEL_PATTERN.test(req.model)) {
+      throw new AppError(
+        'invalid_input',
+        'model contains unsupported characters',
+      );
+    }
+    if (
+      req.origin !== undefined &&
+      req.origin !== 'user' &&
+      req.origin !== 'limit_resume'
+    ) {
+      throw new AppError('invalid_input', 'origin must be user|limit_resume');
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (!workspace) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    const task = await ctx.tasks.create(req);
+    emitTaskChanged(task.workspaceId);
+    return task;
+  });
+
+  // task:update — edit prompt/model/mode/schedule (nullable variants). The repo rejects a
+  // running task with `conflict` and re-derives state when the schedule changes.
+  handle('task:update', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    if (
+      req.prompt !== undefined &&
+      (typeof req.prompt !== 'string' || req.prompt.trim() === '')
+    ) {
+      throw new AppError('invalid_input', 'prompt must be a non-empty string');
+    }
+    if (
+      req.scheduledAt !== undefined &&
+      req.scheduledAt !== null &&
+      (!Number.isInteger(req.scheduledAt) || req.scheduledAt <= 0)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'scheduledAt must be a positive integer or null',
+      );
+    }
+    if (req.mode !== undefined && req.mode !== null && !isAgentMode(req.mode)) {
+      throw new AppError(
+        'invalid_input',
+        'mode must be plan|default|auto_accept',
+      );
+    }
+    if (
+      req.model !== undefined &&
+      req.model !== null &&
+      !MODEL_PATTERN.test(req.model)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'model contains unsupported characters',
+      );
+    }
+    const { id, ...patch } = req;
+    const task = await ctx.tasks.update(id, patch);
+    emitTaskChanged(task.workspaceId);
+    return task;
+  });
+
+  // task:delete — remove a task (repo rejects a running task with `conflict`). Fetch first
+  // so the `task:changed` broadcast carries the right workspaceId.
+  handle('task:delete', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    const task = await ctx.tasks.get(req.id);
+    await ctx.tasks.delete(req.id);
+    emitTaskChanged(task.workspaceId);
+  });
+
+  // task:runNow — fire immediately (queues if the workspace is busy). Only valid from a
+  // non-terminal, non-running state; the scheduler owns the actual firing.
+  handle('task:runNow', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    const task = await ctx.tasks.get(req.id);
+    if (!isRunnableState(task.state)) {
+      throw new AppError('conflict', `cannot run a ${task.state} task`, {
+        id: req.id,
+      });
+    }
+    const updated = await ctx.scheduler.runNow(req.id);
+    emitTaskChanged(updated.workspaceId);
+    return updated;
+  });
+
+  // task:markDone — mark a task done without running it (same state gate as runNow).
+  handle('task:markDone', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    const task = await ctx.tasks.get(req.id);
+    if (!isRunnableState(task.state)) {
+      throw new AppError('conflict', `cannot mark a ${task.state} task done`, {
+        id: req.id,
+      });
+    }
+    const updated = await ctx.tasks.setState(req.id, 'done');
+    emitTaskChanged(updated.workspaceId);
+    return updated;
+  });
 
   registerStreamControl(ctx);
 

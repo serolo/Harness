@@ -37,6 +37,8 @@ export interface DiffState {
   setSelectedPath: (workspaceId: string, path: string | null) => void;
   /** Cache a lazily-fetched `FileDiff` (from `diff:file`). */
   setFileDiff: (workspaceId: string, path: string, fileDiff: FileDiff) => void;
+  /** Clear file content cached for an old branch/scope comparison. */
+  clearFileDiffs: (workspaceId: string) => void;
   /** Replace a workspace's commit history (from `diff:commits`). */
   setCommits: (workspaceId: string, commits: CommitInfo[]) => void;
   /** Set the selected commit filter (a sha, or `null` for the full range). */
@@ -89,6 +91,15 @@ export const useDiffStore = create<DiffState>((set) => ({
           [workspaceId]: { ...cache, [path]: fileDiff },
         },
       };
+    }),
+
+  clearFileDiffs: (workspaceId) =>
+    set((state) => {
+      const fileDiffCacheByWorkspace = {
+        ...state.fileDiffCacheByWorkspace,
+      };
+      delete fileDiffCacheByWorkspace[workspaceId];
+      return { fileDiffCacheByWorkspace };
     }),
 
   setCommits: (workspaceId, commits) =>

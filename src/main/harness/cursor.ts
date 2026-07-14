@@ -18,8 +18,8 @@
 //
 // ASSUMED CLI (drift risk — plan §9; re-pin against the real CLI later). The binary is
 // `cursor-agent` ({@link CURSOR_BIN}). The turn argv is assumed to be
-// `cursor-agent -p [--force] -- <prompt>` (`-p` = non-interactive print mode so the CLI
-// runs one prompt to stdout and exits; `--force` only when auto-accepting edits). Auth
+// `cursor-agent -p --force -- <prompt>` (`-p` = non-interactive print mode so the CLI
+// runs one prompt to stdout and exits; `--force` keeps approvals non-interactive). Auth
 // is inherited from the user's existing Cursor login (spec §1.2) — no credential handling.
 
 import { execa } from 'execa';
@@ -131,19 +131,20 @@ export class CursorHarness implements Harness {
  * prompt containing shell metacharacters or leading dashes can never be interpreted as a
  * flag or shell (command-injection defense). Exported for the contract test.
  *
- * ASSUMED argv (re-pin per plan §9): `cursor-agent -p [--force] -- <prompt>`.
+ * ASSUMED argv (re-pin per plan §9): `cursor-agent -p --force -- <prompt>`.
  */
 export function buildCommand(opts: StartTurnOpts): RawCommand {
   const prompt = opts.prompt + serializeAttachments(opts.attachments);
   // `-p` = non-interactive print mode: run one prompt, stream to stdout, then exit.
   const args = ['-p'];
 
-  // Cursor has no plan-mode/resume/MCP (see capabilities); only auto_accept maps to a
-  // flag. `plan`/`default`/undefined use the CLI default — a `plan` request degrades
-  // silently (no flag, no throw) since the UI hides plan-mode for Cursor.
-  if (opts.mode === 'auto_accept') {
-    args.push('--force');
-  }
+  // Cursor's raw-terminal adapter has no interactive approval bridge. Keep its
+  // existing force mode on for every turn so it matches the always-auto-approved
+  // behavior of the structured Claude and Codex adapters.
+  args.push('--force');
+
+  // Phase 12: `opts.model` is Claude-specific; cursor-agent keeps its CLI default and
+  // ignores it (design doc §2 out-of-scope).
 
   // `--` ends flag parsing; the prompt is the final, discrete argument.
   args.push('--', prompt);

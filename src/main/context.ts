@@ -27,6 +27,8 @@ import type { LinearService } from './integrations/linear';
 import type { PrWorkflow } from './integrations/github/pr';
 import type { OnboardingService } from './onboarding';
 import type { UpdateService } from './update';
+import type { ScheduledTasksRepo } from './db/repos/tasks';
+import type { TaskScheduler } from './scheduler';
 
 /**
  * Service singletons + the typed DB handle, shared across the main process.
@@ -70,4 +72,8 @@ export interface AppContext {
   onboarding: OnboardingService;
   /** Auto-update lifecycle (electron-updater; descoped/guarded) (Phase 6, README §6.5). */
   updater: UpdateService;
+  /** Scheduled-tasks repository (Phase 12). */
+  tasks: ScheduledTasksRepo;
+  /** Scheduled-task firing service: tick loop + boot reconcile + queue drain (Phase 12). */
+  scheduler: TaskScheduler;
 }

@@ -16,9 +16,6 @@ export interface RenderedTurn {
   turnId: string;
   status: TurnStatus;
   sessionId?: string;
-  prompt?: string;
-  startedAt: number;
-  endedAt?: number;
   events: AgentEvent[];
   usage?: Usage;
 }
@@ -36,7 +33,7 @@ export interface ChatState {
     workspaceId: string,
     turnId: string,
     sessionId: string,
-    meta?: { prompt?: string; startedAt?: number },
+    initialEvent?: AgentEvent,
   ) => void;
   /** Append one event to the workspace's latest (streaming) turn, coalescing text. */
   appendEvent: (workspaceId: string, event: AgentEvent) => void;
@@ -80,16 +77,14 @@ export const useChatStore = create<ChatState>((set) => ({
       byWorkspace: { ...state.byWorkspace, [workspaceId]: turns },
     })),
 
-  startTurn: (workspaceId, turnId, sessionId, meta) =>
+  startTurn: (workspaceId, turnId, sessionId, initialEvent) =>
     set((state) => {
       const turns = state.byWorkspace[workspaceId] ?? [];
       const turn: RenderedTurn = {
         turnId,
         status: 'streaming',
         sessionId: sessionId || undefined,
-        prompt: meta?.prompt,
-        startedAt: meta?.startedAt ?? Date.now(),
-        events: [],
+        events: initialEvent ? [initialEvent] : [],
       };
       const last = turns[turns.length - 1];
       if (last?.turnId.startsWith('pending:') && last.status === 'streaming') {
@@ -98,12 +93,7 @@ export const useChatStore = create<ChatState>((set) => ({
             ...state.byWorkspace,
             [workspaceId]: [
               ...turns.slice(0, -1),
-              {
-                ...turn,
-                prompt: turn.prompt ?? last.prompt,
-                startedAt: meta?.startedAt ?? last.startedAt,
-                events: last.events,
-              },
+              { ...turn, events: last.events },
             ],
           },
         };
@@ -129,12 +119,7 @@ export const useChatStore = create<ChatState>((set) => ({
       const turns = state.byWorkspace[workspaceId] ?? [];
       if (turns.length === 0) return state;
       const next = turns.slice();
-      next[next.length - 1] = {
-        ...next[next.length - 1],
-        status,
-        usage,
-        endedAt: Date.now(),
-      };
+      next[next.length - 1] = { ...next[next.length - 1], status, usage };
       return {
         byWorkspace: { ...state.byWorkspace, [workspaceId]: next },
       };

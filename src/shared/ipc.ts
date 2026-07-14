@@ -38,6 +38,8 @@ import type {
   CommitInfo,
   DiffComment,
   DiffCommentState,
+  DiffMenuInfo,
+  DiffQuery,
   DiffSet,
   FileDiff,
   NewDiffComment,
@@ -52,6 +54,7 @@ import type {
   WritableSettingLayer,
 } from './settings';
 import type { SlashCommand } from './slash';
+import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
 
 /**
  * Main-side push handle produced by the stream helper `createStream()`
@@ -73,6 +76,21 @@ export interface AppInfo {
   name: string;
   version: string;
   electron: string;
+}
+
+export interface WorkspaceArchivePreview {
+  workspaceId: string;
+  dirty: boolean;
+  untracked: number;
+  modified: number;
+}
+
+export type WorkspaceOpenAppId = 'terminal' | 'finder' | 'vscode' | string;
+
+export interface WorkspaceOpenApp {
+  id: WorkspaceOpenAppId;
+  name: string;
+  installed: boolean;
 }
 
 /**
@@ -114,8 +132,6 @@ export type WorkspaceCreateEvent =
 export interface Commands {
   'app:ping': { req: void; res: 'ok' };
   'app:info': { req: void; res: AppInfo };
-  /** Set the focused renderer's zoom level. Level 0 is 100%. */
-  'ui:setZoomLevel': { req: { level: number }; res: void };
   // Streaming demo command — kicks off the `app:echoStream` scoped stream.
   // The actual chunks flow over the StreamChannels entry of the same name.
   'app:echoStream': { req: { text: string }; res: void };
@@ -279,7 +295,7 @@ export interface Commands {
   'settings:schema': { req: void; res: EffectiveSettings };
 
   // --- Phase 6: polish — slash / deep links / auto-update / onboarding (APPEND-ONLY) ---
-  /** The slash-command catalogue built from settings plus provider-native commands. */
+  /** Settings prompts plus provider-native commands and skills for a workspace. */
   'slash:list': {
     req: void | { workspaceId?: string; harness?: HarnessId };
     res: SlashCommand[];
@@ -317,6 +333,63 @@ export interface Commands {
   };
   /** Settings-gated workflow-state transition (e.g. on PR open/merge). */
   'linear:transition': { req: { issueId: string; stateId: string }; res: void };
+
+  // --- Phase 12: per-workspace scheduled agent tasks (APPEND-ONLY) ---
+  /** List a workspace's tasks (created_at ASC; the UI does any display grouping). */
+  'task:list': { req: { workspaceId: string }; res: ScheduledTask[] };
+  /** Create a task (state derived: scheduledAt present → 'scheduled', absent → 'pending'). */
+  'task:create': { req: CreateTaskReq; res: ScheduledTask };
+  /** Edit prompt/model/mode/schedule. Rejected with 'conflict' while running. */
+  'task:update': { req: UpdateTaskReq; res: ScheduledTask };
+  /** Delete a task. Rejected with 'conflict' while running. */
+  'task:delete': { req: { id: string }; res: void };
+  /** Fire a task immediately (queues if the workspace is busy). */
+  'task:runNow': { req: { id: string }; res: ScheduledTask };
+  /** Manually mark a task done without running it. */
+  'task:markDone': { req: { id: string }; res: ScheduledTask };
+
+  // --- Workspace archive safety (APPEND-ONLY) ---
+  /** Inspect dirty state and deletion behavior before confirming an archive. */
+  'workspace:archivePreview': {
+    req: { id: string };
+    res: WorkspaceArchivePreview;
+  };
+
+  // --- External workspace applications (APPEND-ONLY) ---
+  /** Detect supported applications currently registered with macOS. */
+  'workspace:listOpenApps': { req: void; res: WorkspaceOpenApp[] };
+  /** Open a workspace checkout in one detected application. */
+  'workspace:openInApp': {
+    req: { workspaceId: string; appId: WorkspaceOpenAppId };
+    res: void;
+  };
+
+  // --- Workspace context-menu actions (APPEND-ONLY) ---
+  /** Update user-controlled workspace metadata and/or its visible lifecycle status. */
+  'workspace:update': {
+    req: {
+      id: string;
+      name?: string;
+      status?: Workspace['status'];
+      isUnread?: boolean;
+      isPinned?: boolean;
+    };
+    res: Workspace;
+  };
+
+  // --- Git changes menu queries (APPEND-ONLY) ---
+  /** Branches, active target, uncommitted count, and commits for the changes menu. */
+  'diff:menu': {
+    req: { workspaceId: string; targetRef?: string };
+    res: DiffMenuInfo;
+  };
+  /** Compute one selected change scope against an allowlisted target branch. */
+  'diff:query': { req: DiffQuery; res: DiffSet };
+  /** Fetch file contents for the exact target/scope currently selected in the menu. */
+  'diff:fileQuery': {
+    req: DiffQuery & { path: string };
+    res: FileDiff;
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -366,6 +439,10 @@ export interface Events {
    * `selectWorkspace:<n>`); the renderer dispatches it against the current UI.
    */
   'menu:action': { actionId: string };
+
+  // --- Phase 12: scheduled tasks (APPEND-ONLY) ---
+  /** A scheduled task for this workspace changed (created/updated/fired/finished). */
+  'task:changed': { workspaceId: string };
 }
 
 export type EventChannel = keyof Events;

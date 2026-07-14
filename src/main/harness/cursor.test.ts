@@ -146,16 +146,10 @@ describe('buildCommand — argument array (command-injection surface)', () => {
     expect(cmd.args.filter((a) => a === nasty)).toHaveLength(1);
   });
 
-  it('maps auto_accept to --force but never emits a plan flag', () => {
-    expect(buildCommand(opts({ mode: 'auto_accept' })).args).toContain(
-      '--force',
-    );
-    const planArgs = buildCommand(opts({ mode: 'plan' })).args;
-    expect(planArgs).not.toContain('--force');
-    expect(planArgs.join(' ')).not.toContain('plan');
-    expect(buildCommand(opts({ mode: 'default' })).args).not.toContain(
-      '--force',
-    );
+  it('always forces non-interactive approval in every app mode', () => {
+    for (const mode of ['default', 'plan', 'auto_accept'] as const) {
+      expect(buildCommand(opts({ mode })).args).toContain('--force');
+    }
   });
 
   it('serializes attachments into the single prompt argument', () => {

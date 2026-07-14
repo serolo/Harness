@@ -1,7 +1,5 @@
-// FileTree — the `DiffSet.files` list: an A/M/D/R change badge + `+adds/-dels` stats
-// per file, click to select. Dense-row list styling shared with the sidebar's workspace
-// list (`data-testid` hooks, active-row highlight); the +adds/-dels stats and the A/D
-// badges use the `diff-add-accent`/`diff-del-accent` tokens (the diff-colors spec).
+// FileTree — the `DiffSet.files` overview: full paths, line stats, and a compact status
+// glyph. Clicking a row opens the file review surface.
 
 import type { DiffFileEntry } from '@shared/review';
 
@@ -17,11 +15,27 @@ const CHANGE_BADGE: Record<
   DiffFileEntry['change'],
   { label: string; className: string }
 > = {
-  added: { label: 'A', className: 'text-diff-add-accent' },
-  modified: { label: 'M', className: 'text-warn' },
-  deleted: { label: 'D', className: 'text-diff-del-accent' },
-  renamed: { label: 'R', className: 'text-info' },
+  added: {
+    label: '+',
+    className: 'border-diff-add-accent text-diff-add-accent',
+  },
+  modified: { label: '•', className: 'border-warn text-warn' },
+  deleted: {
+    label: '−',
+    className: 'border-diff-del-accent text-diff-del-accent',
+  },
+  renamed: { label: '↗', className: 'border-info text-info' },
 };
+
+function PathLabel({ path }: { path: string }): React.JSX.Element {
+  const splitAt = path.lastIndexOf('/') + 1;
+  return (
+    <span className="min-w-0 flex-1 truncate">
+      <span className="text-fg-3">{path.slice(0, splitAt)}</span>
+      <span className="text-fg-1">{path.slice(splitAt)}</span>
+    </span>
+  );
+}
 
 export function FileTree({
   files,
@@ -31,9 +45,9 @@ export function FileTree({
   return (
     <div className="h-full overflow-y-auto" data-testid="diff-file-tree">
       {files.length === 0 ? (
-        <p className="p-3 text-xs text-fg-3">No changed files.</p>
+        <p className="p-5 text-sm text-fg-3">No changed files.</p>
       ) : (
-        <ul>
+        <ul className="py-2">
           {files.map((f) => {
             const badge = CHANGE_BADGE[f.change];
             const active = f.path === selectedPath;
@@ -44,26 +58,32 @@ export function FileTree({
                   data-testid={`diff-file-${f.path}`}
                   aria-pressed={active}
                   onClick={() => onSelect(f.path)}
-                  className={`flex w-full items-center gap-2 border-b border-border-1 px-2 py-1.5 text-left text-xs transition-colors duration-fast ease-out ${
-                    active ? 'bg-bg-4 text-fg-1' : 'text-fg-2 hover:bg-bg-3'
+                  className={`flex w-full items-center gap-3 px-5 py-2.5 text-left text-sm transition-colors duration-fast ease-out ${
+                    active ? 'bg-bg-4' : 'hover:bg-bg-3'
                   }`}
                   title={f.path}
                 >
+                  <PathLabel path={f.path} />
                   <span
-                    className={`w-3 shrink-0 font-mono font-semibold ${badge.className}`}
+                    className="shrink-0 font-mono text-xs tabular-nums"
                     aria-hidden="true"
+                  >
+                    {f.additions > 0 ? (
+                      <span className="text-diff-add-accent">
+                        +{f.additions}
+                      </span>
+                    ) : null}{' '}
+                    {f.deletions > 0 ? (
+                      <span className="text-diff-del-accent">
+                        -{f.deletions}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] border font-mono text-[10px] font-semibold leading-none ${badge.className}`}
+                    aria-label={f.change}
                   >
                     {badge.label}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate font-mono">
-                    {f.path}
-                  </span>
-                  <span
-                    className="shrink-0 font-mono text-xs"
-                    aria-hidden="true"
-                  >
-                    <span className="text-diff-add-accent">+{f.additions}</span>{' '}
-                    <span className="text-diff-del-accent">-{f.deletions}</span>
                   </span>
                 </button>
               </li>

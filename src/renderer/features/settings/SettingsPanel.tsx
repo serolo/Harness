@@ -44,7 +44,8 @@ export function SettingsPanel({
 }: SettingsPanelProps): React.JSX.Element {
   const { effective, provenance, issues, loading, error, set } = useSettings();
   const [scope, setScope] = useState<'user' | 'repo'>('user');
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>('general');
+  const [activeSection, setActiveSection] =
+    useState<SettingsSectionId>('general');
   const [sshKeys, setSshKeys] = useState<GitSshKey[]>([]);
   const [sshError, setSshError] = useState<string | null>(null);
   const [githubAccounts, setGithubAccounts] = useState<GithubAccount[]>([]);
@@ -145,7 +146,9 @@ export function SettingsPanel({
   const rowsBySection = useMemo(() => {
     const all = SETTINGS_SECTIONS.flatMap((section) => section.fields);
     return {
-      general: all.filter((field) => field.keyPath.startsWith('notifications.')),
+      general: all.filter((field) =>
+        field.keyPath.startsWith('notifications.'),
+      ),
       harnesses: all.filter((field) => field.keyPath.startsWith('agent.')),
       git: all.filter((field) => field.keyPath.startsWith('git.')),
     };
@@ -170,10 +173,16 @@ export function SettingsPanel({
             </button>
           ) : null}
           <div className="flex h-full items-end gap-7">
-            <ScopeTab active={scope === 'user'} onClick={() => setScope('user')}>
+            <ScopeTab
+              active={scope === 'user'}
+              onClick={() => setScope('user')}
+            >
               User
             </ScopeTab>
-            <ScopeTab active={scope === 'repo'} onClick={() => setScope('repo')}>
+            <ScopeTab
+              active={scope === 'repo'}
+              onClick={() => setScope('repo')}
+            >
               Repo
             </ScopeTab>
           </div>
@@ -209,98 +218,101 @@ export function SettingsPanel({
         </aside>
 
         <main className="min-h-0 overflow-y-auto">
-        {loading && effective === null ? (
-          <div
-            className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
-            data-testid="settings-loading"
-          >
-            Loading settings…
-          </div>
-        ) : effective === null ? (
-          <div
-            className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
-            data-testid="settings-empty"
-          >
-            No settings available.
-          </div>
-        ) : (
-          <div className="mx-auto w-full max-w-[980px] px-10 py-10">
-            {activeSection === 'general' ? (
-              <SettingsSection title="General" testId="settings-section-general">
-                <SettingRows
-                  fields={rowsBySection.general}
-                  effective={effective}
-                  provenance={provenance}
-                  onSet={(keyPath, value) => void set(keyPath, value)}
-                />
-              </SettingsSection>
-            ) : null}
-
-            {activeSection === 'harnesses' ? (
-              <SettingsSection
-                title="Harnesses"
-                testId="settings-section-harnesses"
-              >
-                <SettingRows
-                  fields={rowsBySection.harnesses}
-                  effective={effective}
-                  provenance={provenance}
-                  onSet={(keyPath, value) => void set(keyPath, value)}
-                />
-              </SettingsSection>
-            ) : null}
-
-            {activeSection === 'git' ? (
-              <SettingsSection title="Git" testId="settings-section-git">
-                <GithubAuthPanel
-                  accounts={githubAccounts}
-                  cli={githubCli}
-                  busy={githubBusy}
-                  error={githubAuthError}
-                  pat={githubPat}
-                  onPatChange={setGithubPat}
-                  onRefresh={() => void refreshGithubAuth()}
-                  onConnectCli={() => void connectGithubFromCli()}
-                  onConnectPat={() => void connectGithubPat()}
-                />
-                <SettingRows
-                  fields={rowsBySection.git}
-                  effective={effective}
-                  provenance={provenance}
-                  onSet={(keyPath, value) => void set(keyPath, value)}
-                />
-                <SshKeysPanel keys={sshKeys} error={sshError} />
-              </SettingsSection>
-            ) : null}
-
-            {activeSection === 'environment' ? (
-              <SettingsSection
-                title="Environment"
-                testId="settings-section-environment"
-              >
-                {effective ? (
-                  <RunScriptEditor
+          {loading && effective === null ? (
+            <div
+              className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
+              data-testid="settings-loading"
+            >
+              Loading settings…
+            </div>
+          ) : effective === null ? (
+            <div
+              className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
+              data-testid="settings-empty"
+            >
+              No settings available.
+            </div>
+          ) : (
+            <div className="mx-auto w-full max-w-[980px] px-10 py-10">
+              {activeSection === 'general' ? (
+                <SettingsSection
+                  title="General"
+                  testId="settings-section-general"
+                >
+                  <SettingRows
+                    fields={rowsBySection.general}
                     effective={effective}
                     provenance={provenance}
                     onSet={(keyPath, value) => void set(keyPath, value)}
                   />
-                ) : null}
-              </SettingsSection>
-            ) : null}
+                </SettingsSection>
+              ) : null}
 
-            {activeSection !== 'general' &&
-            activeSection !== 'harnesses' &&
-            activeSection !== 'git' &&
-            activeSection !== 'environment' ? (
-              <SettingsSection
-                title={SECTION_LABELS[activeSection]}
-                testId={`settings-section-${activeSection}`}
-              >
-                <EmptySection section={activeSection} />
-              </SettingsSection>
-            ) : null}
-          </div>
-        )}
+              {activeSection === 'harnesses' ? (
+                <SettingsSection
+                  title="Harnesses"
+                  testId="settings-section-harnesses"
+                >
+                  <SettingRows
+                    fields={rowsBySection.harnesses}
+                    effective={effective}
+                    provenance={provenance}
+                    onSet={(keyPath, value) => void set(keyPath, value)}
+                  />
+                </SettingsSection>
+              ) : null}
+
+              {activeSection === 'git' ? (
+                <SettingsSection title="Git" testId="settings-section-git">
+                  <GithubAuthPanel
+                    accounts={githubAccounts}
+                    cli={githubCli}
+                    busy={githubBusy}
+                    error={githubAuthError}
+                    pat={githubPat}
+                    onPatChange={setGithubPat}
+                    onRefresh={() => void refreshGithubAuth()}
+                    onConnectCli={() => void connectGithubFromCli()}
+                    onConnectPat={() => void connectGithubPat()}
+                  />
+                  <SettingRows
+                    fields={rowsBySection.git}
+                    effective={effective}
+                    provenance={provenance}
+                    onSet={(keyPath, value) => void set(keyPath, value)}
+                  />
+                  <SshKeysPanel keys={sshKeys} error={sshError} />
+                </SettingsSection>
+              ) : null}
+
+              {activeSection === 'environment' ? (
+                <SettingsSection
+                  title="Environment"
+                  testId="settings-section-environment"
+                >
+                  {effective ? (
+                    <RunScriptEditor
+                      effective={effective}
+                      provenance={provenance}
+                      onSet={(keyPath, value) => void set(keyPath, value)}
+                    />
+                  ) : null}
+                </SettingsSection>
+              ) : null}
+
+              {activeSection !== 'general' &&
+              activeSection !== 'harnesses' &&
+              activeSection !== 'git' &&
+              activeSection !== 'environment' ? (
+                <SettingsSection
+                  title={SECTION_LABELS[activeSection]}
+                  testId={`settings-section-${activeSection}`}
+                >
+                  <EmptySection section={activeSection} />
+                </SettingsSection>
+              ) : null}
+            </div>
+          )}
         </main>
       </div>
     </div>
@@ -315,7 +327,8 @@ async function safeGithubCliStatus(): Promise<GithubCliAuthStatus> {
       return {
         available: false,
         authenticated: false,
-        message: 'Restart the app to enable GitHub CLI auth in this dev session.',
+        message:
+          'Restart the app to enable GitHub CLI auth in this dev session.',
       };
     }
     throw err;
@@ -458,9 +471,7 @@ function NavButton({
       data-testid={`settings-nav-${item.id}`}
       onClick={onClick}
       className={`flex h-10 w-full items-center gap-3 rounded-2 px-3 text-left text-sm font-medium ${
-        active
-          ? 'bg-bg-4 text-fg-1'
-          : 'text-fg-2 hover:bg-bg-3 hover:text-fg-1'
+        active ? 'bg-bg-4 text-fg-1' : 'text-fg-2 hover:bg-bg-3 hover:text-fg-1'
       }`}
     >
       <Icon className="h-4 w-4" aria-hidden />
@@ -578,7 +589,8 @@ function GithubAuthPanel({
                 <p className="mt-2 text-sm text-fg-2">
                   {cli?.authenticated
                     ? `gh is authenticated${cli.login ? ` as ${cli.login}` : ''}.`
-                    : (cli?.message ?? 'Install and authenticate gh to use this option.')}
+                    : (cli?.message ??
+                      'Install and authenticate gh to use this option.')}
                 </p>
               </div>
             </div>
@@ -678,7 +690,9 @@ function RadioMark({ selected }: { selected: boolean }): React.JSX.Element {
       }`}
       aria-hidden
     >
-      {selected ? <span className="h-2.5 w-2.5 rounded-full bg-accent" /> : null}
+      {selected ? (
+        <span className="h-2.5 w-2.5 rounded-full bg-accent" />
+      ) : null}
     </span>
   );
 }
@@ -715,9 +729,7 @@ function SshKeysPanel({
       <div className="mb-4 flex items-center gap-3">
         <KeyRound className="h-5 w-5 text-fg-3" aria-hidden />
         <div>
-          <h2 className="text-base font-semibold text-fg-1">
-            SSH identities
-          </h2>
+          <h2 className="text-base font-semibold text-fg-1">SSH identities</h2>
           <p className="mt-1 text-sm leading-relaxed text-fg-2">
             Discovered from ~/.ssh, ~/.gitconfig sshCommand entries, and
             ~/.ssh/config IdentityFile entries.

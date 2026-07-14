@@ -28,6 +28,8 @@ import type {
   CommitInfo,
   DiffComment,
   DiffCommentState,
+  DiffMenuInfo,
+  DiffQuery,
   FileDiff,
   NewDiffComment,
   SendToAgentResult,
@@ -214,6 +216,122 @@ export class DiffService {
     const { wt, workspace } = await this.resolveWorktree(workspaceId);
     const base = await this.mergeBaseWithFallback(wt, workspace.baseBranch);
 
+    return this.commitsFromBase(wt, base);
+  }
+
+  /** Build the branch/scope menu from refs and status inside this workspace only. */
+  async menu(
+    workspaceId: string,
+    requestedTargetRef?: string,
+  ): Promise<DiffMenuInfo> {
+    const { wt, workspace } = await this.resolveWorktree(workspaceId);
+    const branches = await this.deps.git.listBranches(wt);
+    const targetRef =
+      requestedTargetRef ?? this.defaultTargetRef(workspace, branches);
+    this.assertTargetRef(targetRef, branches);
+
+    const [status, base] = await Promise.all([
+      this.deps.git.status(wt),
+      this.deps.git.mergeBase(wt, 'HEAD', targetRef),
+    ]);
+    const commits = await this.commitsFromBase(wt, base);
+
+    return {
+      currentBranch: status.branch ?? 'HEAD',
+      targetRef,
+      branches,
+      commits,
+      uncommittedFileCount: status.files.length,
+    };
+  }
+
+  /** Compute All, Uncommitted, or one allowlisted commit for the changes list. */
+  async getDiffForQuery(query: DiffQuery): Promise<GitDiff> {
+    const { wt } = await this.resolveWorktree(query.workspaceId);
+    const branches = await this.deps.git.listBranches(wt);
+    this.assertTargetRef(query.targetRef, branches);
+
+    if (query.scope.kind === 'uncommitted') {
+      const [gitDiff, status] = await Promise.all([
+        this.deps.git.diff(wt, 'HEAD'),
+        this.deps.git.status(wt),
+      ]);
+      // Make the scope definition explicit: only paths currently reported by status
+      // belong here. This excludes every already-committed target..HEAD change even if
+      // another diff implementation starts returning a broader range in the future.
+      const pendingPaths = new Set(status.files.map((file) => file.path));
+      const pendingTracked = {
+        ...gitDiff,
+        files: gitDiff.files.filter((file) => pendingPaths.has(file.path)),
+      };
+      return this.surfaceUntracked(wt, pendingTracked, status);
+    }
+
+    const base = await this.deps.git.mergeBase(wt, 'HEAD', query.targetRef);
+    if (query.scope.kind === 'all') {
+      const [gitDiff, status] = await Promise.all([
+        this.deps.git.diff(wt, base),
+        this.deps.git.status(wt),
+      ]);
+      return this.surfaceUntracked(wt, gitDiff, status);
+    }
+
+    const commits = await this.commitsFromBase(wt, base);
+    this.assertCommit(query.scope.sha, commits);
+    return this.deps.git.diffBetween(
+      wt,
+      `${query.scope.sha}^`,
+      query.scope.sha,
+    );
+  }
+
+  /** Fetch file contents for the exact comparison represented by a Git menu query. */
+  async fileDiffForQuery(query: DiffQuery, path: string): Promise<FileDiff> {
+    const { wt } = await this.resolveWorktree(query.workspaceId);
+    const { relPath, abs } = this.confine(wt, path);
+    const gitDiff = await this.getDiffForQuery(query);
+    const entry = gitDiff.files.find((file) => file.path === relPath);
+    const oldPath = entry?.oldPath ?? relPath;
+    const committedHead =
+      query.scope.kind === 'commit' ? query.scope.sha : null;
+
+    const oldContent = await this.readFileAtRef(wt, gitDiff.baseRef, oldPath);
+    let newContent = '';
+    if (committedHead) {
+      newContent = await this.readFileAtRef(wt, committedHead, relPath);
+    } else {
+      try {
+        newContent = await readFile(abs, 'utf8');
+      } catch {
+        newContent = '';
+      }
+    }
+
+    const pathspecs = oldPath === relPath ? [relPath] : [oldPath, relPath];
+    const args = ['-C', wt, 'diff', gitDiff.baseRef];
+    if (committedHead) args.push(committedHead);
+    args.push('--', ...pathspecs);
+    let patch = '';
+    try {
+      const res = await execa('git', args);
+      patch = res.stdout;
+    } catch {
+      patch = '';
+    }
+
+    return {
+      path: relPath,
+      oldContent,
+      newContent,
+      hunks: parseUnifiedHunks(patch),
+    };
+  }
+
+  /** Parse commits in `<base>..HEAD`, newest first. */
+  private async commitsFromBase(
+    wt: string,
+    base: string,
+  ): Promise<CommitInfo[]> {
     // Field-separate with \x1f and record-separate with \x1e so subjects/authors may
     // contain any other whitespace without ambiguating the parse.
     const format = ['%H', '%h', '%s', '%an', '%ct'].join('%x1f');
@@ -465,6 +583,56 @@ export class DiffService {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /** Prefer the remote-tracking base when it exists, then the local base branch. */
+  private defaultTargetRef(workspace: Workspace, branches: string[]): string {
+    const remote = `origin/${workspace.baseBranch}`;
+    if (branches.includes(remote)) return remote;
+    if (branches.includes(workspace.baseBranch)) return workspace.baseBranch;
+    return branches[0] ?? workspace.baseBranch;
+  }
+
+  /** Only refs discovered from `for-each-ref` may reach a query git command. */
+  private assertTargetRef(targetRef: string, branches: string[]): void {
+    if (
+      typeof targetRef !== 'string' ||
+      targetRef === '' ||
+      !branches.includes(targetRef)
+    ) {
+      throw new AppError('invalid_input', 'unknown target branch', {
+        targetRef,
+      });
+    }
+  }
+
+  /** A single-commit scope must be a commit in the selected target..HEAD range. */
+  private assertCommit(sha: string, commits: CommitInfo[]): void {
+    if (!/^[0-9a-f]{40}$/i.test(sha) || !commits.some((c) => c.sha === sha)) {
+      throw new AppError(
+        'invalid_input',
+        'commit is outside the selected range',
+        {
+          sha,
+        },
+      );
+    }
+  }
+
+  /** Read one repo-relative file at a validated ref; absent files become empty. */
+  private async readFileAtRef(
+    wt: string,
+    ref: string,
+    relPath: string,
+  ): Promise<string> {
+    try {
+      const res = await execa('git', ['-C', wt, 'show', `${ref}:${relPath}`], {
+        stripFinalNewline: false,
+      });
+      return res.stdout;
+    } catch {
+      return '';
+    }
+  }
 
   /** Resolve a workspace to its worktree path, mirroring register.ts error codes. */
   private async resolveWorktree(

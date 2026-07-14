@@ -155,7 +155,7 @@ export class TurnRecorder {
     return turns;
   }
 
-  /** Clear a workspace's persisted turns/events and any in-memory pending text. */
+  /** Clear persisted turns and discard buffered text belonging to this workspace. */
   async clear(workspaceId: string): Promise<void> {
     for (const [turnId] of this.state) {
       const turn = await this.turns.getById(turnId);

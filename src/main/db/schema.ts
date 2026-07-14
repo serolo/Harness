@@ -16,6 +16,7 @@ import type {
   WorkspaceStatus,
 } from '@shared/models';
 import type { AgentMode, HarnessId } from '@shared/harness';
+import type { TaskOrigin, TaskState } from '@shared/tasks';
 
 /**
  * `projects` table (spec §3 DDL). Column set is authoritative:
@@ -150,6 +151,28 @@ export interface IntegrationsTable {
 }
 
 /**
+ * `scheduled_tasks` table (migration 0008 — Phase 12). One per-workspace scheduled agent
+ * task: a prompt + optional `model`/`mode` + an OPTIONAL one-shot `scheduled_at`, a
+ * lifecycle `state`, an `origin`, and a nullable `turn_id` back-reference. `state`/`origin`
+ * are TEXT widened to the frozen shared unions; the write path (ScheduledTasksRepo)
+ * validates. Nullable per DDL: model, mode, scheduled_at, turn_id, error_message.
+ */
+export interface ScheduledTasksTable {
+  id: string; // TEXT PRIMARY KEY — UUIDv7
+  workspace_id: string; // TEXT NOT NULL REFERENCES workspaces(id)
+  prompt: string; // TEXT NOT NULL
+  model: string | null; // TEXT — NULL = CLI default
+  mode: AgentMode | null; // TEXT — plan|default|auto_accept, NULL = settings default
+  scheduled_at: number | null; // INTEGER — epoch millis, NULL = untimed
+  state: TaskState; // TEXT NOT NULL — pending|scheduled|queued|running|done|missed|error
+  origin: TaskOrigin; // TEXT NOT NULL — user|limit_resume
+  turn_id: string | null; // TEXT — NULL until the task has produced a turn
+  error_message: string | null; // TEXT — NULL unless firing/the turn failed
+  created_at: number; // INTEGER NOT NULL — epoch millis
+  updated_at: number; // INTEGER NOT NULL — epoch millis
+}
+
+/**
  * The Kysely database interface. One key per table. Later phases APPEND their
  * tables here (turns, events, checkpoints, …) alongside their new migration —
  * never edit an existing table type in a way that diverges from a shipped
@@ -164,4 +187,5 @@ export interface Database {
   diff_comments: DiffCommentsTable;
   todos: TodosTable;
   integrations: IntegrationsTable;
+  scheduled_tasks: ScheduledTasksTable;
 }

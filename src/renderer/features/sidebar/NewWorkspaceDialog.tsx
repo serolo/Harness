@@ -553,61 +553,56 @@ export function NewWorkspaceDialog({
                     show a static hint; the Linear tab shows an inline connect affordance. */}
                 {!listLoading &&
                   listError !== null &&
-                  activeTab !== 'linear' && (
-                    listError === 'no GitHub account connected' ? (
-                      <div
-                        data-testid="github-empty"
-                        className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
-                      >
-                        <p className="text-sm text-fg-2 text-center">
-                          Connect GitHub to list{' '}
-                          {activeTab === 'pr' ? 'pull requests' : 'issues'}.
-                        </p>
-                        <p className="mt-1 text-center text-xs text-fg-3">
-                          Paste a GitHub personal access token with repo access.
-                        </p>
-                        <div className="mt-2 flex gap-2">
-                          <Input
-                            type="password"
-                            value={githubToken}
-                            onChange={(e) => setGithubToken(e.target.value)}
-                            placeholder="github_pat_…"
-                            disabled={connecting}
-                            data-testid="github-token-input"
-                            className="flex-1"
-                          />
-                          <Button
-                            type="button"
-                            variant="primary"
-                            onClick={() => void handleConnectGithub()}
-                            disabled={connecting || githubToken.trim() === ''}
-                            data-testid="github-connect-submit"
-                          >
-                            {connecting ? 'Connecting…' : 'Connect'}
-                          </Button>
-                        </div>
-                        {connectError && (
-                          <p
-                            data-testid="github-connect-error"
-                            className="mt-2 text-xs text-danger"
-                          >
-                            {connectError}
-                          </p>
-                        )}
-                      </div>
-                    ) : (
-                      <div
-                        data-testid="github-list-error"
-                        className="rounded-2 border border-danger/30 bg-danger-muted px-3 py-4"
-                      >
-                        <p
-                          className="text-xs text-danger"
+                  activeTab !== 'linear' &&
+                  (listError === 'no GitHub account connected' ? (
+                    <div
+                      data-testid="github-empty"
+                      className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
+                    >
+                      <p className="text-sm text-fg-2 text-center">
+                        Connect GitHub to list{' '}
+                        {activeTab === 'pr' ? 'pull requests' : 'issues'}.
+                      </p>
+                      <p className="mt-1 text-center text-xs text-fg-3">
+                        Paste a GitHub personal access token with repo access.
+                      </p>
+                      <div className="mt-2 flex gap-2">
+                        <Input
+                          type="password"
+                          value={githubToken}
+                          onChange={(e) => setGithubToken(e.target.value)}
+                          placeholder="github_pat_…"
+                          disabled={connecting}
+                          data-testid="github-token-input"
+                          className="flex-1"
+                        />
+                        <Button
+                          type="button"
+                          variant="primary"
+                          onClick={() => void handleConnectGithub()}
+                          disabled={connecting || githubToken.trim() === ''}
+                          data-testid="github-connect-submit"
                         >
-                          {listError}
-                        </p>
+                          {connecting ? 'Connecting…' : 'Connect'}
+                        </Button>
                       </div>
-                    )
-                  )}
+                      {connectError && (
+                        <p
+                          data-testid="github-connect-error"
+                          className="mt-2 text-xs text-danger"
+                        >
+                          {connectError}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      data-testid="github-list-error"
+                      className="rounded-2 border border-danger/30 bg-danger-muted px-3 py-4"
+                    >
+                      <p className="text-xs text-danger">{listError}</p>
+                    </div>
+                  ))}
 
                 {/* Linear no-account empty state: inline API-key connect. */}
                 {!listLoading &&

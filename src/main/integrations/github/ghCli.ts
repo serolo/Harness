@@ -9,10 +9,14 @@ import type { GithubCliAuthStatus } from '@shared/github';
 /** Inspect local `gh auth status` for github.com. Token-free. */
 export async function githubCliAuthStatus(): Promise<GithubCliAuthStatus> {
   try {
-    const result = await execa('gh', ['auth', 'status', '--hostname', 'github.com'], {
-      reject: false,
-      timeout: 10_000,
-    });
+    const result = await execa(
+      'gh',
+      ['auth', 'status', '--hostname', 'github.com'],
+      {
+        reject: false,
+        timeout: 10_000,
+      },
+    );
     const output = `${result.stdout}\n${result.stderr}`.trim();
     if (result.exitCode !== 0) {
       return {
@@ -46,9 +50,13 @@ export async function githubCliAuthStatus(): Promise<GithubCliAuthStatus> {
 /** Read the local `gh auth token`. The returned token must stay in main. */
 export async function githubCliToken(): Promise<string> {
   try {
-    const result = await execa('gh', ['auth', 'token', '--hostname', 'github.com'], {
-      timeout: 10_000,
-    });
+    const result = await execa(
+      'gh',
+      ['auth', 'token', '--hostname', 'github.com'],
+      {
+        timeout: 10_000,
+      },
+    );
     const token = result.stdout.trim();
     if (token === '') {
       throw new AppError('integration', 'GitHub CLI returned an empty token');

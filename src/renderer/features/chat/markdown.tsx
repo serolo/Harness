@@ -71,8 +71,8 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
         level === 1
           ? 'mb-3 mt-6 text-lg font-bold leading-tight text-fg-1'
           : level === 2
-            ? 'mb-2 mt-5 text-md font-bold leading-tight text-fg-1'
-            : 'mb-2 mt-4 text-base font-semibold leading-snug text-fg-1';
+            ? 'mb-2 mt-5 text-[18px] font-bold leading-tight text-fg-1'
+            : 'mb-2 mt-4 text-[16px] font-semibold leading-snug text-fg-1';
       out.push(
         <h2 key={`${baseKey}-h-${i}`} className={className}>
           {renderInline(heading[2])}
@@ -90,14 +90,14 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
         ordered ? (
           <ol
             key={`${baseKey}-ol-${i}`}
-            className="my-3 list-decimal space-y-1.5 pl-5 text-base leading-6 text-fg-1"
+            className="my-3 list-decimal space-y-1.5 pl-6 text-md leading-relaxed text-fg-1"
           >
             {items}
           </ol>
         ) : (
           <ul
             key={`${baseKey}-ul-${i}`}
-            className="my-3 list-disc space-y-1.5 pl-5 text-base leading-6 text-fg-1"
+            className="my-3 list-disc space-y-1.5 pl-6 text-md leading-relaxed text-fg-1"
           >
             {items}
           </ul>
@@ -107,7 +107,7 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
       out.push(
         <p
           key={`${baseKey}-p-${i}`}
-          className="my-3 whitespace-pre-wrap text-base leading-6 text-fg-1"
+          className="my-3 whitespace-pre-wrap text-md leading-relaxed text-fg-1"
         >
           {renderInline(trimmed)}
         </p>,

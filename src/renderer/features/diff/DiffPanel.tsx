@@ -1,17 +1,14 @@
-// DiffPanel — the diff-review center tab's orchestrator: [FileTree | DiffView +
-// CommentRail] with a CommitFilter + "Agent review" row up top and the
-// CheckpointTimeline along the bottom. Empty states cover "no workspace selected" and
-// "no changes in this workspace". Wires `useDiff` + `useCheckpoints` to the presentational
-// sub-components; all main access happens inside those hooks via `@renderer/ipc`.
+// Git changes panel: a compact changes overview by default, with file review details
+// opened on selection. Review comments and checkpoints remain available without crowding
+// the always-visible file list.
 
+import { Eye } from 'lucide-react';
 import { Button } from '@renderer/components/ui';
 import { FileTree } from './FileTree';
 import { DiffView } from './DiffView';
 import { CommentRail } from './CommentRail';
 import { CommitFilter } from './CommitFilter';
-import { CheckpointTimeline } from './CheckpointTimeline';
 import { useDiff } from './useDiff';
-import { useCheckpoints } from './useCheckpoints';
 
 export interface DiffPanelProps {
   workspaceId: string | null;
@@ -24,9 +21,10 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
     selectFile,
     fileDiff,
     loadingFileDiff,
-    commits,
-    commitFilter,
-    setCommitFilter,
+    menuInfo,
+    scope,
+    setTargetRef,
+    setScope,
     comments,
     openComments,
     createComment,
@@ -34,7 +32,6 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
     sendCommentsToAgent,
     runReview,
   } = useDiff(workspaceId);
-  const { checkpoints, revert } = useCheckpoints(workspaceId);
 
   if (!workspaceId) {
     return (
@@ -47,53 +44,74 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
     );
   }
 
-  const hasChanges = (diffSet?.files.length ?? 0) > 0;
+  const files = diffSet?.files ?? [];
+  const hasChanges = files.length > 0;
 
   return (
-    <div className="flex h-full flex-col" data-testid="diff-panel">
-      <div className="flex items-center justify-between gap-2 border-b border-border-1 px-3 py-2">
-        <CommitFilter
-          commits={commits}
-          value={commitFilter}
-          onChange={setCommitFilter}
-        />
-        <Button
-          size="sm"
-          data-testid="agent-review"
-          onClick={() => void runReview()}
+    <div
+      className="relative flex h-full min-h-0 flex-col bg-surface-app"
+      data-testid="diff-panel"
+    >
+      <header
+        className="flex h-12 shrink-0 items-center gap-2 border-b border-border-1 px-3"
+        data-testid="git-changes-header"
+      >
+        <button
+          type="button"
+          className="shrink-0 rounded-2 px-2 py-1 text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+          onClick={() => selectFile(null)}
         >
-          Agent review
-        </Button>
-      </div>
+          All files
+        </button>
+        <button
+          type="button"
+          className="flex shrink-0 items-center gap-2 rounded-3 bg-bg-4 px-3 py-1.5 text-sm font-medium text-fg-1"
+          aria-pressed={selectedPath === null}
+          onClick={() => selectFile(null)}
+        >
+          Changes <span className="text-fg-2">{files.length}</span>
+        </button>
+
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-fg-2"
+            data-testid="agent-review"
+            onClick={() => void runReview()}
+          >
+            <Eye className="h-4 w-4" aria-hidden="true" />
+            Review
+          </Button>
+          <CommitFilter
+            info={menuInfo}
+            scope={scope}
+            onTargetRefChange={setTargetRef}
+            onScopeChange={setScope}
+          />
+        </div>
+      </header>
 
       {!hasChanges ? (
         <div
-          className="flex flex-1 items-center justify-center p-6 text-sm text-fg-3"
+          className="flex min-h-0 flex-1 items-center justify-center p-6 text-sm text-fg-3"
           data-testid="diff-no-changes"
         >
           No changes in this workspace.
         </div>
-      ) : (
-        <div className="flex min-h-0 flex-1">
-          <aside className="w-56 shrink-0 border-r border-border-1">
-            <FileTree
-              files={diffSet?.files ?? []}
-              selectedPath={selectedPath}
-              onSelect={selectFile}
-            />
-          </aside>
+      ) : selectedPath ? (
+        <div className="flex min-h-0 flex-1" data-testid="diff-detail">
           <div className="min-w-0 flex-1">
             <DiffView
               path={selectedPath}
               fileDiff={fileDiff}
               loading={loadingFileDiff}
               onAddComment={(input) => {
-                if (!selectedPath) return;
                 void createComment({ filePath: selectedPath, ...input });
               }}
             />
           </div>
-          <aside className="w-72 shrink-0 border-l border-border-1">
+          <aside className="w-60 shrink-0 border-l border-border-1">
             <CommentRail
               comments={comments}
               openCount={openComments.length}
@@ -102,12 +120,15 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
             />
           </aside>
         </div>
+      ) : (
+        <div className="min-h-0 flex-1" data-testid="diff-overview">
+          <FileTree
+            files={files}
+            selectedPath={selectedPath}
+            onSelect={selectFile}
+          />
+        </div>
       )}
-
-      <CheckpointTimeline
-        checkpoints={checkpoints}
-        onRevert={(turnIdx) => revert(turnIdx)}
-      />
     </div>
   );
 }

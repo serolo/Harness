@@ -26,7 +26,10 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-app" data-testid="chat-panel">
+    <div
+      className="flex h-full min-h-0 flex-col bg-surface-app"
+      data-testid="chat-panel"
+    >
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-1 bg-surface-panel px-5">
         <div className="flex h-full items-center gap-8">
           <div className="flex h-full items-center border-b-2 border-accent px-1 text-sm font-semibold text-fg-1">
@@ -51,12 +54,12 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): React.JSX.Element {
           <History className="h-4 w-4" aria-hidden />
         </button>
       </div>
-      <Transcript turns={turns} />
+      <Transcript turns={turns} workspaceId={workspaceId} />
       <Composer
         isBusy={isBusy}
         workspaceId={workspaceId}
-        onSend={(prompt, attachments, mode, harness, displayPrompt) =>
-          sendTurn(prompt, attachments, mode, harness, displayPrompt)
+        onSend={(prompt, attachments, mode, harness) =>
+          sendTurn(prompt, attachments, mode, harness)
         }
         onInterrupt={interrupt}
         onClear={clear}

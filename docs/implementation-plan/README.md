@@ -149,6 +149,7 @@ module that resolves these.
 | **9** | Mid-turn steer & message queue | *(post-v1.1, §12)* | 2, 8 | 10 |
 | **10** | Policy engine upgrade | *(post-v1.1, §12)* | 4, 5, 6 | 9 |
 | **11** | Cross-workspace multi-agent dispatch (4a only) | *(post-v1.1, §12)* | 1, 5, 10 | — |
+| **12** | [Scheduled tasks & usage-limit resume](./phase-12-scheduled-tasks.md) | *(post-v1.1)* | 2, 6 | 8–11 |
 
 ```
         ┌────────────┐

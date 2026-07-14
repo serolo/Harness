@@ -200,7 +200,7 @@ export class TurnsRepo {
     return rows.map(rowToTurn);
   }
 
-  /** Hide all persisted turns for a workspace from chat history and resume context. */
+  /** Hide all persisted turns for a workspace from history and resume context. */
   async clearWorkspaceHistory(workspaceId: string): Promise<void> {
     await this.db
       .updateTable('turns')

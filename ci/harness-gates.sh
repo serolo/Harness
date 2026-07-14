@@ -15,6 +15,7 @@
 #   typecheck    BLOCKING   maintainability   tsc -b (all project refs)
 #   tests        BLOCKING   behaviour         node scripts/vitest-electron.mjs run
 #   build        BLOCKING   integration       electron-vite build
+#   dispatch_isolation BLOCKING security       pr:merge unreachable from src/main/dispatch/ (Phase 11)
 #   deps_verify  BLOCKING   supply-chain      npm install --dry-run (catches hallucinated/missing deps)
 #   deps_audit   ADVISORY   supply-chain      npm audit --audit-level=high (never fails the run)
 #   check|all    -          -                 alias for the full ordered gate set
@@ -26,7 +27,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # The full ordered gate set used for a no-arg (or `check`/`all`) run.
-FULL_GATES="format lint typecheck tests build deps_verify deps_audit"
+FULL_GATES="format lint typecheck tests build dispatch_isolation deps_verify deps_audit"
 
 run_gate() {
   local gate="$1"
@@ -60,6 +61,27 @@ run_gate() {
       echo "==> build (electron-vite build)"
       npx electron-vite build
       ;;
+    dispatch_isolation)
+      # Phase 11 invariant: a human ALWAYS merges — `pr:merge` must be provably unreachable
+      # from cross-workspace dispatch CODE. Fail if the merge channel id (or the PrWorkflow
+      # implementation it lives in) is referenced from any TypeScript source under
+      # src/main/dispatch/. Scoped to *.ts(x) on purpose: the subsystem's CLAUDE.md documents
+      # this very invariant by name, and documentation naming the forbidden thing is not a
+      # reachability violation.
+      # A missing src/main/dispatch/ (before the subsystem lands) is a no-match => OK: grep
+      # exits non-zero on both no-match and missing-path, and an `if` condition swallows that
+      # under `set -euo pipefail` (2>/dev/null hides the "No such file or directory" noise).
+      echo "==> dispatch_isolation (pr:merge unreachable from src/main/dispatch/ *.ts)"
+      if grep -rqn --include='*.ts' --include='*.tsx' "pr:merge" src/main/dispatch/ 2>/dev/null; then
+        echo "FAIL: pr:merge reachable from src/main/dispatch/ — a human always merges" >&2
+        exit 1
+      fi
+      if grep -rqn --include='*.ts' --include='*.tsx' "integrations/github/pr" src/main/dispatch/ 2>/dev/null; then
+        echo "FAIL: PrWorkflow (integrations/github/pr) imported into src/main/dispatch/" >&2
+        exit 1
+      fi
+      echo "dispatch_isolation: OK"
+      ;;
     deps_verify)
       echo "==> deps_verify (npm install --dry-run — catches hallucinated/missing packages)"
       npm install --dry-run --no-audit --no-fund
@@ -77,7 +99,7 @@ run_gate() {
       ;;
     *)
       echo "harness-gates: unknown gate '$gate'" >&2
-      echo "valid gates: format | lint | typecheck | tests | build | deps_verify | deps_audit | check" >&2
+      echo "valid gates: format | lint | typecheck | tests | build | dispatch_isolation | deps_verify | deps_audit | check" >&2
       return 2
       ;;
   esac

@@ -361,3 +361,51 @@ MVP = M1–M4 (core value: parallel agents + review loop). Complete-feeling prod
 | Monorepo scale (huge diffs, slow status) | Sparse checkout support (v1.1); diff pagination; cached `git status`/diff via the git CLI |
 
 **Open:** name/branding; whether chat renders raw terminal output as fallback for harnesses without JSON streams; multi-account GitHub; team-shared settings distribution before enterprise tier.
+
+---
+
+## 10. Cross-workspace dispatch (Phase 11)
+
+One orchestrator workspace can suggest handing a sub-task (`implement` / `review` / `explore` /
+`search`) to another workspace. A **human click** creates the dispatch; a **second human click**
+starts it. This section is the framing note the Phase-11 plan requires — it states why the feature
+stays inside the §1.3 non-goal, not just how it is built.
+
+### 10.1 It is glue, not a new agent
+
+Every dispatched turn is an ordinary `HarnessSupervisor.startTurn` in an ordinary worktree. Dispatch
+adds **no** new execution surface: it composes the existing `WorkspaceManager.create`/`get` (the only
+worktree-creation path) and the existing `turn:start` producer. It is structurally identical to the
+existing `pr:fixReviews` / `pr:fixChecks` flows — glue that assembles a prompt and routes it into a
+turn — differing only in that the turn runs in a *different* workspace than the one that suggested it.
+The single-turn invariant, checkpoints, the status machine, and worktree isolation (§2.2, §5.1, §5.4)
+all apply unchanged; a dispatched turn is indistinguishable from a hand-typed one once it starts.
+
+### 10.2 Why this does not violate the §1.3 non-goal
+
+§1.3 lists as a non-goal: _"Building our own agent — we orchestrate existing CLIs."_ Dispatch
+orchestrates existing CLIs and nothing else. There is **no** callback channel from a spawned process
+back into the app, no in-turn "dispatch tool" the CLI can invoke, and no autonomous loop — the app
+never decides on its own to spawn work. A CLI-spawned process cannot create or start a dispatch; only
+a human clicking in the renderer can. Scope "4b" (an in-turn MCP dispatch tool) is explicitly **out**.
+
+This is nonetheless a **reinterpretation** of the non-goal's spirit — "orchestrate existing CLIs" now
+covers CLIs orchestrating *each other's workspaces* under human control. Per the Phase-11 plan's
+process tasks, this reinterpretation **requires written sign-off from the spec owner (Sebastian)
+before merge to main**. That sign-off is a human task; it is surfaced as an explicit unchecked item in
+the PR description and is not something the implementation tooling can satisfy on its own.
+
+### 10.3 Human-click-only, and a human always merges
+
+Two invariants keep the human in the loop at both ends:
+
+- **Human-click-only.** Creating a dispatch is one explicit click; starting it is a second explicit
+  click. Nothing auto-starts after creation, and nothing creates a dispatch without a click.
+- **A human always merges.** `pr:merge` (§5.6) stays reachable only from the renderer Merge button →
+  the `pr:merge` handler. It is **provably unreachable** from dispatch code: no module under
+  `src/main/dispatch/**` may reference `pr:merge` or import the PrWorkflow implementation
+  (`integrations/github/pr`). This is enforced mechanically by the `dispatch_isolation` BLOCKING CI
+  gate in `ci/harness-gates.sh`, not by review alone.
+
+Subsystem-level invariants (policy-gate-first ordering, review isolation, the guarded status machine)
+are documented in `src/main/dispatch/CLAUDE.md`.

@@ -14,6 +14,7 @@ import type {
   TurnStatus,
   WorkspaceSourceKind,
   WorkspaceStatus,
+  WorkspaceLocation,
 } from '@shared/models';
 import type { AgentMode, HarnessId } from '@shared/harness';
 import type { TaskOrigin, TaskState } from '@shared/tasks';
@@ -52,6 +53,9 @@ export interface WorkspacesTable {
   created_at: number; // INTEGER NOT NULL — epoch millis
   archived_at: number | null; // INTEGER — epoch millis, NULL until archived
   pr_number: number | null; // INTEGER — PR number, migration 0007, NULL until a PR is opened
+  location: WorkspaceLocation; // TEXT NOT NULL — worktree|project, migration 0008
+  is_unread: number; // INTEGER NOT NULL — 0/1, migration 0009
+  is_pinned: number; // INTEGER NOT NULL — 0/1, migration 0009
 }
 
 /**

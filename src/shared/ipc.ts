@@ -38,8 +38,6 @@ import type {
   CommitInfo,
   DiffComment,
   DiffCommentState,
-  DiffMenuInfo,
-  DiffQuery,
   DiffSet,
   FileDiff,
   NewDiffComment,
@@ -48,13 +46,13 @@ import type {
   TodoInput,
 } from './review';
 import type {
+  CompletionSound,
   EffectiveSettings,
   SettingsIssue,
   SettingsProvenance,
   WritableSettingLayer,
 } from './settings';
 import type { SlashCommand } from './slash';
-import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
 
 /**
  * Main-side push handle produced by the stream helper `createStream()`
@@ -78,21 +76,6 @@ export interface AppInfo {
   electron: string;
 }
 
-export interface WorkspaceArchivePreview {
-  workspaceId: string;
-  dirty: boolean;
-  untracked: number;
-  modified: number;
-}
-
-export type WorkspaceOpenAppId = 'terminal' | 'finder' | 'vscode' | string;
-
-export interface WorkspaceOpenApp {
-  id: WorkspaceOpenAppId;
-  name: string;
-  installed: boolean;
-}
-
 /**
  * Chunks streamed over the `project:clone` scoped stream (Phase 1). Progress frames
  * carry a phase + percent parsed from `git clone --progress`; the single terminal
@@ -110,7 +93,8 @@ export type CloneProgress =
 /**
  * Chunks streamed over the `workspace:create` scoped stream (Phase 1). `phase` frames
  * mark lifecycle steps, `setupLog` frames carry combined stdout/stderr from the setup
- * script, and the terminal `created` frame carries the persisted `Workspace`. APPEND-ONLY.
+ * script. The `created` frame carries the persisted `Workspace` before setup starts,
+ * allowing creation UI to close while setup continues. APPEND-ONLY.
  */
 export type WorkspaceCreateEvent =
   | {
@@ -155,7 +139,7 @@ export interface Commands {
   };
   /** Fetch a single workspace DTO by id, or null if it does not exist. */
   'workspace:get': { req: { id: string }; res: Workspace | null };
-  /** Archive a workspace (worktree removed, DB rows kept, status `archived`). */
+  /** Archive a workspace; configured policy decides whether its worktree is removed. */
   'workspace:archive': { req: { id: string }; res: void };
   /** Restore an archived workspace (worktree re-created, status back to `idle`). */
   'workspace:restore': { req: { id: string }; res: Workspace };
@@ -168,8 +152,6 @@ export interface Commands {
    * open. Fetching it also clears a `needs_attention` workspace back to `idle` (D4).
    */
   'chat:history': { req: { workspaceId: string }; res: ChatHistory };
-  /** Clear a workspace's persisted chat transcript and resume context. */
-  'chat:clear': { req: { workspaceId: string }; res: void };
   /** Probe whether a registered harness CLI is installed/authenticated. */
   'harness:detect': { req: { id: HarnessId }; res: DetectResult };
   /** List registered harnesses with capabilities + a detect summary. */
@@ -295,11 +277,8 @@ export interface Commands {
   'settings:schema': { req: void; res: EffectiveSettings };
 
   // --- Phase 6: polish — slash / deep links / auto-update / onboarding (APPEND-ONLY) ---
-  /** Settings prompts plus provider-native commands and skills for a workspace. */
-  'slash:list': {
-    req: void | { workspaceId?: string; harness?: HarnessId };
-    res: SlashCommand[];
-  };
+  /** The slash-command catalogue built from `settings.agent.prompts` (spec §5.4). */
+  'slash:list': { req: void; res: SlashCommand[] };
   /** Parse an `harness://…` deep link into a nav target, or null if unroutable. */
   'deepLink:resolve': { req: { url: string }; res: DeepLinkTarget | null };
   /** Check for an application update; returns the current updater status (spec §6.5). */
@@ -334,20 +313,6 @@ export interface Commands {
   /** Settings-gated workflow-state transition (e.g. on PR open/merge). */
   'linear:transition': { req: { issueId: string; stateId: string }; res: void };
 
-  // --- Phase 12: per-workspace scheduled agent tasks (APPEND-ONLY) ---
-  /** List a workspace's tasks (created_at ASC; the UI does any display grouping). */
-  'task:list': { req: { workspaceId: string }; res: ScheduledTask[] };
-  /** Create a task (state derived: scheduledAt present → 'scheduled', absent → 'pending'). */
-  'task:create': { req: CreateTaskReq; res: ScheduledTask };
-  /** Edit prompt/model/mode/schedule. Rejected with 'conflict' while running. */
-  'task:update': { req: UpdateTaskReq; res: ScheduledTask };
-  /** Delete a task. Rejected with 'conflict' while running. */
-  'task:delete': { req: { id: string }; res: void };
-  /** Fire a task immediately (queues if the workspace is busy). */
-  'task:runNow': { req: { id: string }; res: ScheduledTask };
-  /** Manually mark a task done without running it. */
-  'task:markDone': { req: { id: string }; res: ScheduledTask };
-
   // --- Workspace archive safety (APPEND-ONLY) ---
   /** Inspect dirty state and deletion behavior before confirming an archive. */
   'workspace:archivePreview': {
@@ -377,18 +342,11 @@ export interface Commands {
     res: Workspace;
   };
 
-  // --- Git changes menu queries (APPEND-ONLY) ---
-  /** Branches, active target, uncommitted count, and commits for the changes menu. */
-  'diff:menu': {
-    req: { workspaceId: string; targetRef?: string };
-    res: DiffMenuInfo;
-  };
-  /** Compute one selected change scope against an allowlisted target branch. */
-  'diff:query': { req: DiffQuery; res: DiffSet };
-  /** Fetch file contents for the exact target/scope currently selected in the menu. */
-  'diff:fileQuery': {
-    req: DiffQuery & { path: string };
-    res: FileDiff;
+  // --- Completion-sound settings (APPEND-ONLY) ---
+  /** Preview one allowlisted macOS completion sound from Settings. */
+  'notifications:previewSound': {
+    req: { sound: CompletionSound };
+    res: void;
   };
 }
 
@@ -408,7 +366,11 @@ export interface Events {
   // --- Active from Phase 1 ---
   'workspace:status': { workspaceId: string; status: Workspace['status'] };
   'workspace:created': { workspace: Workspace };
-  'workspace:archived': { workspaceId: string };
+  'workspace:archived': {
+    workspaceId: string;
+    /** Null when deleted; retained when archive deletion is disabled. */
+    worktreePath?: string | null;
+  };
 
   // --- Reserved for later phases (typed now, emitted later) ---
   /** Reserved (Phase 2): a single streamed AgentEvent chunk for a turn. */
@@ -439,10 +401,6 @@ export interface Events {
    * `selectWorkspace:<n>`); the renderer dispatches it against the current UI.
    */
   'menu:action': { actionId: string };
-
-  // --- Phase 12: scheduled tasks (APPEND-ONLY) ---
-  /** A scheduled task for this workspace changed (created/updated/fired/finished). */
-  'task:changed': { workspaceId: string };
 }
 
 export type EventChannel = keyof Events;
@@ -549,6 +507,27 @@ export interface HarnessInfo {
 /** External IDEs that can be launched at a workspace worktree. */
 export type IdeName = 'cursor' | 'code';
 
+/** Safe allowlisted applications that can open a workspace checkout. */
+export type WorkspaceOpenAppId =
+  | 'finder'
+  | 'terminal'
+  | 'iterm'
+  | 'warp'
+  | 'vscode'
+  | 'cursor'
+  | 'sublime'
+  | 'xcode'
+  | 'webstorm'
+  | 'fork'
+  | 'devin';
+
+/** An allowlisted application that macOS reports as installed. */
+export interface WorkspaceOpenApp {
+  id: WorkspaceOpenAppId;
+  label: string;
+  kind: 'finder' | 'terminal' | 'editor' | 'git';
+}
+
 /** Start argument for the `pty:open` stream. `cols`/`rows` seed the initial viewport. */
 export interface PtyOpenArg {
   workspaceId: string;
@@ -587,6 +566,13 @@ export interface RunScriptInfo {
   icon?: string;
   running: boolean;
   runId?: string;
+}
+
+/** Safety information shown before archiving a workspace. */
+export interface WorkspaceArchivePreview {
+  hasUncommittedChanges: boolean;
+  changedFileCount: number;
+  willDeleteWorktree: boolean;
 }
 
 // --- Phase 6 DTOs (APPEND-ONLY) ----------------------------------------------

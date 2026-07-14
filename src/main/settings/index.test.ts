@@ -59,6 +59,7 @@ describe('SettingsService — defaults (0 file layers)', () => {
     expect(s.agent.prompts).toEqual({});
     expect(s.git.branchPrefix).toBe('agent');
     expect(s.git.mergeStrategy).toBe('squash');
+    expect(s.git.deleteWorktreeOnArchive).toBe(true);
     expect(s.scripts.run).toEqual([]);
     expect(s.scripts.run_mode).toBe('single');
     expect(s.env).toEqual({});
@@ -70,7 +71,26 @@ describe('SettingsService — defaults (0 file layers)', () => {
       onTurnComplete: true,
       onError: true,
       onNeedsAttention: true,
+      completionSound: 'glass',
     });
+  });
+
+  it('accepts a supported completion sound and rejects unknown sound names', () => {
+    writeFileSync(
+      userFile(),
+      ['[notifications]', 'completionSound = "ping"'].join('\n'),
+      'utf8',
+    );
+    const svc = new SettingsService();
+    svc.load({ userPath: userFile() });
+    expect(svc.get().notifications.completionSound).toBe('ping');
+
+    writeFileSync(
+      userFile(),
+      ['[notifications]', 'completionSound = "../../secret"'].join('\n'),
+      'utf8',
+    );
+    expect(() => svc.load({ userPath: userFile() })).toThrow();
   });
 
   it('exposes defaults even before load() is ever called', () => {

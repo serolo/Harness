@@ -105,33 +105,32 @@ function on<K extends EventChannel>(
   };
 }
 
+const activeStreamCancels = new Map<string, () => void>();
+
 /**
  * `stream` — the renderer side of `createStream()`. Starts a scoped stream, delivers
  * each chunk to `onChunk`, resolves the returned Promise on `end`, and rejects it
  * (typed AppError) on `error`. Cleans up its `stream:<id>` listener on ANY terminal
- * path, and sends `stream:cancel` if the caller aborts early via the AbortSignal — no
- * listener leaks across turns.
+ * path. Cancellation is requested separately through `cancelStream(id)` so only plain,
+ * serializable values cross contextBridge — no listener leaks across turns.
  *
- * @returns a Promise that settles when the stream ends. Pass `opts.signal` to cancel.
+ * @returns a Promise that settles when the stream ends.
  */
 function stream<S extends StreamChannel>(
   channel: S,
   arg: StreamArg<S>,
   onChunk: (chunk: StreamChunk<S>) => void,
-  opts?: { signal?: AbortSignal },
+  opts: { id: string },
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    const { id } = opts;
     let settled = false;
-    let dataChannel: string | null = null;
-    let onAbort: (() => void) | null = null;
+    let aborted = false;
+    const dataChannel = streamChannel(id);
 
     const cleanup = (): void => {
-      if (dataChannel) {
-        ipcRenderer.removeListener(dataChannel, frameListener);
-      }
-      if (onAbort && opts?.signal) {
-        opts.signal.removeEventListener('abort', onAbort);
-      }
+      ipcRenderer.removeListener(dataChannel, frameListener);
+      activeStreamCancels.delete(id);
     };
 
     const frameListener = (
@@ -159,32 +158,32 @@ function stream<S extends StreamChannel>(
       }
     };
 
+    // Subscribe before asking main to start. Fast producers (notably a workspace using
+    // the current checkout) may emit `chunk` + `end` before invoke() resolves.
+    ipcRenderer.on(dataChannel, frameListener);
+
+    activeStreamCancels.set(id, () => {
+      if (settled) return;
+      aborted = true;
+      settled = true;
+      cleanup();
+      ipcRenderer.send(STREAM_CANCEL_CHANNEL, id);
+      reject(wireError('stream aborted'));
+    });
+
     ipcRenderer
-      .invoke(STREAM_START_CHANNEL, { channel, arg })
+      .invoke(STREAM_START_CHANNEL, { channel, arg, id })
       .then((res: { id: string }) => {
         if (settled) {
-          // Aborted before we even got the id — cancel immediately.
-          ipcRenderer.send(STREAM_CANCEL_CHANNEL, res.id);
+          // An abort can happen before main has registered the id, so repeat the
+          // cancellation after startup resolves. A normal fast end needs no cancel.
+          if (aborted) ipcRenderer.send(STREAM_CANCEL_CHANNEL, res.id);
           return;
         }
-        dataChannel = streamChannel(res.id);
-        ipcRenderer.on(dataChannel, frameListener);
-
-        if (opts?.signal) {
-          onAbort = (): void => {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            cleanup();
-            ipcRenderer.send(STREAM_CANCEL_CHANNEL, res.id);
-            reject(wireError('stream aborted'));
-          };
-          if (opts.signal.aborted) {
-            onAbort();
-          } else {
-            opts.signal.addEventListener('abort', onAbort);
-          }
+        if (res.id !== id) {
+          settled = true;
+          cleanup();
+          reject(wireError('stream subscription id mismatch'));
         }
       })
       .catch((reason: unknown) => {
@@ -195,16 +194,15 @@ function stream<S extends StreamChannel>(
         cleanup();
         reject(toWireError(reason));
       });
-
-    // Handle abort that fires before `stream:start` resolves.
-    if (opts?.signal?.aborted) {
-      settled = true;
-      reject(wireError('stream aborted'));
-    }
   });
 }
 
-const api: Api = { invoke, on, stream };
+/** Renderer-requested cancellation for a stream started through {@link stream}. */
+function cancelStream(id: string): void {
+  activeStreamCancels.get(id)?.();
+}
+
+const api: Api = { invoke, on, stream, cancelStream };
 
 // The single, frozen bridge. Nothing else is exposed to the renderer.
 contextBridge.exposeInMainWorld('api', api);

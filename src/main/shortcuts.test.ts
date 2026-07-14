@@ -3,7 +3,17 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { DEFAULT_SHORTCUTS, resolveShortcuts } from './shortcuts';
+import {
+  DEFAULT_SHORTCUTS,
+  NATIVE_VIEW_ROLES,
+  resolveShortcuts,
+} from './shortcuts';
+
+describe('NATIVE_VIEW_ROLES', () => {
+  it('retains the native keyboard controls for increasing, decreasing, and resetting zoom', () => {
+    expect(NATIVE_VIEW_ROLES).toEqual(['resetZoom', 'zoomIn', 'zoomOut']);
+  });
+});
 
 describe('DEFAULT_SHORTCUTS', () => {
   it('includes the named actions and the ⌘1..9 workspace selectors', () => {
@@ -11,6 +21,11 @@ describe('DEFAULT_SHORTCUTS', () => {
     expect(ids).toContain('openSettings');
     expect(ids).toContain('showDiff');
     expect(ids).toContain('commandPalette');
+    expect(ids).toContain('archiveWorkspace');
+    expect(
+      DEFAULT_SHORTCUTS.find((action) => action.id === 'archiveWorkspace')
+        ?.accelerator,
+    ).toBe('CmdOrCtrl+Shift+A');
     expect(ids).toContain('selectWorkspace:1');
     expect(ids).toContain('selectWorkspace:9');
     expect(ids).not.toContain('selectWorkspace:10');

@@ -35,13 +35,18 @@ const EFFECTIVE: EffectiveSettings = {
     prPrompt: 'pr',
     harnessImpl: 'auto',
   },
-  git: { branchPrefix: 'agent', mergeStrategy: 'squash' },
+  git: {
+    branchPrefix: 'agent',
+    mergeStrategy: 'squash',
+    deleteWorktreeOnArchive: true,
+  },
   mcp: [],
   notifications: {
     enabled: true,
     onTurnComplete: true,
     onError: true,
     onNeedsAttention: true,
+    completionSound: 'glass',
   },
 };
 
@@ -91,6 +96,8 @@ function installApi(issues: SettingsIssue[] = []): Installed {
         return Promise.resolve({ id: 'gh-1', login: 'octo', kind: 'github' });
       case 'settings:set':
         return Promise.resolve(EFFECTIVE);
+      case 'notifications:previewSound':
+        return Promise.resolve(undefined);
       default:
         return Promise.resolve(undefined);
     }
@@ -138,6 +145,24 @@ describe('SettingsPanel rendering', () => {
 });
 
 describe('SettingsPanel writes', () => {
+  it('writes the delete-worktree-on-archive toggle', async () => {
+    const { api } = installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-git'));
+    fireEvent.click(
+      screen.getByTestId('setting-input-git.deleteWorktreeOnArchive'),
+    );
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('settings:set', {
+        layer: 'user',
+        keyPath: 'git.deleteWorktreeOnArchive',
+        value: false,
+      }),
+    );
+  });
+
   it('invokes settings:set on the user layer when a select changes', async () => {
     const { api } = installApi();
     render(<SettingsPanel />);
@@ -171,6 +196,27 @@ describe('SettingsPanel writes', () => {
         value: false,
       }),
     );
+  });
+
+  it('persists and previews a selected completion sound', async () => {
+    const { api } = installApi();
+    render(<SettingsPanel />);
+
+    const sound = await screen.findByTestId(
+      'setting-input-notifications.completionSound',
+    );
+    fireEvent.change(sound, { target: { value: 'ping' } });
+
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith('settings:set', {
+        layer: 'user',
+        keyPath: 'notifications.completionSound',
+        value: 'ping',
+      });
+      expect(api.invoke).toHaveBeenCalledWith('notifications:previewSound', {
+        sound: 'ping',
+      });
+    });
   });
 
   it('commits a text edit on blur (not per keystroke)', async () => {

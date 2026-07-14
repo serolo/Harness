@@ -32,19 +32,18 @@ import type {
   StreamArg,
   StreamChannel,
   StreamChunk,
+  WorkspaceOpenApp,
+  WorkspaceOpenAppId,
 } from '@shared/ipc';
 import type { StreamSink } from '@shared/ipc';
 import type { AgentEvent, HarnessId, StartTurnOpts } from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
-import type { DiffQuery } from '@shared/review';
 import type { AppContext } from '../context';
 import { toAppError } from '../error';
 import { AppError, encodeAppErrorMessage } from '@shared/errors';
 import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
 import { TodosRepo } from '../db/repos/todos';
-import { MODEL_PATTERN, type TaskState } from '@shared/tasks';
-import { emitAll } from './events';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
 import {
   githubCliAuthStatus,
@@ -55,6 +54,8 @@ import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
 import { repoDir } from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
+import { isCompletionSound } from '@shared/settings';
+import { playCompletionSound } from '../harness/notifications';
 import { resolveDeepLink } from '../deeplink';
 import { buildEnv } from '../process/env';
 import type { PtyChunk } from '../pty';
@@ -90,11 +91,6 @@ const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
     template: 'Create a concise implementation plan for this task.\n\n$ARGS',
     description: 'Create an implementation plan',
   },
-  {
-    name: 'clear',
-    template: 'Clear the current chat transcript and context.',
-    description: 'Clear chat history and context',
-  },
 ];
 
 /**
@@ -110,31 +106,6 @@ function trackForFocusRefresh(workspaceId: string): void {
   trackedFocusRefreshIds.add(workspaceId);
 }
 
-/** Narrow a renderer-provided Git comparison before any ref reaches git. */
-function validateDiffQuery(req: DiffQuery): void {
-  if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
-    throw new AppError('invalid_input', 'workspaceId is required');
-  }
-  if (typeof req.targetRef !== 'string' || req.targetRef === '') {
-    throw new AppError('invalid_input', 'targetRef is required');
-  }
-  if (
-    !req.scope ||
-    (req.scope.kind !== 'all' &&
-      req.scope.kind !== 'uncommitted' &&
-      req.scope.kind !== 'commit')
-  ) {
-    throw new AppError('invalid_input', 'unknown diff scope');
-  }
-  if (
-    req.scope.kind === 'commit' &&
-    (typeof req.scope.sha !== 'string' ||
-      !/^[0-9a-f]{40}$/i.test(req.scope.sha))
-  ) {
-    throw new AppError('invalid_input', 'commit sha must be 40 hex characters');
-  }
-}
-
 /**
  * Snapshot of the workspace ids to recompute checks for on window focus. Returned as an
  * array copy so the caller can iterate without racing further `checks:get` calls that
@@ -142,34 +113,6 @@ function validateDiffQuery(req: DiffQuery): void {
  */
 export function focusRefreshWorkspaceIds(): string[] {
   return [...trackedFocusRefreshIds];
-}
-
-/** States a task can be `runNow`/`markDone` from (anything but `running`/`done`). */
-const RUNNABLE_TASK_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
-  'pending',
-  'scheduled',
-  'missed',
-  'error',
-  'queued',
-]);
-
-/** Narrow an untrusted string to the closed `AgentMode` set. */
-function isAgentMode(value: unknown): boolean {
-  return value === 'plan' || value === 'default' || value === 'auto_accept';
-}
-
-/** True when a task may be fired / marked done (state gate for `task:runNow`/`markDone`). */
-function isRunnableState(state: TaskState): boolean {
-  return RUNNABLE_TASK_STATES.has(state);
-}
-
-/** Broadcast `task:changed` for a workspace to every open renderer (Phase 12). */
-function emitTaskChanged(workspaceId: string): void {
-  emitAll(
-    BrowserWindow.getAllWindows().map((w) => w.webContents),
-    'task:changed',
-    { workspaceId },
-  );
 }
 
 /**
@@ -305,6 +248,107 @@ function openInIde(
   });
 }
 
+interface WorkspaceAppConfig extends WorkspaceOpenApp {
+  application: string;
+}
+
+/** Fixed application names keep the renderer from choosing a binary or command. */
+const WORKSPACE_OPEN_APPS: readonly WorkspaceAppConfig[] = [
+  { id: 'finder', label: 'Finder', kind: 'finder', application: 'Finder' },
+  {
+    id: 'terminal',
+    label: 'Terminal',
+    kind: 'terminal',
+    application: 'Terminal',
+  },
+  {
+    id: 'iterm',
+    label: 'iTerm',
+    kind: 'terminal',
+    application: 'iTerm',
+  },
+  { id: 'warp', label: 'Warp', kind: 'terminal', application: 'Warp' },
+  {
+    id: 'vscode',
+    label: 'Visual Studio Code',
+    kind: 'editor',
+    application: 'Visual Studio Code',
+  },
+  { id: 'cursor', label: 'Cursor', kind: 'editor', application: 'Cursor' },
+  {
+    id: 'sublime',
+    label: 'Sublime Text',
+    kind: 'editor',
+    application: 'Sublime Text',
+  },
+  { id: 'xcode', label: 'Xcode', kind: 'editor', application: 'Xcode' },
+  {
+    id: 'webstorm',
+    label: 'WebStorm',
+    kind: 'editor',
+    application: 'WebStorm',
+  },
+  { id: 'fork', label: 'Fork', kind: 'git', application: 'Fork' },
+  {
+    id: 'devin',
+    label: 'Devin Desktop',
+    kind: 'editor',
+    application: 'Devin',
+  },
+] as const;
+
+/** Run macOS `open` without a shell and resolve with its exit status. */
+function runMacOpen(args: readonly string[]): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawnChild('/usr/bin/open', [...args], { stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', (code) => resolve(code ?? 1));
+  });
+}
+
+async function listInstalledWorkspaceApps(): Promise<WorkspaceOpenApp[]> {
+  if (process.platform !== 'darwin') return [];
+  const availability = await Promise.all(
+    WORKSPACE_OPEN_APPS.map(async (candidate) => {
+      try {
+        return (await runMacOpen(['-Ra', candidate.application])) === 0;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return WORKSPACE_OPEN_APPS.filter((_, index) => availability[index]).map(
+    ({ id, label, kind }) => ({ id, label, kind }),
+  );
+}
+
+async function openWorkspaceInApp(
+  appId: WorkspaceOpenAppId,
+  workspacePath: string,
+): Promise<void> {
+  if (process.platform !== 'darwin') {
+    throw new AppError('conflict', 'opening in an application requires macOS');
+  }
+  const target = WORKSPACE_OPEN_APPS.find(
+    (candidate) => candidate.id === appId,
+  );
+  if (!target) {
+    throw new AppError('invalid_input', 'unknown workspace application', {
+      appId: String(appId),
+    });
+  }
+  const args =
+    target.id === 'finder'
+      ? [workspacePath]
+      : ['-a', target.application, workspacePath];
+  const exitCode = await runMacOpen(args);
+  if (exitCode !== 0) {
+    throw new AppError('not_found', `${target.label} is not installed`, {
+      appId,
+    });
+  }
+}
+
 /**
  * The registry of stream producers, keyed by `StreamChannel`. Adding a new streaming
  * channel = adding an entry here (and to `StreamChannels` in @shared/ipc). Typed so a
@@ -361,15 +405,17 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
   },
 
   // Create a workspace: delegate to WorkspaceManager, mapping each setup-log chunk to a
-  // `{ kind: 'setupLog' }` frame, then push the terminal `{ kind: 'created', workspace }`
-  // frame. Async work runs in an IIFE; failures route to `sink.error(...)`.
+  // `{ kind: 'setupLog' }` frame. Push `{ kind: 'created' }` as soon as the row is
+  // persisted (before setup) so the dialog can close immediately; setup continues and
+  // status changes arrive through the existing workspace broadcast events.
   'workspace:create': (arg, ctx, sink) => {
     void (async () => {
       try {
-        const workspace = await ctx.workspaces.create(arg, (chunk) =>
-          sink.push({ kind: 'setupLog', chunk }),
+        await ctx.workspaces.create(
+          arg,
+          (chunk) => sink.push({ kind: 'setupLog', chunk }),
+          (workspace) => sink.push({ kind: 'created', workspace }),
         );
-        sink.push({ kind: 'created', workspace });
         sink.end();
       } catch (e) {
         sink.error(toAppError(e));
@@ -682,9 +728,8 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
 
 /**
  * Wire the scoped-stream control channels. The renderer's `api.stream(channel, arg)`:
- *   1. invokes `stream:start` → main allocates a subscription id, starts the producer,
- *      and returns `{ id }`;
- *   2. subscribes to `stream:<id>` for `chunk`/`end`/`error` frames;
+ *   1. the renderer allocates an id and preload subscribes to `stream:<id>`;
+ *   2. invokes `stream:start` with that id → main starts the producer and returns it;
  *   3. sends `stream:cancel` with the id if it tears down before `end`.
  *
  * `stream:start` is itself inside the error boundary (an unknown channel rejects with a
@@ -696,7 +741,7 @@ function registerStreamControl(ctx: AppContext): void {
     STREAM_START_CHANNEL,
     async (
       event: IpcMainInvokeEvent,
-      payload: { channel: StreamChannel; arg: unknown },
+      payload: { channel: StreamChannel; arg: unknown; id: string },
     ): Promise<{ id: string }> => {
       try {
         const producer = streamProducers[payload.channel] as
@@ -706,13 +751,22 @@ function registerStreamControl(ctx: AppContext): void {
             new Error(`unknown stream channel: ${String(payload.channel)}`),
           );
         }
+        if (
+          typeof payload.id !== 'string' ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            payload.id,
+          )
+        ) {
+          throw new AppError('invalid_input', 'invalid stream subscription id');
+        }
         let producerTeardown: (() => void) | undefined;
         const { id, sink } = createStream<StreamChunk<StreamChannel>>({
           webContents: event.sender,
+          id: payload.id,
           onClose: () => producerTeardown?.(),
         });
-        // Kick the producer on the next tick so the renderer has the id + its
-        // `stream:<id>` listener attached before the first chunk can arrive.
+        // Preload attached `stream:<id>` before invoking this handler, so even a
+        // producer that completes synchronously cannot race its listener.
         queueMicrotask(() => {
           try {
             producerTeardown =
@@ -746,7 +800,7 @@ function registerStreamControl(ctx: AppContext): void {
  */
 export function registerIpc(ctx: AppContext): void {
   // app:ping — the renderer health check (flips the "IPC OK" indicator).
-  handle('app:ping', async () => 'ok' as const);
+  handle('app:ping', async () => 'ok');
 
   // app:info — static app/version info.
   handle('app:info', async () => ({
@@ -822,6 +876,18 @@ export function registerIpc(ctx: AppContext): void {
     await ctx.workspaces.archive(req.id);
   });
   handle('workspace:restore', async (req) => ctx.workspaces.restore(req.id));
+  handle('workspace:archivePreview', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'workspace id is required');
+    }
+    return ctx.workspaces.archivePreview(req.id);
+  });
+  handle('workspace:update', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'workspace id is required');
+    }
+    return ctx.workspaces.update(req.id, req);
+  });
 
   // --- Phase 2: harness + chat ---
 
@@ -845,19 +911,6 @@ export function registerIpc(ctx: AppContext): void {
     }
     const turns = await ctx.recorder.history(req.workspaceId);
     return { turns };
-  });
-
-  handle('chat:clear', async (req) => {
-    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
-      throw new AppError('invalid_input', 'workspaceId is required');
-    }
-    const workspace = await ctx.workspaces.get(req.workspaceId);
-    if (!workspace) {
-      throw new AppError('not_found', 'workspace not found', {
-        workspaceId: req.workspaceId,
-      });
-    }
-    await ctx.recorder.clear(req.workspaceId);
   });
 
   // harness:detect — probe a registered harness CLI.
@@ -963,6 +1016,34 @@ export function registerIpc(ctx: AppContext): void {
     await openInIde(req.ide, workspace.worktreePath);
   });
 
+  // workspace:listOpenApps — return only allowlisted apps registered with LaunchServices.
+  handle('workspace:listOpenApps', async () => listInstalledWorkspaceApps());
+
+  // workspace:openInApp — resolve the path from persistence and launch a fixed app name.
+  // Neither an executable nor a filesystem path is accepted from the renderer.
+  handle('workspace:openInApp', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (!WORKSPACE_OPEN_APPS.some((candidate) => candidate.id === req.appId)) {
+      throw new AppError('invalid_input', 'unknown workspace application', {
+        appId: String(req.appId),
+      });
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (!workspace) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    if (!workspace.worktreePath) {
+      throw new AppError('conflict', 'workspace has no checkout', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    await openWorkspaceInApp(req.appId, workspace.worktreePath);
+  });
+
   // --- Phase 4: diff review + checkpoints ---
   // Every handler validates/narrows its untrusted payload before acting. Git runs only
   // through GitService arg arrays (no shell strings); file paths are traversal-checked
@@ -1008,48 +1089,6 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
     return ctx.diff.commits(req.workspaceId);
-  });
-
-  // diff:menu — comparison target choices + counts + recent commits. The optional
-  // target must still be a non-empty string; DiffService then allowlists it against
-  // refs returned by `git for-each-ref` before using it.
-  handle('diff:menu', async (req) => {
-    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
-      throw new AppError('invalid_input', 'workspaceId is required');
-    }
-    if (
-      req.targetRef !== undefined &&
-      (typeof req.targetRef !== 'string' || req.targetRef === '')
-    ) {
-      throw new AppError('invalid_input', 'targetRef must be a branch name');
-    }
-    return ctx.diff.menu(req.workspaceId, req.targetRef);
-  });
-
-  // Scoped list and per-file content. Both validate the complete query; the service
-  // additionally proves target/commit membership against repository-derived refs.
-  handle('diff:query', async (req) => {
-    validateDiffQuery(req);
-    const gitDiff = await ctx.diff.getDiffForQuery(req);
-    return {
-      baseRef: gitDiff.baseRef,
-      headRef: gitDiff.headRef,
-      files: gitDiff.files.map((f) => ({
-        path: f.path,
-        oldPath: f.oldPath,
-        change: f.change,
-        additions: f.additions,
-        deletions: f.deletions,
-      })),
-    };
-  });
-
-  handle('diff:fileQuery', async (req) => {
-    validateDiffQuery(req);
-    if (typeof req.path !== 'string' || req.path === '') {
-      throw new AppError('invalid_input', 'path is required');
-    }
-    return ctx.diff.fileDiffForQuery(req, req.path);
   });
 
   // comment:create — an inline diff comment (starts `open`). Narrow every field.
@@ -1478,7 +1517,17 @@ export function registerIpc(ctx: AppContext): void {
     return ctx.settings.set(req.layer, req.keyPath, req.value);
   });
 
-  // slash:list — settings prompts plus built-in default commands.
+  // Sound names are narrowed to the shared allowlist before the privileged main
+  // process starts afplay. No renderer-provided executable, path, or shell text is used.
+  handle('notifications:previewSound', async (req) => {
+    if (!isCompletionSound(req.sound)) {
+      throw new AppError('invalid_input', 'Unknown completion sound');
+    }
+    playCompletionSound(req.sound);
+  });
+
+  // slash:list — the slash-command catalogue built from `agent.prompts` (spec §5.4).
+  // Each named prompt template becomes a `/name` command the composer can expand.
   handle('slash:list', async () => {
     const prompts = ctx.settings.get().agent.prompts;
     const custom = Object.entries(prompts).map(([name, template]) => ({
@@ -1513,158 +1562,6 @@ export function registerIpc(ctx: AppContext): void {
   // update:install — quit + install a downloaded update. Rejects with a typed AppError
   // (through the boundary) when updates are unsupported or nothing is downloaded yet.
   handle('update:install', async () => ctx.updater.install());
-
-  // --- Phase 12: scheduled tasks (APPEND-ONLY) ---
-  // HEIGHTENED-SCRUTINY (IPC boundary): every handler narrows its untrusted payload
-  // before acting — non-empty strings, `scheduledAt` a POSITIVE integer (a past time is
-  // allowed; it simply fires on the next tick), `mode` in the closed AgentMode set,
-  // `model` against MODEL_PATTERN (rejecting whitespace/shell metacharacters BEFORE the
-  // string can reach spawn argv), and `origin` in its closed set. Every mutating handler
-  // broadcasts `task:changed { workspaceId }` so open renderers refetch.
-
-  // task:list — a workspace's scheduled tasks (created_at ASC).
-  handle('task:list', async (req) => {
-    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
-      throw new AppError('invalid_input', 'workspaceId is required');
-    }
-    return ctx.tasks.list(req.workspaceId);
-  });
-
-  // task:create — create a task (state derived from whether a time is given). Validates
-  // every field and verifies the workspace exists before persisting.
-  handle('task:create', async (req) => {
-    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
-      throw new AppError('invalid_input', 'workspaceId is required');
-    }
-    if (typeof req.prompt !== 'string' || req.prompt.trim() === '') {
-      throw new AppError('invalid_input', 'prompt is required');
-    }
-    if (
-      req.scheduledAt !== undefined &&
-      (!Number.isInteger(req.scheduledAt) || req.scheduledAt <= 0)
-    ) {
-      throw new AppError(
-        'invalid_input',
-        'scheduledAt must be a positive integer (epoch millis)',
-      );
-    }
-    if (req.mode !== undefined && !isAgentMode(req.mode)) {
-      throw new AppError(
-        'invalid_input',
-        'mode must be plan|default|auto_accept',
-      );
-    }
-    if (req.model !== undefined && !MODEL_PATTERN.test(req.model)) {
-      throw new AppError(
-        'invalid_input',
-        'model contains unsupported characters',
-      );
-    }
-    if (
-      req.origin !== undefined &&
-      req.origin !== 'user' &&
-      req.origin !== 'limit_resume'
-    ) {
-      throw new AppError('invalid_input', 'origin must be user|limit_resume');
-    }
-    const workspace = await ctx.workspaces.get(req.workspaceId);
-    if (!workspace) {
-      throw new AppError('not_found', 'workspace not found', {
-        workspaceId: req.workspaceId,
-      });
-    }
-    const task = await ctx.tasks.create(req);
-    emitTaskChanged(task.workspaceId);
-    return task;
-  });
-
-  // task:update — edit prompt/model/mode/schedule (nullable variants). The repo rejects a
-  // running task with `conflict` and re-derives state when the schedule changes.
-  handle('task:update', async (req) => {
-    if (typeof req.id !== 'string' || req.id === '') {
-      throw new AppError('invalid_input', 'id is required');
-    }
-    if (
-      req.prompt !== undefined &&
-      (typeof req.prompt !== 'string' || req.prompt.trim() === '')
-    ) {
-      throw new AppError('invalid_input', 'prompt must be a non-empty string');
-    }
-    if (
-      req.scheduledAt !== undefined &&
-      req.scheduledAt !== null &&
-      (!Number.isInteger(req.scheduledAt) || req.scheduledAt <= 0)
-    ) {
-      throw new AppError(
-        'invalid_input',
-        'scheduledAt must be a positive integer or null',
-      );
-    }
-    if (req.mode !== undefined && req.mode !== null && !isAgentMode(req.mode)) {
-      throw new AppError(
-        'invalid_input',
-        'mode must be plan|default|auto_accept',
-      );
-    }
-    if (
-      req.model !== undefined &&
-      req.model !== null &&
-      !MODEL_PATTERN.test(req.model)
-    ) {
-      throw new AppError(
-        'invalid_input',
-        'model contains unsupported characters',
-      );
-    }
-    const { id, ...patch } = req;
-    const task = await ctx.tasks.update(id, patch);
-    emitTaskChanged(task.workspaceId);
-    return task;
-  });
-
-  // task:delete — remove a task (repo rejects a running task with `conflict`). Fetch first
-  // so the `task:changed` broadcast carries the right workspaceId.
-  handle('task:delete', async (req) => {
-    if (typeof req.id !== 'string' || req.id === '') {
-      throw new AppError('invalid_input', 'id is required');
-    }
-    const task = await ctx.tasks.get(req.id);
-    await ctx.tasks.delete(req.id);
-    emitTaskChanged(task.workspaceId);
-  });
-
-  // task:runNow — fire immediately (queues if the workspace is busy). Only valid from a
-  // non-terminal, non-running state; the scheduler owns the actual firing.
-  handle('task:runNow', async (req) => {
-    if (typeof req.id !== 'string' || req.id === '') {
-      throw new AppError('invalid_input', 'id is required');
-    }
-    const task = await ctx.tasks.get(req.id);
-    if (!isRunnableState(task.state)) {
-      throw new AppError('conflict', `cannot run a ${task.state} task`, {
-        id: req.id,
-      });
-    }
-    const updated = await ctx.scheduler.runNow(req.id);
-    emitTaskChanged(updated.workspaceId);
-    return updated;
-  });
-
-  // task:markDone — mark a task done without running it (same state gate as runNow).
-  handle('task:markDone', async (req) => {
-    if (typeof req.id !== 'string' || req.id === '') {
-      throw new AppError('invalid_input', 'id is required');
-    }
-    const task = await ctx.tasks.get(req.id);
-    if (!isRunnableState(task.state)) {
-      throw new AppError('conflict', `cannot mark a ${task.state} task done`, {
-        id: req.id,
-      });
-    }
-    const updated = await ctx.tasks.setState(req.id, 'done');
-    emitTaskChanged(updated.workspaceId);
-    return updated;
-  });
 
   registerStreamControl(ctx);
 

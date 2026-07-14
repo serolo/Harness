@@ -16,7 +16,6 @@ import { NewWorkspaceDialog } from './NewWorkspaceDialog';
 import { useComposerStore } from '@renderer/stores/composer';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import type { IssueListItem, PrListItem } from '@shared/github';
-import type { LinearIssue } from '@shared/linear';
 
 interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
@@ -45,16 +44,6 @@ const ISSUES: IssueListItem[] = [
   },
 ];
 
-const LINEAR_ISSUES: LinearIssue[] = [
-  {
-    id: 'lin-1',
-    identifier: 'ENG-123',
-    title: 'Wire up the widget',
-    url: 'https://linear.app/x/issue/ENG-123',
-    state: 'In Progress',
-  },
-];
-
 const BRANCHES = ['main', 'origin/main', 'origin/release'];
 
 /**
@@ -66,7 +55,6 @@ const BRANCHES = ['main', 'origin/main', 'origin/release'];
 function installApi(opts?: {
   prReject?: boolean;
   issueReject?: boolean;
-  linearReject?: boolean;
   githubCliAuthenticated?: boolean;
   createdId?: string;
 }): ApiStub {
@@ -75,9 +63,6 @@ function installApi(opts?: {
   // `github:connect` flips this so the subsequent list reload resolves.
   let githubConnected = !opts?.prReject && !opts?.issueReject;
   const githubCliAuthenticated = opts?.githubCliAuthenticated ?? false;
-  // Linear starts unconnected iff `linearReject`; a successful `linear:connect` flips this
-  // so the subsequent `linear:listIssues` (triggered by the reload) resolves.
-  let linearConnected = !opts?.linearReject;
 
   const invoke = vi.fn((channel: string) => {
     if (channel === 'project:listBranches') {
@@ -112,11 +97,6 @@ function installApi(opts?: {
         ? Promise.reject(new Error('no GitHub account'))
         : Promise.resolve(ISSUES);
     }
-    if (channel === 'linear:listIssues') {
-      return linearConnected
-        ? Promise.resolve(LINEAR_ISSUES)
-        : Promise.reject(new Error('no Linear account connected'));
-    }
     return Promise.resolve(undefined);
   });
 
@@ -140,14 +120,6 @@ function installApi(opts?: {
         onChunk({
           kind: 'connected',
           account: { id: 'gh-1', login: 'octo' },
-        });
-      }
-      if (channel === 'linear:connect') {
-        // Simulate a successful API-key connect: flip the flag then emit the terminal frame.
-        linearConnected = true;
-        onChunk({
-          kind: 'connected',
-          account: { id: 'int-1', label: 'Alice', kind: 'linear' },
         });
       }
       return Promise.resolve();
@@ -199,9 +171,99 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     });
     const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
     expect(call).toBeDefined();
-    const arg = call?.[1] as { sourceKind?: string; baseBranch?: string };
+    const arg = call?.[1] as {
+      sourceKind?: string;
+      baseBranch?: string;
+      location?: string;
+    };
     expect(arg.sourceKind).toBe('branch');
     expect(arg.baseBranch).toBe('origin/release');
+    expect(arg.location).toBe('worktree');
+  });
+
+  it('can use the current checkout without showing a harness picker', async () => {
+    const api = installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    expect(screen.queryByText('From Linear')).not.toBeInTheDocument();
+    expect(screen.queryByText('Harness')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('location-project'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('base-branch-select')).toHaveValue('main');
+    });
+    fireEvent.click(screen.getByText('Create'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
+    expect(call?.[1]).toMatchObject({
+      sourceKind: 'branch',
+      location: 'project',
+    });
+    expect(call?.[1]).not.toHaveProperty('harness');
+  });
+
+  it('sends a validated custom worktree name when selected', async () => {
+    const api = installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('worktree-name-custom'));
+    fireEvent.change(screen.getByTestId('worktree-name-input'), {
+      target: { value: 'feature-search' },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('base-branch-select')).toHaveValue('main');
+    });
+    fireEvent.click(screen.getByText('Create'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
+    expect(call?.[1]).toMatchObject({
+      location: 'worktree',
+      name: 'feature-search',
+    });
+  });
+
+  it('keeps location and worktree naming above and independent from source selection', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('worktree-name-custom'));
+    fireEvent.change(screen.getByTestId('worktree-name-input'), {
+      target: { value: 'persistent-name' },
+    });
+
+    const sourceSection = screen.getByTestId('source-section');
+    expect(
+      screen
+        .getByTestId('location-worktree')
+        .compareDocumentPosition(sourceSection) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByTestId('worktree-name-input')
+        .compareDocumentPosition(sourceSection) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('source-tab-pr'));
+    await screen.findAllByTestId('pr-item');
+    expect(screen.getByTestId('location-worktree')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByTestId('worktree-name-custom')).toBeChecked();
+    expect(screen.getByTestId('worktree-name-input')).toHaveValue(
+      'persistent-name',
+    );
+
+    fireEvent.click(screen.getByTestId('source-tab-issue'));
+    await screen.findAllByTestId('issue-item');
+    expect(screen.getByTestId('worktree-name-custom')).toBeChecked();
+    expect(screen.getByTestId('worktree-name-input')).toHaveValue(
+      'persistent-name',
+    );
   });
 });
 
@@ -231,9 +293,31 @@ describe('NewWorkspaceDialog — From PR tab', () => {
     });
     const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
     expect(call).toBeDefined();
-    const arg = call?.[1] as { sourceKind?: string; sourceRef?: string };
+    const arg = call?.[1] as {
+      sourceKind?: string;
+      sourceRef?: string;
+      location?: string;
+    };
     expect(arg.sourceKind).toBe('pr');
     expect(arg.sourceRef).toBe('3');
+    expect(arg.location).toBe('worktree');
+  });
+
+  it('does not replace a current-checkout location when the source changes', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('location-project'));
+    fireEvent.click(screen.getByTestId('source-tab-pr'));
+
+    expect(screen.getByTestId('location-project')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(
+      await screen.findByTestId('pr-location-warning'),
+    ).toBeInTheDocument();
+    expect((await screen.findAllByTestId('pr-item'))[0]).toBeDisabled();
   });
 });
 
@@ -304,75 +388,5 @@ describe('NewWorkspaceDialog — no connected account', () => {
     });
     expect(api.invoke).toHaveBeenCalledWith('github:cliStatus', undefined);
     expect(api.invoke).toHaveBeenCalledWith('github:connectGhCli', undefined);
-  });
-});
-
-describe('NewWorkspaceDialog — From Linear tab', () => {
-  it('lists Linear issues and seeds a branch workspace + pendingPrompt on select', async () => {
-    const api = installApi({ createdId: 'ws-linear' });
-    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
-
-    fireEvent.click(screen.getByTestId('source-tab-linear'));
-
-    await waitFor(() => {
-      expect(screen.getAllByTestId('linear-issue-item').length).toBe(
-        LINEAR_ISSUES.length,
-      );
-    });
-    expect(api.invoke).toHaveBeenCalledWith('linear:listIssues', {});
-
-    fireEvent.click(screen.getByTestId('linear-issue-item'));
-
-    // A branch workspace (Linear issues are not a git ref), not a tagged source.
-    await waitFor(() => {
-      expect(api.stream).toHaveBeenCalled();
-    });
-    const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
-    const arg = call?.[1] as { sourceKind?: string };
-    expect(arg.sourceKind).toBe('branch');
-
-    // The composer store holds the Linear issue text keyed on the new workspace id.
-    await waitFor(() => {
-      expect(
-        useComposerStore.getState().pendingPromptByWorkspace['ws-linear'],
-      ).toBeDefined();
-    });
-    const taken = useComposerStore.getState().takePendingPrompt('ws-linear');
-    expect(taken).toContain('ENG-123');
-    expect(taken).toContain('Wire up the widget');
-    expect(taken).toContain('https://linear.app/x/issue/ENG-123');
-  });
-
-  it('shows the inline connect affordance and reloads issues after connecting', async () => {
-    const api = installApi({ linearReject: true });
-    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
-
-    fireEvent.click(screen.getByTestId('source-tab-linear'));
-
-    // No account → the API-key connect affordance renders (not a crash).
-    await waitFor(() => {
-      expect(screen.getByTestId('linear-connect')).toBeInTheDocument();
-    });
-    expect(screen.queryAllByTestId('linear-issue-item').length).toBe(0);
-
-    // Paste a key + Connect → drives linear:connect, then the list reloads with issues.
-    fireEvent.change(screen.getByTestId('linear-token-input'), {
-      target: { value: 'lin_api_secret123' },
-    });
-    fireEvent.click(screen.getByTestId('linear-connect-submit'));
-
-    await waitFor(() => {
-      expect(screen.getAllByTestId('linear-issue-item').length).toBe(
-        LINEAR_ISSUES.length,
-      );
-    });
-    const connectCall = api.stream.mock.calls.find(
-      (c) => c[0] === 'linear:connect',
-    );
-    expect(connectCall).toBeDefined();
-    expect(connectCall?.[1]).toEqual({
-      mode: 'apiKey',
-      token: 'lin_api_secret123',
-    });
   });
 });

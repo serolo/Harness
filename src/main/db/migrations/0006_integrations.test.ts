@@ -37,14 +37,14 @@ afterEach(async () => {
 });
 
 describe('migrations 0006/0007 (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 8 (latest)', () => {
+  it('applies all migrations: user_version becomes 9 (latest)', () => {
     db = openDb(dbFile);
 
     // Inspect the raw file with a fresh handle (asserts persisted state, not the
     // Kysely cache) — mirrors 0005_diff_review.test.ts.
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(8);
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
     } finally {
       raw.close();
     }
@@ -90,7 +90,7 @@ describe('migrations 0006/0007 (fresh temp DB)', () => {
     }
   });
 
-  it('is idempotent: a second runMigrations is a no-op (user_version stays 8)', () => {
+  it('is idempotent: a second runMigrations is a no-op (user_version stays 9)', () => {
     db = openDb(dbFile);
 
     // Run the migrations a second time against a fresh raw handle on the same file.
@@ -99,7 +99,7 @@ describe('migrations 0006/0007 (fresh temp DB)', () => {
     const raw = new BetterSqlite3(dbFile);
     try {
       expect(() => runMigrations(raw)).not.toThrow();
-      expect(raw.pragma('user_version', { simple: true })).toBe(8);
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
       // Exactly one integrations table — a double-apply would have thrown.
       const count = raw
         .prepare(

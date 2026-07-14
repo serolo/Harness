@@ -6,6 +6,8 @@
 // provenance use), a control kind, and (for selects) the allowed values. Kept as pure
 // data so it is trivially unit-testable and shared by the panel + its tests.
 
+import { COMPLETION_SOUNDS } from '@shared/settings';
+
 /** The control a settings row renders. */
 export type FieldKind = 'text' | 'select' | 'boolean';
 
@@ -18,6 +20,8 @@ export interface FieldDef {
   kind: FieldKind;
   /** Allowed values for a `select`. */
   options?: readonly string[];
+  /** Optional user-facing labels keyed by stored select value. */
+  optionLabels?: Readonly<Record<string, string>>;
   /** Optional one-line hint under the label. */
   hint?: string;
 }
@@ -50,6 +54,12 @@ export const SETTINGS_SECTIONS: readonly SectionDef[] = [
         options: ['merge', 'squash', 'rebase'],
         hint: 'Default strategy used by the Merge button.',
       },
+      {
+        keyPath: 'git.deleteWorktreeOnArchive',
+        label: 'Delete worktree on archive',
+        kind: 'boolean',
+        hint: 'Remove managed worktrees from disk when archiving a workspace.',
+      },
     ],
   },
   {
@@ -81,6 +91,21 @@ export const SETTINGS_SECTIONS: readonly SectionDef[] = [
   {
     title: 'Notifications',
     fields: [
+      {
+        keyPath: 'notifications.completionSound',
+        label: 'Work finished sound',
+        kind: 'select',
+        options: COMPLETION_SOUNDS,
+        optionLabels: {
+          none: 'None',
+          glass: 'Glass',
+          hero: 'Hero',
+          ping: 'Ping',
+          pop: 'Pop',
+          submarine: 'Submarine',
+        },
+        hint: 'Play this sound when work finishes in any chat. Changing it previews the tone.',
+      },
       {
         keyPath: 'notifications.enabled',
         label: 'Desktop notifications',

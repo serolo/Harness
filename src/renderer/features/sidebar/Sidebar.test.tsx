@@ -1,22 +1,10 @@
-// Renderer tests for the Sidebar feature (jsdom environment).
-// Mirrors the installApi pattern from AppLayout.test.tsx.
-//
-// Tests:
-//  - Seeded workspaces render with status-badge data-status attributes
-//  - The New Workspace button is present
-//  - A live workspace:status event flips a badge's data-status
-
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createQueryClient } from '@renderer/app/providers';
 import { Sidebar } from './Sidebar';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import type { Project, Workspace } from '@shared/models';
-
-// ---------------------------------------------------------------------------
-// window.api stub helpers (mirrors AppLayout.test.tsx)
-// ---------------------------------------------------------------------------
 
 interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
@@ -26,116 +14,88 @@ interface ApiStub {
 
 type OnCallback = (payload: unknown) => void;
 
-/**
- * Install a stubbed window.api.
- *
- * `invoke` dispatches on channel:
- *   - 'project:list'    → projects
- *   - 'workspace:list'  → workspaces
- *   - anything else     → undefined
- *
- * `on` records callbacks by event name so tests can invoke them.
- */
 function installApi(
   projects: Project[],
   workspaces: Workspace[],
-): { api: ApiStub; fireEvent: (event: string, payload: unknown) => void } {
+  workspaceListPending = false,
+): { fireEvent: (event: string, payload: unknown) => void } {
   const callbacks: Record<string, OnCallback[]> = {};
-
-  const invoke = vi.fn((channel: string, _req?: unknown) => {
+  const invoke = vi.fn((channel: string, req?: { projectId?: string }) => {
     if (channel === 'project:list') return Promise.resolve(projects);
-    if (channel === 'workspace:list') return Promise.resolve(workspaces);
+    if (channel === 'workspace:list') {
+      if (workspaceListPending) return new Promise(() => {});
+      return Promise.resolve(
+        workspaces.filter(
+          (workspace) => workspace.projectId === req?.projectId,
+        ),
+      );
+    }
     if (channel === 'app:ping') return Promise.resolve('ok');
     return Promise.resolve(undefined);
   });
-
   const on = vi.fn((event: string, cb: OnCallback) => {
-    if (!callbacks[event]) callbacks[event] = [];
-    callbacks[event].push(cb);
+    (callbacks[event] ??= []).push(cb);
     return () => {
-      callbacks[event] = (callbacks[event] ?? []).filter((x) => x !== cb);
+      callbacks[event] = (callbacks[event] ?? []).filter(
+        (entry) => entry !== cb,
+      );
     };
   });
-
-  const stream = vi.fn(() => Promise.resolve());
-
-  const api: ApiStub = { invoke, on, stream };
+  const api: ApiStub = { invoke, on, stream: vi.fn(() => Promise.resolve()) };
   (window as unknown as { api: ApiStub }).api = api;
-
-  function fireEvent(event: string, payload: unknown): void {
-    (callbacks[event] ?? []).forEach((cb) => cb(payload));
-  }
-
-  return { api, fireEvent };
+  return {
+    fireEvent: (event, payload) =>
+      (callbacks[event] ?? []).forEach((callback) => callback(payload)),
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-const PROJECT_ID = 'proj-1';
-
-const SEED_PROJECT: Project = {
-  id: PROJECT_ID,
+const PROJECT_ONE: Project = {
+  id: 'proj-1',
   name: 'my-repo',
   originUrl: 'https://github.com/x/y',
   defaultBranch: 'main',
   repoPath: '/tmp/my-repo',
-  createdAt: Date.now(),
+  createdAt: 1,
 };
 
-const WORKSPACE_IDLE: Workspace = {
-  id: 'ws-idle',
-  projectId: PROJECT_ID,
-  name: 'paris',
-  branch: 'agent/paris',
-  baseBranch: 'main',
-  worktreePath: '/tmp/worktrees/paris',
-  status: 'idle',
-  sourceKind: 'none',
-  sourceRef: null,
-  harness: 'claude_code',
-  port: 3001,
-  createdAt: Date.now(),
-  archivedAt: null,
-  prNumber: null,
+const PROJECT_TWO: Project = {
+  ...PROJECT_ONE,
+  id: 'proj-2',
+  name: 'second-repo',
+  repoPath: '/tmp/second-repo',
+  createdAt: 2,
 };
 
-const WORKSPACE_ARCHIVED: Workspace = {
-  id: 'ws-archived',
-  projectId: PROJECT_ID,
-  name: 'tokyo',
-  branch: 'agent/tokyo',
-  baseBranch: 'main',
-  worktreePath: null,
-  status: 'archived',
-  sourceKind: 'none',
-  sourceRef: null,
-  harness: 'claude_code',
-  port: null,
-  createdAt: Date.now(),
-  archivedAt: Date.now(),
-  prNumber: null,
-};
+function workspace(id: string, projectId: string, name: string): Workspace {
+  return {
+    id,
+    projectId,
+    name,
+    branch: `agent/${name}`,
+    baseBranch: 'main',
+    worktreePath: `/tmp/${name}`,
+    status: 'idle',
+    sourceKind: 'none',
+    sourceRef: null,
+    harness: 'claude_code',
+    port: null,
+    createdAt: 1,
+    archivedAt: null,
+    prNumber: null,
+  };
+}
 
-// ---------------------------------------------------------------------------
-// Helper: render <Sidebar> with isolated QueryClient + providers
-// ---------------------------------------------------------------------------
+const WORKSPACE_ONE = workspace('ws-1', PROJECT_ONE.id, 'paris');
+const WORKSPACE_TWO = workspace('ws-2', PROJECT_TWO.id, 'tokyo');
 
-function renderSidebar() {
-  const client = createQueryClient();
-  return render(
-    <QueryClientProvider client={client}>
+function renderSidebar(): void {
+  render(
+    <QueryClientProvider client={createQueryClient()}>
       <Sidebar />
     </QueryClientProvider>,
   );
 }
 
-/**
- * Reset the Zustand store before AND after each test so state never leaks across
- * test boundaries. The store is a module-level singleton — it outlives individual
- * renders and accumulates state if not reset explicitly.
- */
 function resetStore(): void {
   useWorkspacesStore.setState({
     projects: [],
@@ -145,9 +105,7 @@ function resetStore(): void {
   });
 }
 
-beforeEach(() => {
-  resetStore();
-});
+beforeEach(resetStore);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -155,107 +113,97 @@ afterEach(() => {
   resetStore();
 });
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe('Sidebar — seeded workspaces render', () => {
-  beforeEach(() => {
-    installApi([SEED_PROJECT], [WORKSPACE_IDLE, WORKSPACE_ARCHIVED]);
-  });
-
-  it('renders status badges for workspaces that have loaded', async () => {
+describe('Sidebar project tree', () => {
+  it('renders every project without a project selection dropdown', async () => {
+    installApi([PROJECT_ONE, PROJECT_TWO], [WORKSPACE_ONE, WORKSPACE_TWO]);
     renderSidebar();
-    // Wait for the idle workspace badge
-    await waitFor(() => {
-      const badges = screen.getAllByTestId('status-badge');
-      expect(badges.length).toBeGreaterThanOrEqual(1);
-    });
-    const badges = screen.getAllByTestId('status-badge');
-    const statuses = badges.map((b) => b.getAttribute('data-status'));
-    expect(statuses).toContain('idle');
+
+    expect(await screen.findByText('my-repo')).toBeInTheDocument();
+    expect(screen.getByText('second-repo')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Select project')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('project-group')).toHaveLength(2);
   });
 
-  it('renders the New Workspace button', async () => {
+  it('expands each project to show that project’s sessions', async () => {
+    installApi([PROJECT_ONE, PROJECT_TWO], [WORKSPACE_ONE, WORKSPACE_TWO]);
     renderSidebar();
-    // Button may be disabled but must be present
-    await waitFor(() => {
-      expect(screen.getByTestId('new-workspace-button')).toBeInTheDocument();
-    });
+
+    expect(await screen.findByText('paris')).toBeInTheDocument();
+    expect(screen.queryByText('tokyo')).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByTestId('project-toggle')[1]);
+    expect(await screen.findByText('tokyo')).toBeInTheDocument();
   });
 
-  it('renders the idle workspace item', async () => {
+  it('omits archived workspaces from the project list', async () => {
+    const archivedWorkspace: Workspace = {
+      ...workspace('ws-archived', PROJECT_ONE.id, 'finished-session'),
+      status: 'archived',
+      archivedAt: 2,
+    };
+    installApi([PROJECT_ONE], [WORKSPACE_ONE, archivedWorkspace]);
     renderSidebar();
-    await waitFor(() => {
-      const badge = screen
-        .getAllByTestId('status-badge')
-        .find((b) => b.getAttribute('data-status') === 'idle');
-      expect(badge).toBeDefined();
-    });
-  });
-});
 
-describe('Sidebar — live workspace:status event flips badge', () => {
-  it('flips data-status from idle to working when workspace:status event fires', async () => {
-    const { fireEvent } = installApi(
-      [SEED_PROJECT],
-      [WORKSPACE_IDLE, WORKSPACE_ARCHIVED],
+    expect(await screen.findByText('paris')).toBeInTheDocument();
+    expect(screen.queryByText('finished-session')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('workspace-item')).toHaveLength(1);
+  });
+
+  it('sorts pinned workspaces before unpinned siblings', async () => {
+    const first = workspace('ws-first', PROJECT_ONE.id, 'first');
+    const pinned = {
+      ...workspace('ws-pinned', PROJECT_ONE.id, 'pinned'),
+      isPinned: true,
+    };
+    installApi([PROJECT_ONE], [first, pinned]);
+    renderSidebar();
+
+    const rows = await screen.findAllByTestId('workspace-item');
+    expect(rows.map((row) => row.getAttribute('data-workspace-id'))).toEqual([
+      'ws-pinned',
+      'ws-first',
+    ]);
+  });
+
+  it('offers a new-workspace action on every project', async () => {
+    installApi([PROJECT_ONE, PROJECT_TWO], []);
+    renderSidebar();
+    await waitFor(() =>
+      expect(screen.getAllByTestId('project-new-workspace')).toHaveLength(2),
     );
+  });
 
+  it('updates a visible session from workspace status events', async () => {
+    const events = installApi([PROJECT_ONE], [WORKSPACE_ONE]);
     renderSidebar();
+    await screen.findByText('paris');
 
-    // Wait for the idle badge to appear
-    await waitFor(() => {
-      const badge = screen
-        .getAllByTestId('status-badge')
-        .find((b) => b.getAttribute('data-status') === 'idle');
-      expect(badge).toBeDefined();
-    });
-
-    // Fire a workspace:status event for the idle workspace
-    fireEvent('workspace:status', {
-      workspaceId: WORKSPACE_IDLE.id,
+    events.fireEvent('workspace:status', {
+      workspaceId: WORKSPACE_ONE.id,
       status: 'working',
     });
-
-    // The badge should flip to working
-    await waitFor(() => {
-      const workingBadge = screen
-        .getAllByTestId('status-badge')
-        .find((b) => b.getAttribute('data-status') === 'working');
-      expect(workingBadge).toBeDefined();
-    });
-  });
-});
-
-describe('Sidebar — empty state', () => {
-  it('shows empty-state message when no workspaces exist', async () => {
-    installApi([SEED_PROJECT], []);
-    renderSidebar();
-    await waitFor(() => {
-      expect(screen.getByTestId('sidebar-empty')).toBeInTheDocument();
-    });
+    await waitFor(() =>
+      expect(screen.getByTestId('status-badge')).toHaveAttribute(
+        'data-status',
+        'working',
+      ),
+    );
   });
 
-  it('does not render status badges when workspace list is empty', async () => {
-    installApi([SEED_PROJECT], []);
-    renderSidebar();
-    await waitFor(() => {
-      // Sidebar should be fully rendered (empty-state visible)
-      expect(screen.getByTestId('sidebar-empty')).toBeInTheDocument();
-    });
-    expect(screen.queryAllByTestId('status-badge').length).toBe(0);
-  });
-});
-
-describe('Sidebar — no projects state', () => {
-  it('New Workspace button is disabled when no project is selected', async () => {
+  it('shows the add-project action when there are no projects', async () => {
     installApi([], []);
     renderSidebar();
-    await waitFor(() => {
-      const btn = screen.getByTestId('new-workspace-button');
-      expect(btn).toBeInTheDocument();
-      expect(btn).toBeDisabled();
-    });
+    expect(await screen.findByTestId('sidebar-empty')).toHaveTextContent(
+      'No projects yet.',
+    );
+    expect(screen.getByTestId('add-project-button')).toBeEnabled();
+  });
+
+  it('does not loop or blank the app while workspace lists are pending', async () => {
+    installApi([PROJECT_ONE], [], true);
+    renderSidebar();
+
+    expect(await screen.findByText('my-repo')).toBeInTheDocument();
+    expect(screen.getByText('Loading sessions…')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
   });
 });

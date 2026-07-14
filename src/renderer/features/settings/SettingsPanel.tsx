@@ -25,7 +25,11 @@ import {
 import type { LucideIcon } from 'lucide-react';
 
 import type { GithubAccount, GithubCliAuthStatus } from '@shared/github';
-import type { SettingLayer, SettingsIssue } from '@shared/settings';
+import {
+  isCompletionSound,
+  type SettingLayer,
+  type SettingsIssue,
+} from '@shared/settings';
 import type { GitSshKey } from '@shared/git';
 import { Button, Input } from '@renderer/components/ui';
 import { invoke, subscribeStream } from '@renderer/ipc';
@@ -53,6 +57,21 @@ export function SettingsPanel({
   const [githubAuthError, setGithubAuthError] = useState<string | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [githubPat, setGithubPat] = useState('');
+
+  const updateSetting = (keyPath: string, value: unknown): void => {
+    void set(keyPath, value)
+      .then(async () => {
+        if (
+          keyPath === 'notifications.completionSound' &&
+          isCompletionSound(value)
+        ) {
+          await invoke('notifications:previewSound', { sound: value });
+        }
+      })
+      .catch(() => {
+        // Writes are surfaced by useSettings; sound preview is best-effort.
+      });
+  };
 
   useEffect(() => {
     let active = true;
@@ -243,7 +262,7 @@ export function SettingsPanel({
                     fields={rowsBySection.general}
                     effective={effective}
                     provenance={provenance}
-                    onSet={(keyPath, value) => void set(keyPath, value)}
+                    onSet={updateSetting}
                   />
                 </SettingsSection>
               ) : null}
@@ -257,7 +276,7 @@ export function SettingsPanel({
                     fields={rowsBySection.harnesses}
                     effective={effective}
                     provenance={provenance}
-                    onSet={(keyPath, value) => void set(keyPath, value)}
+                    onSet={updateSetting}
                   />
                 </SettingsSection>
               ) : null}
@@ -279,7 +298,7 @@ export function SettingsPanel({
                     fields={rowsBySection.git}
                     effective={effective}
                     provenance={provenance}
-                    onSet={(keyPath, value) => void set(keyPath, value)}
+                    onSet={updateSetting}
                   />
                   <SshKeysPanel keys={sshKeys} error={sshError} />
                 </SettingsSection>
@@ -294,7 +313,7 @@ export function SettingsPanel({
                     <RunScriptEditor
                       effective={effective}
                       provenance={provenance}
-                      onSet={(keyPath, value) => void set(keyPath, value)}
+                      onSet={updateSetting}
                     />
                   ) : null}
                 </SettingsSection>

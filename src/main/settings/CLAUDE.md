@@ -49,3 +49,10 @@ The effective shape + `SettingLayer` / `SettingsProvenance` / `SettingsIssue` li
 (they cross the IPC boundary via `settings:getEffective|getProvenance|set`). `schema.ts` carries a
 compile-time `_AssertEffectiveSettings` guard that fails the build if the zod inferred type ever drifts
 from that shared DTO — the shared type stays the single source of truth for the boundary.
+
+## Completion sounds
+
+`notifications.completionSound` is a user-wide selector for a clean chat-turn completion. `none`
+disables it; other values map to fixed files under `/System/Library/Sounds`. Playback is independent
+of the native notification `enabled` toggle, and the Settings preview IPC accepts only the shared enum.
+Never accept a renderer-provided executable or filesystem path for sound playback.

@@ -111,6 +111,7 @@ function makeSettings(setupScript: string): EffectiveSettings {
     git: {
       branchPrefix: 'agent',
       mergeStrategy: 'squash',
+      deleteWorktreeOnArchive: true,
     },
     mcp: [],
     notifications: {
@@ -118,12 +119,17 @@ function makeSettings(setupScript: string): EffectiveSettings {
       onTurnComplete: true,
       onError: true,
       onNeedsAttention: true,
+      completionSound: 'glass',
     },
   };
 }
 
-function buildManager(setupScript: string): WorkspaceManager {
+function buildManager(
+  setupScript: string,
+  deleteWorktreeOnArchive = true,
+): WorkspaceManager {
   const settingsSnapshot = makeSettings(setupScript);
+  settingsSnapshot.git.deleteWorktreeOnArchive = deleteWorktreeOnArchive;
 
   const deps: WorkspaceManagerDeps = {
     repos: { projects: projectsRepo, workspaces: workspacesRepo },
@@ -225,6 +231,20 @@ describe('WorkspaceManager.create', () => {
     });
   });
 
+  it('notifies the create stream before setup output begins', async () => {
+    const manager = buildManager('echo setup-ran');
+    const frames: string[] = [];
+
+    await manager.create(
+      { projectId },
+      () => frames.push('setupLog'),
+      () => frames.push('created'),
+    );
+
+    expect(frames[0]).toBe('created');
+    expect(frames).toContain('setupLog');
+  });
+
   it('onSetupLog callback receives at least one chunk from the setup script', async () => {
     const manager = buildManager('echo setup-ran');
     const chunks: string[] = [];
@@ -248,6 +268,85 @@ describe('WorkspaceManager.create', () => {
     const ws2 = await manager.create({ projectId });
     expect(ws1.name).not.toBe(ws2.name);
     expect(ws1.port).not.toBe(ws2.port);
+  });
+
+  it('uses the project checkout without creating a managed worktree', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId, location: 'project' });
+
+    expect(ws.location).toBe('project');
+    expect(ws.worktreePath).toBe(sourceRepoPath);
+    expect(ws.branch).toBe('main');
+    expect(ws.name).toBe('current');
+  });
+
+  it('uses an explicit safe worktree name and rejects traversal names', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId, name: 'feature-search' });
+    expect(ws.name).toBe('feature-search');
+    expect(ws.branch).toBe('agent/feature-search');
+
+    await expect(
+      manager.create({ projectId, name: '../outside' }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('adopts an exact worktree orphan left by a failed DB insert', async () => {
+    const git = new GitService();
+    const orphanPath = join(
+      userDataRoot,
+      'projects',
+      projectId,
+      'worktrees',
+      'orphan',
+    );
+    await git.addWorktree(
+      sourceRepoPath,
+      orphanPath,
+      'agent/orphan',
+      'main',
+      true,
+    );
+
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId, name: 'orphan' });
+
+    expect(ws).toMatchObject({
+      name: 'orphan',
+      branch: 'agent/orphan',
+      worktreePath: orphanPath,
+    });
+    expect(
+      (await git.worktreeList(sourceRepoPath)).filter(
+        (entry) => entry.branch === 'agent/orphan',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('removes a newly-created worktree when persistence fails', async () => {
+    const createSpy = vi
+      .spyOn(workspacesRepo, 'create')
+      .mockRejectedValueOnce(new Error('insert failed'));
+    const manager = buildManager('echo ok');
+
+    await expect(
+      manager.create({ projectId, name: 'failed-insert' }),
+    ).rejects.toThrow('insert failed');
+
+    expect(createSpy).toHaveBeenCalledOnce();
+    expect(
+      (await new GitService().worktreeList(sourceRepoPath)).some(
+        (entry) => entry.branch === 'agent/failed-insert',
+      ),
+    ).toBe(false);
+  });
+
+  it('allows only one live workspace on the project checkout', async () => {
+    const manager = buildManager('echo ok');
+    await manager.create({ projectId, location: 'project' });
+    await expect(
+      manager.create({ projectId, location: 'project' }),
+    ).rejects.toMatchObject({ code: 'conflict' });
   });
 });
 
@@ -298,6 +397,51 @@ describe('WorkspaceManager.archive', () => {
   it('throws when the workspace does not exist', async () => {
     const manager = buildManager('echo ok');
     await expect(manager.archive('nonexistent-id')).rejects.toThrow();
+  });
+
+  it('never removes the project checkout when archiving it', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId, location: 'project' });
+
+    await manager.archive(ws.id);
+
+    expect(existsSync(sourceRepoPath)).toBe(true);
+    expect(await manager.get(ws.id)).toMatchObject({
+      status: 'archived',
+      worktreePath: sourceRepoPath,
+      location: 'project',
+    });
+  });
+
+  it('reports dirty files before deleting a managed worktree', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId });
+    writeFileSync(join(ws.worktreePath!, 'dirty.txt'), 'uncommitted');
+
+    await expect(manager.archivePreview(ws.id)).resolves.toEqual({
+      hasUncommittedChanges: true,
+      changedFileCount: 1,
+      willDeleteWorktree: true,
+    });
+  });
+
+  it('preserves and reuses a managed worktree when deletion is disabled', async () => {
+    const manager = buildManager('echo ok', false);
+    const ws = await manager.create({ projectId });
+    const worktreePath = ws.worktreePath!;
+
+    await expect(manager.archivePreview(ws.id)).resolves.toMatchObject({
+      willDeleteWorktree: false,
+    });
+    await manager.archive(ws.id);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(await manager.get(ws.id)).toMatchObject({
+      status: 'archived',
+      worktreePath,
+    });
+
+    const restored = await manager.restore(ws.id);
+    expect(restored).toMatchObject({ status: 'idle', worktreePath });
   });
 });
 
@@ -361,6 +505,21 @@ describe('WorkspaceManager.restore', () => {
     const manager = buildManager('echo ok');
     await expect(manager.restore('nonexistent-id')).rejects.toThrow();
   });
+
+  it('restores a project-checkout workspace without adding a worktree', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId, location: 'project' });
+    await manager.archive(ws.id);
+
+    const restored = await manager.restore(ws.id);
+
+    expect(restored).toMatchObject({
+      status: 'idle',
+      worktreePath: sourceRepoPath,
+      location: 'project',
+      branch: 'main',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -392,6 +551,52 @@ describe('WorkspaceManager.list / get', () => {
     const manager = buildManager('echo ok');
     const result = await manager.get('no-such-id');
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// user-controlled context-menu metadata
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceManager.update', () => {
+  it('renames, pins, marks unread, and updates the visible status', async () => {
+    const manager = buildManager('echo ok');
+    const workspace = await manager.create({ projectId, name: 'original' });
+    emitSpy.mockClear();
+
+    const updated = await manager.update(workspace.id, {
+      name: 'Fix context menu',
+      isPinned: true,
+      isUnread: true,
+      status: 'needs_attention',
+    });
+
+    expect(updated).toMatchObject({
+      name: 'Fix context menu',
+      isPinned: true,
+      isUnread: true,
+      status: 'needs_attention',
+    });
+    expect(emitSpy).toHaveBeenCalledWith('workspace:status', {
+      workspaceId: workspace.id,
+      status: 'needs_attention',
+    });
+  });
+
+  it('rejects unsafe, duplicate, and archived status updates', async () => {
+    const manager = buildManager('echo ok');
+    const first = await manager.create({ projectId, name: 'first' });
+    const second = await manager.create({ projectId, name: 'second' });
+
+    await expect(
+      manager.update(first.id, { name: '../outside' }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+    await expect(
+      manager.update(first.id, { name: second.name }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    await expect(
+      manager.update(first.id, { status: 'archived' }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
   });
 });
 

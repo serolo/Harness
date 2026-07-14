@@ -7,7 +7,7 @@
 // Electron-ABI test runner is wired correctly.
 //
 // Behavior under test (from the plan's Validation Gate + Acceptance Criteria):
-//   - Fresh DB: all migrations apply, user_version → latest (8), projects/workspaces + indexes exist.
+//   - Fresh DB: all migrations apply, user_version → latest (9), projects/workspaces + indexes exist.
 //   - Idempotent: re-opening the same file does not re-apply / error.
 //   - CRUD: insert+read a Project and a Workspace via the repos; fields + id/timestamp shape.
 //   - Constraints: unique (project_id, name) rejects duplicates; FK rejects a bogus project_id.
@@ -78,16 +78,16 @@ const UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe('migration runner (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 8 (latest) and core tables + indexes exist', () => {
+  it('applies all migrations: user_version becomes 9 (latest) and core tables + indexes exist', () => {
     db = openDb(dbFile);
     expect(existsSync(dbFile)).toBe(true);
 
     // Inspect the raw file with a fresh handle (asserts persisted state, not the Kysely cache).
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      // Latest shipped migration is 0005 (diff review); a fresh DB applies 0001→0005.
+      // A fresh database applies every registered migration through 0009.
       const version = raw.pragma('user_version', { simple: true });
-      expect(version).toBe(8);
+      expect(version).toBe(9);
 
       const tables = raw
         .prepare(
@@ -134,7 +134,7 @@ describe('migration runner (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(8);
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
       // Exactly one projects table — a double-apply would have thrown "table already exists".
       const count = raw
         .prepare(
@@ -209,6 +209,7 @@ describe('WorkspacesRepo CRUD round-trip + constraints', () => {
     expect(created.baseBranch).toBe('main');
     expect(created.harness).toBe('claude_code');
     expect(created.status).toBe('idle');
+    expect(created.location).toBe('worktree');
     // Omitted nullable inputs round-trip as null (not undefined).
     expect(created.worktreePath).toBeNull();
     expect(created.sourceKind).toBeNull();
@@ -235,6 +236,7 @@ describe('WorkspacesRepo CRUD round-trip + constraints', () => {
         sourceRef: '42',
         port: 5173,
         status: 'working',
+        location: 'project',
       }),
     );
     const fetched = await workspaces.getById(created.id);
@@ -244,6 +246,7 @@ describe('WorkspacesRepo CRUD round-trip + constraints', () => {
       sourceRef: '42',
       port: 5173,
       status: 'working',
+      location: 'project',
     });
   });
 

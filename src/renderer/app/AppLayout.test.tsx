@@ -1,17 +1,28 @@
-// Renderer: AppLayout renders + the IPC health indicator reflects the app:ping result.
+// Renderer AppLayout structure and adjustable pane interactions.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 import { AppLayout } from '@renderer/app/AppLayout';
 import { Providers } from '@renderer/app/providers';
 
+/** Minimal shape of the bits of `window.api` the renderer touches in Phase 1. */
 interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   stream: ReturnType<typeof vi.fn>;
 }
 
+/**
+ * Install a stubbed `window.api`.
+ *
+ * The `invoke` mock dispatches on channel so:
+ *   - 'project:list'    → []     (Sidebar ProjectSwitcher)
+ *   - 'workspace:list'  → []     (Sidebar workspace list)
+ *
+ * A custom override factory can be passed to make specific channels resolve
+ * differently (used by the error-path tests).
+ */
 function installApi(
   invokeFactory: (channel: string) => unknown = () => undefined,
 ): ApiStub {
@@ -26,16 +37,14 @@ function installApi(
     on: vi.fn(() => () => {}),
     stream: vi.fn(() => Promise.resolve()),
   };
+  // The renderer reads `window.api` (declared `readonly` in the ambient d.ts, so cast).
   (window as unknown as { api: ApiStub }).api = api;
   return api;
 }
 
-beforeEach(() => {
-  window.localStorage.clear();
-});
-
 afterEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.clear();
   delete (window as unknown as { api?: unknown }).api;
 });
 
@@ -44,30 +53,21 @@ describe('AppLayout structure', () => {
     installApi();
   });
 
-  it('keeps chat in the center and stacks work panes on the right', async () => {
+  it('renders the three-pane layout and both placeholder panes', () => {
     render(
       <Providers>
         <AppLayout />
       </Providers>,
     );
-
     expect(screen.getByTestId('app-layout')).toBeInTheDocument();
     expect(screen.getByTestId('center-pane')).toContainElement(
+      screen.getByTestId('workspace-title'),
+    );
+    expect(
       screen.getByText('Select a workspace to begin.'),
-    );
-    expect(screen.queryByTestId('center-tabs')).not.toBeInTheDocument();
-    expect(screen.getByTestId('right-git-pane')).toContainElement(
-      screen.getByTestId('diff-empty'),
-    );
-    expect(screen.getByTestId('right-terminal-pane')).toContainElement(
-      screen.getByTestId('terminal-empty'),
-    );
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'ok',
-      );
-    });
+    ).toBeInTheDocument();
+    expect(screen.getByText('Context panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('ipc-health')).not.toBeInTheDocument();
   });
 
   it('toggles the left and right panes independently while preserving the center', () => {
@@ -114,93 +114,10 @@ describe('AppLayout structure', () => {
     fireEvent.mouseUp(window);
     expect(screen.getByTestId('left-pane')).toHaveStyle({ width: '340px' });
 
-    expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '640px' });
+    expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '360px' });
     fireEvent.keyDown(screen.getByTestId('right-resize-handle'), {
       key: 'ArrowLeft',
     });
-    expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '656px' });
-  });
-});
-
-describe('IPC health indicator', () => {
-  it('starts pending, then flips to the ok state when app:ping resolves "ok"', async () => {
-    const api = installApi();
-
-    render(
-      <Providers>
-        <AppLayout />
-      </Providers>,
-    );
-
-    expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-      'data-state',
-      'pending',
-    );
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'ok',
-      );
-    });
-    expect(screen.getByText('IPC OK')).toBeInTheDocument();
-    expect(api.invoke).toHaveBeenCalledWith('app:ping', undefined);
-  });
-
-  it('flips to the error state when app:ping rejects', async () => {
-    const invoke = vi.fn((channel: string, _req?: unknown) => {
-      if (channel === 'app:ping')
-        return Promise.reject(new Error('no main process'));
-      if (channel === 'project:list') return Promise.resolve([]);
-      if (channel === 'workspace:list') return Promise.resolve([]);
-      return Promise.resolve(undefined);
-    });
-    const api: ApiStub = {
-      invoke,
-      on: vi.fn(() => () => {}),
-      stream: vi.fn(() => Promise.resolve()),
-    };
-    (window as unknown as { api: ApiStub }).api = api;
-
-    render(
-      <Providers>
-        <AppLayout />
-      </Providers>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'error',
-      );
-    });
-    expect(screen.getByText('IPC error')).toBeInTheDocument();
-  });
-
-  it('treats an unexpected response as an error', async () => {
-    const invoke = vi.fn((channel: string, _req?: unknown) => {
-      if (channel === 'app:ping') return Promise.resolve('pong');
-      if (channel === 'project:list') return Promise.resolve([]);
-      if (channel === 'workspace:list') return Promise.resolve([]);
-      return Promise.resolve(undefined);
-    });
-    const api: ApiStub = {
-      invoke,
-      on: vi.fn(() => () => {}),
-      stream: vi.fn(() => Promise.resolve()),
-    };
-    (window as unknown as { api: ApiStub }).api = api;
-
-    render(
-      <Providers>
-        <AppLayout />
-      </Providers>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'error',
-      );
-    });
+    expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '376px' });
   });
 });

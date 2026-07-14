@@ -63,14 +63,14 @@ async function seedTurn(
 }
 
 describe('migration 0005 (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 8 (latest)', () => {
+  it('applies all migrations: user_version becomes 9 (latest)', () => {
     db = openDb(dbFile);
 
     // Inspect the raw file with a fresh handle (asserts persisted state, not the
     // Kysely cache) — mirrors index.test.ts's version assertion for 0001-0003.
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(8);
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
     } finally {
       raw.close();
     }
@@ -248,7 +248,7 @@ describe('migration 0005 (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(8);
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
       // Exactly one checkpoints table — a double-apply would have thrown
       // "table already exists".
       const count = raw

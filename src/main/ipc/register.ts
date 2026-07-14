@@ -36,6 +36,7 @@ import type {
 import type { StreamSink } from '@shared/ipc';
 import type { AgentEvent, HarnessId, StartTurnOpts } from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
+import type { DiffQuery } from '@shared/review';
 import type { AppContext } from '../context';
 import { toAppError } from '../error';
 import { AppError, encodeAppErrorMessage } from '@shared/errors';
@@ -89,6 +90,11 @@ const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
     template: 'Create a concise implementation plan for this task.\n\n$ARGS',
     description: 'Create an implementation plan',
   },
+  {
+    name: 'clear',
+    template: 'Clear the current chat transcript and context.',
+    description: 'Clear chat history and context',
+  },
 ];
 
 /**
@@ -102,6 +108,31 @@ const trackedFocusRefreshIds = new Set<string>();
 /** Record a workspace id so a later window focus recomputes its checks (Phase 5). */
 function trackForFocusRefresh(workspaceId: string): void {
   trackedFocusRefreshIds.add(workspaceId);
+}
+
+/** Narrow a renderer-provided Git comparison before any ref reaches git. */
+function validateDiffQuery(req: DiffQuery): void {
+  if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+    throw new AppError('invalid_input', 'workspaceId is required');
+  }
+  if (typeof req.targetRef !== 'string' || req.targetRef === '') {
+    throw new AppError('invalid_input', 'targetRef is required');
+  }
+  if (
+    !req.scope ||
+    (req.scope.kind !== 'all' &&
+      req.scope.kind !== 'uncommitted' &&
+      req.scope.kind !== 'commit')
+  ) {
+    throw new AppError('invalid_input', 'unknown diff scope');
+  }
+  if (
+    req.scope.kind === 'commit' &&
+    (typeof req.scope.sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(req.scope.sha))
+  ) {
+    throw new AppError('invalid_input', 'commit sha must be 40 hex characters');
+  }
 }
 
 /**
@@ -715,7 +746,7 @@ function registerStreamControl(ctx: AppContext): void {
  */
 export function registerIpc(ctx: AppContext): void {
   // app:ping — the renderer health check (flips the "IPC OK" indicator).
-  handle('app:ping', async () => 'ok');
+  handle('app:ping', async () => 'ok' as const);
 
   // app:info — static app/version info.
   handle('app:info', async () => ({
@@ -814,6 +845,19 @@ export function registerIpc(ctx: AppContext): void {
     }
     const turns = await ctx.recorder.history(req.workspaceId);
     return { turns };
+  });
+
+  handle('chat:clear', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (!workspace) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    await ctx.recorder.clear(req.workspaceId);
   });
 
   // harness:detect — probe a registered harness CLI.
@@ -964,6 +1008,48 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
     return ctx.diff.commits(req.workspaceId);
+  });
+
+  // diff:menu — comparison target choices + counts + recent commits. The optional
+  // target must still be a non-empty string; DiffService then allowlists it against
+  // refs returned by `git for-each-ref` before using it.
+  handle('diff:menu', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (
+      req.targetRef !== undefined &&
+      (typeof req.targetRef !== 'string' || req.targetRef === '')
+    ) {
+      throw new AppError('invalid_input', 'targetRef must be a branch name');
+    }
+    return ctx.diff.menu(req.workspaceId, req.targetRef);
+  });
+
+  // Scoped list and per-file content. Both validate the complete query; the service
+  // additionally proves target/commit membership against repository-derived refs.
+  handle('diff:query', async (req) => {
+    validateDiffQuery(req);
+    const gitDiff = await ctx.diff.getDiffForQuery(req);
+    return {
+      baseRef: gitDiff.baseRef,
+      headRef: gitDiff.headRef,
+      files: gitDiff.files.map((f) => ({
+        path: f.path,
+        oldPath: f.oldPath,
+        change: f.change,
+        additions: f.additions,
+        deletions: f.deletions,
+      })),
+    };
+  });
+
+  handle('diff:fileQuery', async (req) => {
+    validateDiffQuery(req);
+    if (typeof req.path !== 'string' || req.path === '') {
+      throw new AppError('invalid_input', 'path is required');
+    }
+    return ctx.diff.fileDiffForQuery(req, req.path);
   });
 
   // comment:create — an inline diff comment (starts `open`). Narrow every field.
@@ -1392,8 +1478,7 @@ export function registerIpc(ctx: AppContext): void {
     return ctx.settings.set(req.layer, req.keyPath, req.value);
   });
 
-  // slash:list — the slash-command catalogue built from `agent.prompts` (spec §5.4).
-  // Each named prompt template becomes a `/name` command the composer can expand.
+  // slash:list — settings prompts plus built-in default commands.
   handle('slash:list', async () => {
     const prompts = ctx.settings.get().agent.prompts;
     const custom = Object.entries(prompts).map(([name, template]) => ({

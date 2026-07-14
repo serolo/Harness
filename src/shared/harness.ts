@@ -45,7 +45,38 @@ export type AgentEvent =
   | { kind: 'file_edit'; path: string; op: 'create' | 'modify' | 'delete' }
   | { kind: 'todo_update'; todos: Todo[] }
   | { kind: 'turn_end'; usage?: Usage }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  /** App-originated prompt persisted beside harness events for chat reconstruction. */
+  | { kind: 'user_message'; text: string }
+  /** A structured question that needs a conversational answer from the user. */
+  | {
+      kind: 'question_request';
+      requestId?: string;
+      questions: AgentQuestion[];
+    }
+  /** A tool/action permission prompt. This is intentionally distinct from a question. */
+  | {
+      kind: 'permission_request';
+      requestId?: string;
+      title?: string;
+      description?: string;
+      toolName?: string;
+      input?: unknown;
+    };
+
+/** Provider-neutral shape used by Claude Code and Codex question prompts. */
+export interface AgentQuestion {
+  id?: string;
+  header?: string;
+  question: string;
+  multiSelect?: boolean;
+  options?: AgentQuestionOption[];
+}
+
+export interface AgentQuestionOption {
+  label: string;
+  description?: string;
+}
 
 // Attachment format is frozen in Phase 2 and consumed by Phase 4:
 export type Attachment =

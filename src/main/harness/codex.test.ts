@@ -52,6 +52,78 @@ function run(raw: string): { events: AgentEvent[]; sessionIds: string[] } {
 }
 
 describe('normalizeCodex — normalization table (ASSUMED codex format)', () => {
+  it('maps the current exec --json thread, message, and turn protocol', () => {
+    const { events, sessionIds } = run(
+      [
+        '{"type":"thread.started","thread_id":"thread-current-1"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}',
+        '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":4,"output_tokens":5}}',
+      ].join('\n'),
+    );
+    expect(sessionIds).toEqual(['thread-current-1']);
+    expect(events).toEqual([
+      { kind: 'text', delta: 'hello' },
+      { kind: 'turn_end', usage: { inputTokens: 12, outputTokens: 5 } },
+    ]);
+  });
+
+  it('maps app-server questions and approvals to distinct interactions', () => {
+    expect(
+      normalizeCodex({
+        method: 'item/tool/requestUserInput',
+        id: 41,
+        params: {
+          questions: [
+            {
+              id: 'style',
+              header: 'Style',
+              question: 'Which style should I use?',
+              options: [{ label: 'Compact', description: 'Less detail' }],
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'event',
+        event: {
+          kind: 'question_request',
+          requestId: '41',
+          questions: [
+            {
+              id: 'style',
+              header: 'Style',
+              question: 'Which style should I use?',
+              multiSelect: undefined,
+              options: [{ label: 'Compact', description: 'Less detail' }],
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(
+      normalizeCodex({
+        method: 'item/commandExecution/requestApproval',
+        id: 42,
+        params: { command: 'npm publish', reason: 'Writes to the registry' },
+      }),
+    ).toEqual([
+      {
+        type: 'event',
+        event: {
+          kind: 'permission_request',
+          requestId: '42',
+          title: undefined,
+          description: 'Writes to the registry',
+          toolName: 'command_execution',
+          input: { command: 'npm publish', reason: 'Writes to the registry' },
+        },
+      },
+    ]);
+  });
+
   it('captures the session id and maps text deltas + turn_end (text fixture)', () => {
     const { events, sessionIds } = run(readFixture('text.jsonl'));
     expect(sessionIds).toEqual(['codex-sess-text-001']);
@@ -187,20 +259,18 @@ describe('Codex adapter — buildArgs', () => {
     expect(prompt).toContain('[Attached file: /repo/README.md]');
   });
 
-  it('adds --resume when resuming a session (supportsResume)', () => {
+  it('uses the exec resume subcommand when resuming a session', () => {
     const args = buildArgs(opts({ sessionId: 'codex-sess-1' }));
-    const i = args.indexOf('--resume');
-    expect(i).toBeGreaterThanOrEqual(0);
-    expect(args[i + 1]).toBe('codex-sess-1');
+    expect(args.slice(0, 3)).toEqual(['exec', 'resume', '--json']);
+    expect(args.slice(-3)).toEqual(['--', 'codex-sess-1', 'do the thing']);
   });
 
-  it('maps auto_accept mode to --full-auto but never emits a plan flag', () => {
-    expect(buildArgs(opts({ mode: 'auto_accept' }))).toContain('--full-auto');
-    // No plan-mode support: a `plan` request degrades to the default (no flag, no throw).
-    const planArgs = buildArgs(opts({ mode: 'plan' }));
-    expect(planArgs).not.toContain('--full-auto');
-    expect(planArgs.join(' ')).not.toContain('plan');
-    expect(buildArgs(opts({ mode: 'default' }))).not.toContain('--full-auto');
+  it('always bypasses approvals and sandboxing in every app mode', () => {
+    for (const mode of ['default', 'plan', 'auto_accept'] as const) {
+      const args = buildArgs(opts({ mode }));
+      expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(args).not.toContain('--full-auto');
+    }
   });
 
   it('writes configured MCP servers to .mcp.json and passes --mcp-config', () => {

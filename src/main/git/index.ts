@@ -1082,6 +1082,61 @@ export class GitService {
   }
 
   /**
+   * Diff two committed refs without including index/worktree changes. The caller owns
+   * ref validation; refs are always passed as separate argv entries and never through a
+   * shell. Used by the Git menu's single-commit scope.
+   */
+  async diffBetween(
+    worktreePath: string,
+    baseRef: string,
+    headRef: string,
+  ): Promise<GitDiff> {
+    const nameStatusArgs = [
+      '-C',
+      worktreePath,
+      'diff',
+      '--name-status',
+      '-z',
+      baseRef,
+      headRef,
+    ];
+    const numstatArgs = [
+      '-C',
+      worktreePath,
+      'diff',
+      '--numstat',
+      '-z',
+      baseRef,
+      headRef,
+    ];
+    const patchArgs = ['-C', worktreePath, 'diff', baseRef, headRef];
+
+    try {
+      const [nameStatus, numstat, patchResult] = await Promise.all([
+        execa('git', nameStatusArgs),
+        execa('git', numstatArgs),
+        execa('git', patchArgs),
+      ]);
+      const stats = parseNumstatZ(numstat.stdout);
+      const files: DiffFile[] = parseNameStatusZ(nameStatus.stdout).map(
+        (entry) => {
+          const stat = stats.get(entry.newPath);
+          return {
+            path: entry.newPath,
+            oldPath: entry.oldPath,
+            change: mapDiffChange(entry.code),
+            additions: stat?.additions ?? 0,
+            deletions: stat?.deletions ?? 0,
+          };
+        },
+      );
+      return { baseRef, headRef, files, patch: patchResult.stdout };
+    } catch (e) {
+      throw toGitError(e, `git -C ${worktreePath} diff ${baseRef} ${headRef}`);
+    }
+  }
+
+  /**
    * Snapshot the worktree WITHOUT touching branch history (spec §5.4 checkpoints):
    * stage everything into a SCRATCH index, then `git commit-tree` a tree object.
    *

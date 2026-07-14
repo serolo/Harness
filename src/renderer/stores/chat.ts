@@ -29,7 +29,12 @@ export interface ChatState {
   /** Replace a workspace's transcript (from `chat:history`). */
   hydrate: (workspaceId: string, turns: RenderedTurn[]) => void;
   /** Begin a new streaming turn (from the `started` stream frame). */
-  startTurn: (workspaceId: string, turnId: string, sessionId: string) => void;
+  startTurn: (
+    workspaceId: string,
+    turnId: string,
+    sessionId: string,
+    initialEvent?: AgentEvent,
+  ) => void;
   /** Append one event to the workspace's latest (streaming) turn, coalescing text. */
   appendEvent: (workspaceId: string, event: AgentEvent) => void;
   /** Finalize the latest turn with a terminal status (+ usage from turn_end). */
@@ -72,14 +77,14 @@ export const useChatStore = create<ChatState>((set) => ({
       byWorkspace: { ...state.byWorkspace, [workspaceId]: turns },
     })),
 
-  startTurn: (workspaceId, turnId, sessionId) =>
+  startTurn: (workspaceId, turnId, sessionId, initialEvent) =>
     set((state) => {
       const turns = state.byWorkspace[workspaceId] ?? [];
       const turn: RenderedTurn = {
         turnId,
         status: 'streaming',
         sessionId: sessionId || undefined,
-        events: [],
+        events: initialEvent ? [initialEvent] : [],
       };
       const last = turns[turns.length - 1];
       if (last?.turnId.startsWith('pending:') && last.status === 'streaming') {

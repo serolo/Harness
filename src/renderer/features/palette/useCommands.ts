@@ -3,7 +3,7 @@
 // ONE registry, two surfaces: the palette renders + runs these commands, and AppLayout's
 // `menu:action` dispatcher looks the FIXED ids up in the same registry (`byId`) so a
 // keyboard accelerator and a palette entry can never drift. The action implementations
-// (switch pane, open settings, new workspace, open PR, select workspace) are injected by
+// (reveal pane, open settings, new workspace, open PR, select workspace) are injected by
 // AppLayout so this hook stays presentational-adjacent — no direct IPC here.
 //
 // Workspace-switch commands are generated per live workspace (id `selectWorkspace:<wsId>`);
@@ -14,7 +14,7 @@ import { useMemo } from 'react';
 
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 
-/** The center-pane views the palette can switch to (mirrors AppLayout's `CenterTab`). */
+/** The fixed workspace views the palette can reveal. */
 export type CenterPane = 'chat' | 'terminal' | 'diff';
 
 /** One palette command: a stable id, display text, optional keywords, and its effect. */
@@ -33,7 +33,7 @@ export interface Command {
 
 /** The action callbacks the registry binds commands to (owned by AppLayout). */
 export interface CommandActions {
-  /** Switch the center pane (chat / terminal / diff). */
+  /** Reveal a fixed workspace pane (chat / terminal / diff). */
   showPane: (pane: CenterPane) => void;
   /** Open the global settings overlay. */
   openSettings: () => void;

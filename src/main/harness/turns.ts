@@ -155,6 +155,17 @@ export class TurnRecorder {
     return turns;
   }
 
+  /** Clear persisted turns and discard buffered text belonging to this workspace. */
+  async clear(workspaceId: string): Promise<void> {
+    for (const [turnId] of this.state) {
+      const turn = await this.turns.getById(turnId);
+      if (turn?.workspaceId === workspaceId) {
+        this.state.delete(turnId);
+      }
+    }
+    await this.turns.clearWorkspaceHistory(workspaceId);
+  }
+
   /** Flush the pending text buffer as one coalesced `text` event row (if non-empty). */
   private async flushText(turnId: string, st: TurnState): Promise<void> {
     if (st.pendingText.length === 0) {

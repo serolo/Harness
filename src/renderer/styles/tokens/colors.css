@@ -67,6 +67,7 @@
   --link-hover: var(--accent-hover);
   --focus-ring: rgba(91, 140, 255, 0.55);
   --selection-bg: rgba(91, 140, 255, 0.28);
+  --chat-user-bg: #2c2020;
 }
 
 [data-theme='light'] {
@@ -123,4 +124,5 @@
   --scrim: rgba(23, 28, 38, 0.35);
   --focus-ring: rgba(61, 110, 232, 0.45);
   --selection-bg: rgba(61, 110, 232, 0.2);
+  --chat-user-bg: #f0e5e5;
 }

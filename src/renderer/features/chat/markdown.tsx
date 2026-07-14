@@ -48,7 +48,7 @@ function renderBlocks(text: string): React.ReactNode[] {
 function CodeBlock({ code }: { code: string }): React.JSX.Element {
   return (
     <pre
-      className="my-4 overflow-x-auto rounded-3 border border-border-1 bg-surface-well p-4 font-mono text-[15px] leading-7 text-fg-1"
+      className="my-3 overflow-x-auto rounded-3 border border-border-1 bg-surface-well p-3 font-mono text-sm leading-6 text-fg-1"
       data-testid="code-block"
     >
       <code>{code.replace(/\n$/, '')}</code>
@@ -69,10 +69,10 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
       const level = heading[1].length;
       const className =
         level === 1
-          ? 'mb-4 mt-8 text-3xl font-bold leading-tight text-fg-1'
+          ? 'mb-3 mt-6 text-lg font-bold leading-tight text-fg-1'
           : level === 2
-            ? 'mb-3 mt-7 text-2xl font-bold leading-tight text-fg-1'
-            : 'mb-2 mt-6 text-xl font-semibold leading-snug text-fg-1';
+            ? 'mb-2 mt-5 text-[18px] font-bold leading-tight text-fg-1'
+            : 'mb-2 mt-4 text-[16px] font-semibold leading-snug text-fg-1';
       out.push(
         <h2 key={`${baseKey}-h-${i}`} className={className}>
           {renderInline(heading[2])}
@@ -90,14 +90,14 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
         ordered ? (
           <ol
             key={`${baseKey}-ol-${i}`}
-            className="my-4 list-decimal space-y-2 pl-7 text-[21px] leading-[1.55] text-fg-1"
+            className="my-3 list-decimal space-y-1.5 pl-6 text-md leading-relaxed text-fg-1"
           >
             {items}
           </ol>
         ) : (
           <ul
             key={`${baseKey}-ul-${i}`}
-            className="my-4 list-disc space-y-2 pl-7 text-[21px] leading-[1.55] text-fg-1"
+            className="my-3 list-disc space-y-1.5 pl-6 text-md leading-relaxed text-fg-1"
           >
             {items}
           </ul>
@@ -107,7 +107,7 @@ function renderProse(prose: string, baseKey: number): React.ReactNode[] {
       out.push(
         <p
           key={`${baseKey}-p-${i}`}
-          className="my-4 whitespace-pre-wrap text-[21px] leading-[1.55] text-fg-1"
+          className="my-3 whitespace-pre-wrap text-md leading-relaxed text-fg-1"
         >
           {renderInline(trimmed)}
         </p>,

@@ -183,6 +183,58 @@ describe('DiffService.getDiff', () => {
     expect(untracked?.additions).toBe(3); // 'one\ntwo\nthree\n' => 3 lines
     expect(untracked?.deletions).toBe(0);
   });
+
+  it('builds the Git menu and scopes changes to the worktree or one commit', async () => {
+    const menu = await diffService.menu(workspaceA.id);
+    expect(menu.currentBranch).toBe('feature');
+    expect(menu.targetRef).toBe('main');
+    expect(menu.branches).toEqual(expect.arrayContaining(['feature', 'main']));
+    expect(menu.uncommittedFileCount).toBe(2);
+    expect(menu.commits[0]?.subject).toBe('rename file');
+
+    const uncommitted = await diffService.getDiffForQuery({
+      workspaceId: workspaceA.id,
+      targetRef: 'main',
+      scope: { kind: 'uncommitted' },
+    });
+    expect(uncommitted.files.map((file) => file.path).sort()).toEqual([
+      'dirty.txt',
+      'untracked.txt',
+    ]);
+
+    const featureCommit = menu.commits.find(
+      (commit) => commit.subject === 'feature changes',
+    );
+    expect(featureCommit).toBeDefined();
+    const oneCommit = await diffService.getDiffForQuery({
+      workspaceId: workspaceA.id,
+      targetRef: 'main',
+      scope: { kind: 'commit', sha: featureCommit!.sha },
+    });
+    expect(oneCommit.files.map((file) => file.path)).toContain('base.txt');
+    expect(oneCommit.files.map((file) => file.path)).not.toContain('dirty.txt');
+
+    const file = await diffService.fileDiffForQuery(
+      {
+        workspaceId: workspaceA.id,
+        targetRef: 'main',
+        scope: { kind: 'commit', sha: featureCommit!.sha },
+      },
+      'base.txt',
+    );
+    expect(file.oldContent).toBe('line1\nline2\nline3\n');
+    expect(file.newContent).toContain('line2 modified');
+  });
+
+  it('rejects a target ref that is not one of the repository branches', async () => {
+    await expect(
+      diffService.getDiffForQuery({
+        workspaceId: workspaceA.id,
+        targetRef: '--output=/tmp/not-allowed',
+        scope: { kind: 'all' },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -10,10 +10,11 @@
 // streams into the SAME shared chat transcript the ChatPanel renders (mirrors the
 // plan's "reuse useChat" instruction rather than re-implementing turn streaming here).
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type {
-  CommitInfo,
   DiffComment,
+  DiffMenuInfo,
+  DiffScope,
   DiffSet,
   FileDiff,
   NewDiffComment,
@@ -23,7 +24,6 @@ import { useDiffStore } from '@renderer/stores/diff';
 import { useChat } from '@renderer/features/chat/useChat';
 
 /** Stable empty references so store selectors don't loop on `?? []`. */
-const EMPTY_COMMITS: readonly CommitInfo[] = [];
 const EMPTY_COMMENTS: readonly DiffComment[] = [];
 
 export interface UseDiff {
@@ -35,9 +35,10 @@ export interface UseDiff {
   fileDiff: FileDiff | null;
   /** True while the selected file's `diff:file` fetch is in flight / not yet cached. */
   loadingFileDiff: boolean;
-  commits: CommitInfo[];
-  commitFilter: string | null;
-  setCommitFilter: (sha: string | null) => void;
+  menuInfo: DiffMenuInfo | null;
+  scope: DiffScope;
+  setTargetRef: (targetRef: string) => Promise<void>;
+  setScope: (scope: DiffScope) => void;
   comments: DiffComment[];
   openComments: DiffComment[];
   createComment: (input: Omit<NewDiffComment, 'workspaceId'>) => Promise<void>;
@@ -57,6 +58,8 @@ export interface UseDiff {
  * cleanup — no listener leak), and lazily fetches the selected file's content.
  */
 export function useDiff(workspaceId: string | null): UseDiff {
+  const [menuInfo, setMenuInfo] = useState<DiffMenuInfo | null>(null);
+  const [scope, setScopeState] = useState<DiffScope>({ kind: 'all' });
   const diffSet = useDiffStore((s) =>
     workspaceId ? (s.diffSetByWorkspace[workspaceId] ?? null) : null,
   );
@@ -65,14 +68,6 @@ export function useDiff(workspaceId: string | null): UseDiff {
   );
   const fileDiffCache = useDiffStore((s) =>
     workspaceId ? s.fileDiffCacheByWorkspace[workspaceId] : undefined,
-  );
-  const commits = useDiffStore((s) =>
-    workspaceId
-      ? (s.commitsByWorkspace[workspaceId] ?? EMPTY_COMMITS)
-      : EMPTY_COMMITS,
-  ) as CommitInfo[];
-  const commitFilter = useDiffStore((s) =>
-    workspaceId ? (s.commitFilterByWorkspace[workspaceId] ?? null) : null,
   );
   const comments = useDiffStore((s) =>
     workspaceId
@@ -86,8 +81,7 @@ export function useDiff(workspaceId: string | null): UseDiff {
   const setDiffSet = useDiffStore((s) => s.setDiffSet);
   const setSelectedPathAction = useDiffStore((s) => s.setSelectedPath);
   const setFileDiffAction = useDiffStore((s) => s.setFileDiff);
-  const setCommits = useDiffStore((s) => s.setCommits);
-  const setCommitFilterAction = useDiffStore((s) => s.setCommitFilter);
+  const clearFileDiffs = useDiffStore((s) => s.clearFileDiffs);
   const setComments = useDiffStore((s) => s.setComments);
   const upsertComment = useDiffStore((s) => s.upsertComment);
   const markCommentResolved = useDiffStore((s) => s.markCommentResolved);
@@ -96,53 +90,96 @@ export function useDiff(workspaceId: string | null): UseDiff {
 
   const { sendTurn } = useChat(workspaceId);
 
-  // Hydrate the diff set + commit history + open comments on mount / workspace change;
-  // refetch when `diff:changed` fires for this workspace. Unsubscribe on cleanup.
+  // Hydrate menu metadata + comments on mount. Older main processes that do not expose
+  // the appended menu channel safely fall back to the frozen default diff command.
   useEffect(() => {
     if (!workspaceId) return;
     let active = true;
+    setMenuInfo(null);
+    setScopeState({ kind: 'all' });
 
-    function load(): void {
-      if (!workspaceId) return;
-      void invoke('diff:get', { workspaceId })
+    void invoke('diff:menu', { workspaceId })
+      .then((res) => {
+        if (typeof res?.targetRef !== 'string') {
+          throw new Error('diff:menu unavailable');
+        }
+        if (active) setMenuInfo(res);
+      })
+      .catch(() =>
+        invoke('diff:get', { workspaceId })
+          .then((res) => {
+            if (active) setDiffSet(workspaceId, res);
+          })
+          .catch(() => {
+            /* surfaced via the empty-state UI */
+          }),
+      );
+    void invoke('comment:list', { workspaceId })
+      .then((res) => {
+        if (active) setComments(workspaceId, res);
+      })
+      .catch(() => {
+        /* comment rail just stays empty */
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [workspaceId, setDiffSet, setComments]);
+
+  // The selected target/scope is a complete comparison query. Re-run it whenever a
+  // menu choice changes and whenever the workspace watcher reports new filesystem data.
+  useEffect(() => {
+    if (!workspaceId || !menuInfo) return;
+    let active = true;
+    const load = (): void => {
+      void invoke('diff:query', {
+        workspaceId,
+        targetRef: menuInfo.targetRef,
+        scope,
+      })
         .then((res) => {
           if (active) setDiffSet(workspaceId, res);
         })
         .catch(() => {
-          /* surfaced via the empty-state UI; no diff set is a safe fallback */
+          /* retain the last successful list */
         });
-      void invoke('diff:commits', { workspaceId })
-        .then((res) => {
-          if (active) setCommits(workspaceId, res);
-        })
-        .catch(() => {
-          /* commit filter just stays empty */
-        });
-      void invoke('comment:list', { workspaceId })
-        .then((res) => {
-          if (active) setComments(workspaceId, res);
-        })
-        .catch(() => {
-          /* comment rail just stays empty */
-        });
-    }
-
+    };
     load();
     const unsubscribe = onEvent('diff:changed', (payload) => {
-      if (payload.workspaceId === workspaceId) load();
+      if (payload.workspaceId !== workspaceId) return;
+      load();
+      void invoke('diff:menu', {
+        workspaceId,
+        targetRef: menuInfo.targetRef,
+      })
+        .then((res) => {
+          if (active) setMenuInfo(res);
+        })
+        .catch(() => {
+          /* Counts can stay stale until the next successful watcher refresh. */
+        });
     });
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [workspaceId, setDiffSet, setCommits, setComments]);
+  }, [workspaceId, menuInfo?.targetRef, scope, setDiffSet]);
 
   // Lazily fetch the selected file's old/new content + hunks (skip if already cached).
   useEffect(() => {
     if (!workspaceId || !selectedPath) return;
     if (fileDiffCache?.[selectedPath]) return;
     let active = true;
-    void invoke('diff:file', { workspaceId, path: selectedPath })
+    const request = menuInfo
+      ? invoke('diff:fileQuery', {
+          workspaceId,
+          targetRef: menuInfo.targetRef,
+          scope,
+          path: selectedPath,
+        })
+      : invoke('diff:file', { workspaceId, path: selectedPath });
+    void request
       .then((res) => {
         if (active) setFileDiffAction(workspaceId, selectedPath, res);
       })
@@ -152,7 +189,14 @@ export function useDiff(workspaceId: string | null): UseDiff {
     return () => {
       active = false;
     };
-  }, [workspaceId, selectedPath, fileDiffCache, setFileDiffAction]);
+  }, [
+    workspaceId,
+    selectedPath,
+    fileDiffCache,
+    menuInfo?.targetRef,
+    scope,
+    setFileDiffAction,
+  ]);
 
   const selectFile = useCallback(
     (path: string | null) => {
@@ -162,19 +206,26 @@ export function useDiff(workspaceId: string | null): UseDiff {
     [workspaceId, setSelectedPathAction],
   );
 
-  const setCommitFilter = useCallback(
-    (sha: string | null) => {
+  const setTargetRef = useCallback(
+    async (targetRef: string): Promise<void> => {
       if (!workspaceId) return;
-      setCommitFilterAction(workspaceId, sha);
-      // `diff:get` currently ignores an explicit ref (spec note); re-fetching here
-      // wires the UI up for when the backend scopes by commit.
-      void invoke('diff:get', { workspaceId })
-        .then((res) => setDiffSet(workspaceId, res))
-        .catch(() => {
-          /* keep the previous diff set on failure */
-        });
+      const next = await invoke('diff:menu', { workspaceId, targetRef });
+      clearFileDiffs(workspaceId);
+      setSelectedPathAction(workspaceId, null);
+      setScopeState({ kind: 'all' });
+      setMenuInfo(next);
     },
-    [workspaceId, setCommitFilterAction, setDiffSet],
+    [workspaceId, clearFileDiffs, setSelectedPathAction],
+  );
+
+  const setScope = useCallback(
+    (nextScope: DiffScope): void => {
+      if (!workspaceId) return;
+      clearFileDiffs(workspaceId);
+      setSelectedPathAction(workspaceId, null);
+      setScopeState(nextScope);
+    },
+    [workspaceId, clearFileDiffs, setSelectedPathAction],
   );
 
   const createComment = useCallback(
@@ -234,9 +285,10 @@ export function useDiff(workspaceId: string | null): UseDiff {
         : null,
     loadingFileDiff:
       selectedPath != null && !(fileDiffCache && fileDiffCache[selectedPath]),
-    commits,
-    commitFilter,
-    setCommitFilter,
+    menuInfo,
+    scope,
+    setTargetRef,
+    setScope,
     comments,
     openComments: comments.filter((c) => c.state === 'open'),
     createComment,

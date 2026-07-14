@@ -75,6 +75,7 @@ export default {
         link: { DEFAULT: 'var(--link)', hover: 'var(--link-hover)' },
         'focus-ring': 'var(--focus-ring)',
         'selection-bg': 'var(--selection-bg)',
+        'chat-user': 'var(--chat-user-bg)',
       },
       fontFamily: {
         ui: 'var(--font-ui)',

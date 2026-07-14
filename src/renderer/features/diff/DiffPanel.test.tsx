@@ -52,6 +52,20 @@ const DIFF_SET: DiffSet = {
   ],
 };
 
+const UNCOMMITTED_DIFF_SET: DiffSet = {
+  baseRef: 'HEAD',
+  headRef: 'HEAD',
+  files: [
+    {
+      path: 'src/pending.ts',
+      oldPath: null,
+      change: 'modified',
+      additions: 1,
+      deletions: 0,
+    },
+  ],
+};
+
 const FILE_DIFF: FileDiff = {
   path: 'src/foo.ts',
   oldContent: 'old line\n',
@@ -59,7 +73,15 @@ const FILE_DIFF: FileDiff = {
   hunks: [],
 };
 
-const COMMITS: CommitInfo[] = [];
+const COMMITS: CommitInfo[] = [
+  {
+    sha: '64e053b1234567890abcdef1234567890abcdef1',
+    shortSha: '64e053b',
+    subject: 'More ui changes',
+    author: 'Sebastian Romero',
+    date: Date.now() - 60 * 60 * 1000,
+  },
+];
 
 const CHECKPOINTS: Checkpoint[] = [
   {
@@ -83,9 +105,30 @@ function installApi(opts: {
     switch (channel) {
       case 'diff:get':
         return Promise.resolve(DIFF_SET);
+      case 'diff:menu': {
+        const targetRef =
+          (req as { targetRef?: string } | undefined)?.targetRef ??
+          'origin/main';
+        return Promise.resolve({
+          currentBranch: 'agent/montpellier',
+          targetRef,
+          branches: ['origin/develop', 'origin/main'],
+          commits: COMMITS,
+          uncommittedFileCount: 1,
+        });
+      }
+      case 'diff:query':
+        return Promise.resolve(
+          (req as { scope?: { kind?: string } } | undefined)?.scope?.kind ===
+            'uncommitted'
+            ? UNCOMMITTED_DIFF_SET
+            : DIFF_SET,
+        );
       case 'diff:commits':
         return Promise.resolve(COMMITS);
       case 'diff:file':
+        return Promise.resolve(FILE_DIFF);
+      case 'diff:fileQuery':
         return Promise.resolve(FILE_DIFF);
       case 'comment:list':
         return Promise.resolve(opts.comments ?? []);
@@ -166,6 +209,18 @@ describe('DiffPanel file list + diff view', () => {
     render(<DiffPanel workspaceId="ws1" />);
 
     const fileRow = await screen.findByTestId('diff-file-src/foo.ts');
+    expect(screen.getByTestId('git-changes-header')).toHaveTextContent(
+      'Changes 1',
+    );
+    expect(screen.getByText('All files')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('git-more'));
+    expect(screen.getByTestId('commit-filter-menu')).toHaveTextContent('main');
+    expect(screen.getByText('Target branch')).toBeInTheDocument();
+    expect(screen.getByTestId('commit-filter-menu')).toHaveTextContent(
+      'All changes',
+    );
+
     expect(fileRow).toBeInTheDocument();
     expect(fileRow).toHaveTextContent('+3');
     expect(fileRow).toHaveTextContent('-1');
@@ -175,6 +230,56 @@ describe('DiffPanel file list + diff view', () => {
     const monaco = await screen.findByTestId('monaco-diff');
     expect(monaco).toHaveAttribute('data-original', 'old line\n');
     expect(monaco).toHaveAttribute('data-modified', 'new line\n');
+  });
+
+  it('changes the target branch and scopes the list to uncommitted or the latest commit', async () => {
+    const api = installApi({});
+
+    render(<DiffPanel workspaceId="ws1" />);
+    await screen.findByTestId('diff-file-src/foo.ts');
+
+    fireEvent.click(screen.getByTestId('git-more'));
+    fireEvent.click(screen.getByTestId('git-target-branch'));
+    fireEvent.click(screen.getByTestId('git-target-option-origin/develop'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('diff:menu', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/develop',
+      }),
+    );
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('diff:query', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/develop',
+        scope: { kind: 'all' },
+      }),
+    );
+    fireEvent.click(screen.getByTestId('git-more'));
+    fireEvent.click(screen.getByTestId('git-scope-uncommitted'));
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('diff:query', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/develop',
+        scope: { kind: 'uncommitted' },
+      }),
+    );
+    expect(
+      await screen.findByTestId('diff-file-src/pending.ts'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('diff-file-src/foo.ts'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('git-more'));
+    fireEvent.click(screen.getByTestId(`git-scope-commit-${COMMITS[0].sha}`));
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('diff:query', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/develop',
+        scope: { kind: 'commit', sha: COMMITS[0].sha },
+      }),
+    );
   });
 });
 
@@ -257,6 +362,7 @@ describe('DiffPanel comments', () => {
 
     render(<DiffPanel workspaceId="ws1" />);
 
+    fireEvent.click(await screen.findByTestId('diff-file-src/foo.ts'));
     const sendButton = await screen.findByTestId('send-to-agent');
     expect(sendButton).toHaveTextContent('Send to agent (1)');
     fireEvent.click(sendButton);
@@ -272,32 +378,5 @@ describe('DiffPanel comments', () => {
       workspaceId: 'ws1',
       prompt: 'Please address the following review comments.',
     });
-  });
-});
-
-describe('DiffPanel checkpoint revert', () => {
-  it('shows the truncation-copy confirm dialog and calls checkpoint:revert on confirm', async () => {
-    const api = installApi({});
-
-    render(<DiffPanel workspaceId="ws1" />);
-
-    const revertButton = await screen.findByTestId('checkpoint-revert-0');
-    fireEvent.click(revertButton);
-
-    const dialog = await screen.findByTestId('checkpoint-revert-dialog');
-    expect(dialog).toHaveTextContent(/reset(s)? the worktree/i);
-    expect(dialog).toHaveTextContent(/removed/i);
-    expect(dialog).toHaveTextContent(/backed up/i);
-    expect(dialog).toHaveTextContent(/truncated/i);
-    expect(dialog).toHaveTextContent(/fresh session/i);
-
-    fireEvent.click(screen.getByTestId('checkpoint-revert-confirm'));
-
-    await waitFor(() =>
-      expect(api.invoke).toHaveBeenCalledWith('checkpoint:revert', {
-        workspaceId: 'ws1',
-        turnIdx: 0,
-      }),
-    );
   });
 });

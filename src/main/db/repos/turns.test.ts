@@ -150,6 +150,24 @@ describe('TurnsRepo', () => {
       turns.create({ workspaceId: wsId, idx: 0, status: 'streaming' }),
     ).rejects.toThrow(/UNIQUE constraint failed/i);
   });
+
+  it('clears history and resume context without reusing turn indexes', async () => {
+    db = openDb(dbFile);
+    const turns = new TurnsRepo(db);
+    const wsId = await seedWorkspace(db);
+    const turn = await turns.create({
+      workspaceId: wsId,
+      idx: 0,
+      status: 'completed',
+    });
+    await turns.setSessionId(turn.id, 'session-before-clear');
+
+    await turns.clearWorkspaceHistory(wsId);
+
+    expect(await turns.listByWorkspace(wsId)).toEqual([]);
+    expect(await turns.latestSessionId(wsId)).toBeUndefined();
+    expect(await turns.nextIdx(wsId)).toBe(1);
+  });
 });
 
 describe('TurnsRepo revert semantics (Phase 4)', () => {

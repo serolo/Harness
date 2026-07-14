@@ -21,6 +21,11 @@
 // job (Task 4). The parser emits one result per source construct.
 
 import type { AgentEvent, Todo } from '@shared/harness';
+import {
+  asRecord,
+  normalizeInteractionTool,
+  stringField,
+} from './interactions';
 
 // ---------------------------------------------------------------------------
 // (1) Line splitter with partial-line buffering
@@ -163,6 +168,8 @@ export function normalize(obj: unknown): NormalizeResult[] {
       return normalizeUser(obj);
     case 'result':
       return normalizeResult(obj);
+    case 'control_request':
+      return normalizeControlRequest(obj);
     default:
       // Unknown top-level type — ignore for forward-compat (spec §9).
       return [];
@@ -211,6 +218,9 @@ function normalizeToolUse(block: Record<string, unknown>): AgentEvent | null {
   }
   const input = block.input;
 
+  const interaction = normalizeInteractionTool(name, input, asString(block.id));
+  if (interaction) return interaction;
+
   if (name === 'TodoWrite') {
     return { kind: 'todo_update', todos: extractTodos(input) };
   }
@@ -226,6 +236,38 @@ function normalizeToolUse(block: Record<string, unknown>): AgentEvent | null {
   }
 
   return { kind: 'tool_use', name, input };
+}
+
+/** Claude's SDK control channel uses can_use_tool for permission and question prompts. */
+function normalizeControlRequest(
+  obj: Record<string, unknown>,
+): NormalizeResult[] {
+  const request = asRecord(obj.request) ?? obj;
+  if (stringField(request, 'subtype') !== 'can_use_tool') return [];
+
+  const requestId = asString(obj.request_id);
+  const toolName = stringField(request, 'tool_name');
+  const input = request.input;
+  if (toolName) {
+    const interaction = normalizeInteractionTool(toolName, input, requestId);
+    if (interaction) return [{ type: 'event', event: interaction }];
+  }
+
+  return [
+    {
+      type: 'event',
+      event: {
+        kind: 'permission_request',
+        requestId,
+        title: stringField(request, 'title'),
+        description:
+          stringField(request, 'description') ??
+          stringField(request, 'decision_reason'),
+        toolName,
+        input,
+      },
+    },
+  ];
 }
 
 /** user messages carry tool_result blocks (one AgentEvent each). */

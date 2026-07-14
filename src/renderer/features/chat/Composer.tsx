@@ -2,7 +2,16 @@
 // a minimal file-attach affordance, and a Send/Interrupt button tied to `isBusy`.
 
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowUp, Check, Gauge, Map, Paperclip, Plus, Zap } from 'lucide-react';
+import {
+  ArrowUp,
+  Check,
+  Gauge,
+  Map,
+  Paperclip,
+  Plus,
+  Star,
+  Zap,
+} from 'lucide-react';
 import type { AgentMode, Attachment, HarnessId } from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
 import {
@@ -19,6 +28,7 @@ import { AttachmentBar } from './AttachmentBar';
 
 export interface ComposerProps {
   isBusy: boolean;
+  workspaceId?: string | null;
   disabled?: boolean;
   onSend: (
     prompt: string,
@@ -27,6 +37,7 @@ export interface ComposerProps {
     harness?: HarnessId,
   ) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
+  onClear?: () => void | Promise<void>;
 }
 
 const MODEL_LABELS: Record<HarnessId, string> = {
@@ -34,6 +45,97 @@ const MODEL_LABELS: Record<HarnessId, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
 };
+
+interface ProviderModelOption {
+  id: string;
+  label: string;
+  harness?: HarnessId;
+  favorite?: boolean;
+}
+
+interface ProviderModelGroup {
+  id: string;
+  label: string;
+  harness?: HarnessId;
+  options: ProviderModelOption[];
+}
+
+const PROVIDER_MODEL_GROUPS: ProviderModelGroup[] = [
+  {
+    id: 'claude_code',
+    label: 'Claude Code',
+    harness: 'claude_code',
+    options: [
+      { id: 'claude-fable-5', label: 'Fable 5', harness: 'claude_code' },
+      {
+        id: 'claude-opus-4-8-1m',
+        label: 'Opus 4.8 1M',
+        harness: 'claude_code',
+        favorite: true,
+      },
+      {
+        id: 'claude-opus-4-7-1m',
+        label: 'Opus 4.7 1M',
+        harness: 'claude_code',
+      },
+      {
+        id: 'claude-opus-4-6-1m',
+        label: 'Opus 4.6 1M',
+        harness: 'claude_code',
+      },
+      {
+        id: 'claude-sonnet-5-1m',
+        label: 'Sonnet 5 1M',
+        harness: 'claude_code',
+      },
+      {
+        id: 'claude-sonnet-4-6-1m',
+        label: 'Sonnet 4.6 1M',
+        harness: 'claude_code',
+      },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', harness: 'claude_code' },
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', harness: 'claude_code' },
+    ],
+  },
+  {
+    id: 'codex',
+    label: 'Codex',
+    harness: 'codex',
+    options: [
+      { id: 'codex-gpt-5-6-sol', label: 'GPT-5.6 Sol', harness: 'codex' },
+      { id: 'codex-gpt-5-6-terra', label: 'GPT-5.6 Terra', harness: 'codex' },
+      { id: 'codex-gpt-5-5', label: 'GPT-5.5', harness: 'codex' },
+      { id: 'codex-gpt-5-4', label: 'GPT-5.4', harness: 'codex' },
+    ],
+  },
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    options: [
+      { id: 'opencode-big-pickle', label: 'opencode/big-pickle' },
+      {
+        id: 'opencode-deepseek-v4-flash',
+        label: 'opencode/deepseek-v4-flash-fr...',
+      },
+      { id: 'opencode-mimo-v2-5-free', label: 'opencode/mimo-v2.5-free' },
+      {
+        id: 'opencode-nemotron-3-ultra-free',
+        label: 'opencode/nemotron-3-ultra-free',
+      },
+      {
+        id: 'opencode-north-mini-code-free',
+        label: 'opencode/north-mini-code-free',
+      },
+    ],
+  },
+];
+
+function defaultModelIdForHarness(
+  harness: HarnessId | undefined,
+): string | undefined {
+  return PROVIDER_MODEL_GROUPS.find((group) => group.harness === harness)
+    ?.options[0]?.id;
+}
 
 function slashQuery(input: string): string | null {
   const match = /^\/([A-Za-z0-9_-]*)$/.exec(input);
@@ -49,9 +151,11 @@ function commandDescription(command: SlashCommand): string {
 
 export function Composer({
   isBusy,
+  workspaceId,
   disabled,
   onSend,
   onInterrupt,
+  onClear,
 }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('');
   const [mode, setMode] = useState<AgentMode>('default');
@@ -64,15 +168,21 @@ export function Composer({
   const [selectedHarness, setSelectedHarness] = useState<HarnessId | undefined>(
     undefined,
   );
+  const [selectedProviderModel, setSelectedProviderModel] = useState<
+    string | undefined
+  >(undefined);
 
   // The composer always targets the currently selected workspace (its host
   // <ChatPanel> is rendered with `workspaceId={selectedWorkspaceId}`), so read the
   // id straight from the store for the one-time pending-prompt hand-off.
-  const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
+  const storeSelectedWorkspaceId = useWorkspacesStore(
+    (s) => s.selectedWorkspaceId,
+  );
+  const selectedWorkspaceId = workspaceId ?? storeSelectedWorkspaceId;
   const selectedWorkspace = useWorkspacesStore((s) =>
-    s.selectedWorkspaceId === null
+    selectedWorkspaceId === null
       ? undefined
-      : s.workspaces.find((w) => w.id === s.selectedWorkspaceId),
+      : s.workspaces.find((w) => w.id === selectedWorkspaceId),
   );
   const takePendingPrompt = useComposerStore((s) => s.takePendingPrompt);
   const loadHarnesses = useHarnessStore((s) => s.load);
@@ -92,11 +202,27 @@ export function Composer({
   }, [selectedWorkspaceId, takePendingPrompt]);
 
   useEffect(() => {
+    void loadHarnesses();
+  }, [loadHarnesses]);
+
+  useEffect(() => {
+    setSelectedHarness(selectedWorkspace?.harness);
+    setSelectedProviderModel(
+      defaultModelIdForHarness(selectedWorkspace?.harness),
+    );
+  }, [selectedWorkspace?.id, selectedWorkspace?.harness]);
+
+  const selectedModel = selectedHarness ?? selectedWorkspace?.harness;
+
+  useEffect(() => {
     let alive = true;
     setSlashLoading(true);
-    void invoke('slash:list', undefined)
+    void invoke('slash:list', {
+      workspaceId: selectedWorkspaceId ?? undefined,
+      harness: selectedModel,
+    })
       .then((commands) => {
-        if (alive) setSlashCommands(commands);
+        if (alive) setSlashCommands(Array.isArray(commands) ? commands : []);
       })
       .catch(() => {
         if (alive) setSlashCommands([]);
@@ -107,17 +233,8 @@ export function Composer({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [selectedWorkspaceId, selectedModel]);
 
-  useEffect(() => {
-    void loadHarnesses();
-  }, [loadHarnesses]);
-
-  useEffect(() => {
-    setSelectedHarness(selectedWorkspace?.harness);
-  }, [selectedWorkspace?.id, selectedWorkspace?.harness]);
-
-  const selectedModel = selectedHarness ?? selectedWorkspace?.harness;
   const harnessOptions = useMemo(() => {
     const loaded = Object.values(harnessInfoById);
     const runnable = loaded.filter(
@@ -146,6 +263,39 @@ export function Composer({
   }, [harnessInfoById, selectedModel]);
   const selectedHarnessInfo =
     selectedModel === undefined ? undefined : harnessInfoById[selectedModel];
+  const availableHarnessIds = new Set(harnessOptions.map((info) => info.id));
+  const modeledHarnessIds = new Set(
+    PROVIDER_MODEL_GROUPS.flatMap((group) =>
+      group.harness === undefined ? [] : [group.harness],
+    ),
+  );
+  const modelGroups = PROVIDER_MODEL_GROUPS.filter(
+    (group) =>
+      group.harness === undefined ||
+      availableHarnessIds.has(group.harness) ||
+      group.harness === selectedModel,
+  ).concat(
+    harnessOptions
+      .filter((info) => !modeledHarnessIds.has(info.id))
+      .map((info): ProviderModelGroup => ({
+        id: info.id,
+        label: MODEL_LABELS[info.id],
+        harness: info.id,
+        options: [
+          {
+            id: `${info.id}-default`,
+            label: MODEL_LABELS[info.id],
+            harness: info.id,
+          },
+        ],
+      })),
+  );
+  const selectedProviderModelOption = modelGroups
+    .flatMap((group) => group.options)
+    .find((option) => option.id === selectedProviderModel);
+  const selectedModelLabel =
+    selectedProviderModelOption?.label ??
+    (selectedModel ? MODEL_LABELS[selectedModel] : 'Default');
   const supportsPlan =
     selectedHarnessInfo?.capabilities.supportsPlanMode ?? true;
   const canSend = !isBusy && !disabled && text.trim().length > 0;
@@ -172,6 +322,12 @@ export function Composer({
   function send(): void {
     if (!canSend) return;
     const parsedSlash = parseSlash(text.trim());
+    if (parsedSlash?.name === 'clear') {
+      void onClear?.();
+      setText('');
+      setAttachments([]);
+      return;
+    }
     const command =
       parsedSlash === null
         ? undefined
@@ -191,7 +347,7 @@ export function Composer({
   }
 
   function chooseSlash(command: SlashCommand): void {
-    setText(expandSlashTemplate(command.template, ''));
+    setText(`/${command.name} `);
   }
 
   function addPath(): void {
@@ -281,7 +437,12 @@ export function Composer({
                 }
                 if (e.key === 'Enter' || e.key === 'Tab') {
                   e.preventDefault();
-                  if (slashMatches[slashActive] !== undefined) {
+                  if (
+                    e.key === 'Enter' &&
+                    parseSlash(e.currentTarget.value.trim())?.name === 'clear'
+                  ) {
+                    send();
+                  } else if (slashMatches[slashActive] !== undefined) {
                     chooseSlash(slashMatches[slashActive]);
                   }
                   return;
@@ -309,48 +470,80 @@ export function Composer({
                 onClick={() => setModelOpen((open) => !open)}
               >
                 <Zap className="h-5 w-5 text-fg-3" aria-hidden />
-                <span>
-                  {selectedModel ? MODEL_LABELS[selectedModel] : 'Default'}
-                </span>
+                <span>{selectedModelLabel}</span>
               </button>
               {modelOpen ? (
                 <div
-                  className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-[320px] overflow-hidden rounded-4 border border-border-1 bg-surface-panel shadow-4"
+                  className="absolute bottom-[calc(100%+10px)] left-0 z-30 max-h-[70vh] w-[360px] overflow-y-auto rounded-4 border border-border-1 bg-surface-panel shadow-4"
                   data-testid="composer-model-menu"
                 >
-                  <div className="border-b border-border-1 px-4 py-2 text-xs font-medium uppercase tracking-wide text-fg-3">
-                    Models
-                  </div>
-                  {harnessOptions.length === 0 ? (
+                  {modelGroups.length === 0 ? (
                     <div className="px-4 py-3 text-sm text-fg-3">
                       No runnable models found
                     </div>
                   ) : (
-                    harnessOptions.map((info, index) => (
-                      <button
-                        key={info.id}
-                        type="button"
-                        className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors duration-fast ease-out ${
-                          info.id === selectedModel
-                            ? 'bg-bg-3'
-                            : 'hover:bg-bg-3'
-                        }`}
-                        data-testid={`composer-model-${info.id}`}
-                        onClick={() => {
-                          setSelectedHarness(info.id);
-                          setModelOpen(false);
-                        }}
+                    modelGroups.map((group, groupIndex) => (
+                      <div
+                        key={group.id}
+                        className={
+                          groupIndex === 0 ? '' : 'border-t border-border-1'
+                        }
                       >
-                        <Zap className="h-4 w-4 text-fg-3" aria-hidden />
-                        <span className="min-w-0 flex-1 truncate text-base font-medium text-fg-1">
-                          {MODEL_LABELS[info.id]}
-                        </span>
-                        {info.id === selectedModel ? (
-                          <Check className="h-4 w-4 text-fg-2" aria-hidden />
-                        ) : (
-                          <span className="text-sm text-fg-3">{index + 1}</span>
-                        )}
-                      </button>
+                        <div
+                          className="flex items-center gap-2 px-4 pb-2 pt-3 text-sm font-medium text-fg-3"
+                          data-testid={`composer-model-${group.id}`}
+                        >
+                          <Zap className="h-4 w-4 text-fg-3" aria-hidden />
+                          <span>{group.label}</span>
+                        </div>
+                        {group.options.map((option, index) => {
+                          const enabled =
+                            option.harness !== undefined &&
+                            availableHarnessIds.has(option.harness);
+                          const active = option.id === selectedProviderModel;
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors duration-fast ease-out ${
+                                active
+                                  ? 'bg-bg-3'
+                                  : enabled
+                                    ? 'hover:bg-bg-3'
+                                    : 'cursor-not-allowed opacity-50'
+                              }`}
+                              data-testid={`composer-model-option-${option.id}`}
+                              disabled={!enabled}
+                              onClick={() => {
+                                if (option.harness === undefined) return;
+                                setSelectedHarness(option.harness);
+                                setSelectedProviderModel(option.id);
+                                setModelOpen(false);
+                              }}
+                            >
+                              <Zap className="h-4 w-4 text-fg-3" aria-hidden />
+                              <span className="min-w-0 flex-1 truncate text-base font-medium text-fg-1">
+                                {option.label}
+                              </span>
+                              {active ? (
+                                <Check
+                                  className="h-4 w-4 text-fg-2"
+                                  aria-hidden
+                                />
+                              ) : option.favorite ? (
+                                <Star
+                                  className="h-4 w-4 text-fg-3"
+                                  aria-hidden
+                                />
+                              ) : (
+                                <span className="text-sm text-fg-3">
+                                  {index + 1}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
                     ))
                   )}
                 </div>

@@ -120,3 +120,25 @@ export interface SendToAgentResult {
 export interface ReviewPrompt {
   prompt: string;
 }
+
+// --- Git changes menu (APPEND-ONLY) -----------------------------------------
+
+/** Which slice of the target-branch comparison the Git changes panel displays. */
+export type DiffScope =
+  { kind: 'all' } | { kind: 'uncommitted' } | { kind: 'commit'; sha: string };
+
+/** A fully specified, workspace-confined Git comparison request. */
+export interface DiffQuery {
+  workspaceId: string;
+  targetRef: string;
+  scope: DiffScope;
+}
+
+/** Data needed to render the target-branch and change-scope menu. */
+export interface DiffMenuInfo {
+  currentBranch: string;
+  targetRef: string;
+  branches: string[];
+  commits: CommitInfo[];
+  uncommittedFileCount: number;
+}

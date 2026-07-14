@@ -1,5 +1,7 @@
-// A compact chip for a file_edit AgentEvent. Links to the diff once Phase 4 lands
-// (SEAM: wire an onClick that opens the diff view for `path`).
+// A compact activity row for a file_edit AgentEvent. Links to the diff once the
+// transcript exposes workspace navigation context.
+
+import { FilePenLine } from 'lucide-react';
 
 export interface FileEditChipProps {
   path: string;
@@ -7,9 +9,9 @@ export interface FileEditChipProps {
 }
 
 const OP_LABEL: Record<FileEditChipProps['op'], string> = {
-  create: 'created',
-  modify: 'modified',
-  delete: 'deleted',
+  create: 'Write file',
+  modify: 'Edit file',
+  delete: 'Delete file',
 };
 
 const OP_CLASS: Record<FileEditChipProps['op'], string> = {
@@ -22,15 +24,22 @@ export function FileEditChip({
   path,
   op,
 }: FileEditChipProps): React.JSX.Element {
+  const fileName = path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+
   return (
     <div
-      className="my-1 inline-flex items-center gap-2 rounded-2 border border-border-1 bg-surface-card px-2 py-1 text-xs"
+      className="flex min-h-8 min-w-0 items-center gap-2 rounded-2 px-1.5 text-base text-fg-2"
       data-testid="file-edit-chip"
       data-op={op}
     >
-      <span className={OP_CLASS[op]}>●</span>
-      <span className="font-mono text-fg-1">{path}</span>
-      <span className="text-fg-3">{OP_LABEL[op]}</span>
+      <FilePenLine className={`h-4 w-4 shrink-0 ${OP_CLASS[op]}`} aria-hidden />
+      <span className="shrink-0 font-medium text-fg-1">{OP_LABEL[op]}</span>
+      <code
+        className="min-w-0 truncate rounded-1 border border-border-2 bg-bg-3 px-2 py-0.5 font-mono text-sm text-fg-2"
+        title={path}
+      >
+        {fileName}
+      </code>
     </div>
   );
 }

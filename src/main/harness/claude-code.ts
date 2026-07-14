@@ -21,7 +21,6 @@ import { execa } from 'execa';
 
 import type {
   AgentEvent,
-  AgentMode,
   Attachment,
   DetectResult,
   Harness,
@@ -214,7 +213,17 @@ export class ClaudeCodeHarness implements Harness {
  */
 export function buildArgs(opts: StartTurnOpts): string[] {
   const prompt = opts.prompt + serializeAttachments(opts.attachments);
-  const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
+  const args = [
+    '-p',
+    prompt,
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    // Conductor workspaces are user-authorized local worktrees. Run every turn in
+    // Claude's explicit bypass mode so tool and out-of-workspace reads never pause
+    // the headless stream waiting for an approval UI the CLI cannot service.
+    '--dangerously-skip-permissions',
+  ];
 
   if (opts.sessionId) {
     args.push('--resume', opts.sessionId);
@@ -243,21 +252,6 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   return args;
 }
 
-/** Map the frozen `AgentMode` to Claude Code's `--permission-mode` value (or none). */
-function modeToPermissionMode(mode: AgentMode | undefined): string | undefined {
-  switch (mode) {
-    case 'plan':
-      return 'plan';
-    case 'auto_accept':
-      return 'acceptEdits';
-    case 'default':
-    case undefined:
-      return undefined; // CLI default
-    default:
-      return undefined;
-  }
-}
-
 /**
  * Best-effort mapping of the frozen `PermissionPolicy` to CLI flags (Phase 2 is
  * pass-through plumbing — full permission UX is Phase 6, Risk R6). `allowedTools`
@@ -275,6 +269,12 @@ function permissionPolicyArgs(policy: PermissionPolicy): string[] {
     out.push('--disallowedTools', policy.deny.join(','));
   }
   return out;
+}
+
+function modeToPermissionMode(_mode: StartTurnOpts['mode']): string | undefined {
+  // This adapter always launches Claude with --dangerously-skip-permissions for
+  // headless Harness turns, so app modes do not add a second permission-mode flag.
+  return undefined;
 }
 
 /**

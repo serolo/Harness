@@ -51,6 +51,11 @@ import type {
 import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
 import { createJsonLineSplitter } from './parser';
+import {
+  asRecord,
+  normalizeInteractionTool,
+  stringField,
+} from './interactions';
 
 /**
  * Minimum `codex` version we assume speaks the JSON event shape this adapter parses.
@@ -249,7 +254,23 @@ export function normalizeCodex(obj: unknown): CodexNormalizeResult[] {
   if (!isRecord(obj)) {
     return [];
   }
+  const method = asString(obj.method);
+  if (method) return normalizeServerRequest(method, obj);
+
   switch (asString(obj.type)) {
+    // Current Codex `exec --json` protocol.
+    case 'thread.started':
+      return normalizeCurrentSession(obj);
+    case 'item.started':
+      return normalizeCurrentItem(obj, false);
+    case 'item.completed':
+      return normalizeCurrentItem(obj, true);
+    case 'turn.completed':
+      return normalizeTurnComplete(obj);
+    case 'turn.failed':
+      return normalizeCurrentError(obj);
+
+    // Legacy protocol retained for older installed CLIs.
     case 'session_configured':
       return normalizeSession(obj);
     case 'agent_message_delta':
@@ -266,6 +287,137 @@ export function normalizeCodex(obj: unknown): CodexNormalizeResult[] {
       // Unknown top-level type — ignore for forward-compat (spec §9).
       return [];
   }
+}
+
+function normalizeCurrentSession(
+  obj: Record<string, unknown>,
+): CodexNormalizeResult[] {
+  const sessionId = asString(obj.thread_id);
+  return sessionId ? [{ type: 'session', sessionId }] : [];
+}
+
+function normalizeCurrentItem(
+  obj: Record<string, unknown>,
+  completed: boolean,
+): CodexNormalizeResult[] {
+  const item = asRecord(obj.item);
+  if (!item) return [];
+  const type = asString(item.type);
+
+  if (type === 'agent_message' && completed) {
+    const text = asString(item.text);
+    return text
+      ? [{ type: 'event', event: { kind: 'text', delta: text } }]
+      : [];
+  }
+
+  if (type === 'command_execution') {
+    if (!completed) {
+      return [
+        {
+          type: 'event',
+          event: {
+            kind: 'tool_use',
+            name: 'command_execution',
+            input: {
+              command: item.command,
+              cwd: item.cwd,
+            },
+          },
+        },
+      ];
+    }
+    return [
+      {
+        type: 'event',
+        event: {
+          kind: 'tool_result',
+          output: item.aggregated_output ?? {
+            status: item.status,
+            exitCode: item.exit_code,
+          },
+        },
+      },
+    ];
+  }
+
+  if (type === 'file_change' && completed) {
+    const changes: unknown[] = Array.isArray(item.changes)
+      ? item.changes
+      : [];
+    return changes.flatMap((change) => {
+      const record = asRecord(change);
+      const path = stringField(record, 'path');
+      const kind = stringField(record, 'kind');
+      const op = kind ? FILE_CHANGE_OPS[kind] : undefined;
+      return path && op
+        ? [
+            {
+              type: 'event' as const,
+              event: { kind: 'file_edit' as const, path, op },
+            },
+          ]
+        : [];
+    });
+  }
+
+  return [];
+}
+
+/** App-server request shapes, accepted here so interaction rendering stays protocol-ready. */
+function normalizeServerRequest(
+  method: string,
+  obj: Record<string, unknown>,
+): CodexNormalizeResult[] {
+  const params = asRecord(obj.params);
+  const requestId =
+    typeof obj.id === 'string' || typeof obj.id === 'number'
+      ? String(obj.id)
+      : undefined;
+
+  if (method === 'item/tool/requestUserInput') {
+    const interaction = normalizeInteractionTool(
+      'request_user_input',
+      params,
+      requestId,
+    );
+    return interaction ? [{ type: 'event', event: interaction }] : [];
+  }
+
+  if (
+    method.endsWith('/requestApproval') ||
+    method === 'item/permissions/requestApproval'
+  ) {
+    return [
+      {
+        type: 'event',
+        event: {
+          kind: 'permission_request',
+          requestId,
+          title: stringField(params, 'title'),
+          description: stringField(params, 'reason'),
+          toolName: permissionToolName(method),
+          input: params,
+        },
+      },
+    ];
+  }
+  return [];
+}
+
+function permissionToolName(method: string): string {
+  if (method.includes('commandExecution')) return 'command_execution';
+  if (method.includes('fileChange')) return 'file_change';
+  if (method.includes('permissions')) return 'permissions';
+  return 'tool';
+}
+
+function normalizeCurrentError(
+  obj: Record<string, unknown>,
+): CodexNormalizeResult[] {
+  const error = asRecord(obj.error);
+  const message = stringField(error, 'message') ?? 'agent turn failed';
+  return [{ type: 'event', event: { kind: 'error', message } }];
 }
 
 /** session_configured carries the session id we thread onto the TurnHandle. */
@@ -295,8 +447,16 @@ function normalizeToolCall(
   if (name === undefined) {
     return [];
   }
+  const interaction = normalizeInteractionTool(
+    name,
+    obj.arguments,
+    asString(obj.id),
+  );
   return [
-    { type: 'event', event: { kind: 'tool_use', name, input: obj.arguments } },
+    {
+      type: 'event',
+      event: interaction ?? { kind: 'tool_use', name, input: obj.arguments },
+    },
   ];
 }
 
@@ -349,19 +509,21 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   const prompt = opts.prompt + serializeAttachments(opts.attachments);
   // `exec` is Codex's non-interactive/headless subcommand; `--json` selects the
   // newline-delimited JSON event stream this adapter parses (ASSUMED — see header).
-  const args = ['exec', '--json'];
+  // Current Codex resumes through the `exec resume <session>` subcommand. Keep
+  // `--json` after the subcommand because both `exec` and `exec resume` accept it.
+  const args = opts.sessionId
+    ? ['exec', 'resume', '--json']
+    : ['exec', '--json'];
 
-  if (opts.sessionId) {
-    args.push('--resume', opts.sessionId);
-  }
+  // Conductor owns the local workspace boundary and launches Codex headlessly. Always
+  // bypass both approval prompts and Codex's sandbox so a turn cannot stall on an
+  // interaction that the non-interactive process cannot answer. This applies equally
+  // to new and resumed sessions.
+  args.push('--dangerously-bypass-approvals-and-sandbox');
 
-  // Codex has no distinct plan-mode (capabilities.supportsPlanMode=false); only
-  // auto_accept maps to a flag. default/plan/undefined use the CLI default — a `plan`
-  // request degrades to the default rather than erroring (capability-driven UI hides
-  // the plan selector, but the adapter must not throw if one arrives).
-  if (opts.mode === 'auto_accept') {
-    args.push('--full-auto');
-  }
+  // Codex has no distinct plan-mode (capabilities.supportsPlanMode=false). All app
+  // modes use the stronger always-on bypass above; a plan request therefore degrades
+  // to the normal agent behavior without changing its approval policy.
 
   const mcpConfigPath = writeMcpConfig(opts.mcpConfig);
   if (mcpConfigPath) {
@@ -371,9 +533,9 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   // Phase 12: `opts.model` is Claude-specific (preset aliases target `claude --model`);
   // codex keeps its CLI default and ignores it (design doc §2 out-of-scope).
 
-  // `--` ends flag parsing; the prompt then cannot be read as an option even if it
-  // begins with a dash. This is the last argument.
-  args.push('--', prompt);
+  // `--` ends flag parsing; the session id (resume only) and prompt then cannot be
+  // read as options even if either begins with a dash.
+  args.push('--', ...(opts.sessionId ? [opts.sessionId] : []), prompt);
   return args;
 }
 

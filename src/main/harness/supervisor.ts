@@ -201,6 +201,13 @@ export class HarnessSupervisor {
 
     let handle: TurnHandle;
     try {
+      // The user's prompt is part of the reconstructable conversation even though it
+      // is not emitted by the harness adapter. Persist it before agent output so a
+      // reopened workspace renders the same right-aligned message shown live.
+      await this.deps.recorder.record(turnId, {
+        kind: 'user_message',
+        text: opts.prompt,
+      });
       handle = await adapter.startTurn(opts, wrapped);
     } catch (err) {
       // Spawn/start failure before any event: finalize as an error and clear.

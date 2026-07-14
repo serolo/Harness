@@ -199,4 +199,14 @@ export class TurnsRepo {
       .execute();
     return rows.map(rowToTurn);
   }
+
+  /** Hide all persisted turns for a workspace from history and resume context. */
+  async clearWorkspaceHistory(workspaceId: string): Promise<void> {
+    await this.db
+      .updateTable('turns')
+      .set({ reverted_at: Date.now() })
+      .where('workspace_id', '=', workspaceId)
+      .where('reverted_at', 'is', null)
+      .execute();
+  }
 }

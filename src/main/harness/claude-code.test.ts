@@ -11,13 +11,17 @@ import type { McpServerConfig } from '@shared/harness';
 import { buildArgs } from './claude-code';
 
 /** Minimal valid StartTurnOpts with the given MCP servers. */
-function opts(mcpConfig: McpServerConfig[]): StartTurnOpts {
+function opts(
+  mcpConfig: McpServerConfig[],
+  overrides: Partial<StartTurnOpts> = {},
+): StartTurnOpts {
   return {
     workspaceDir: '/tmp/ws',
     prompt: 'do the thing',
     attachments: [],
     mcpConfig,
     permissionPolicy: {},
+    ...overrides,
   };
 }
 
@@ -28,6 +32,14 @@ function mcpConfigPath(args: string[]): string | undefined {
 }
 
 describe('Claude Code adapter — MCP passthrough (settings → .mcp.json)', () => {
+  it('always bypasses permission prompts in every app mode', () => {
+    for (const mode of ['default', 'plan', 'auto_accept'] as const) {
+      const args = buildArgs(opts([], { mode }));
+      expect(args).toContain('--dangerously-skip-permissions');
+      expect(args).not.toContain('--permission-mode');
+    }
+  });
+
   it('writes the configured servers to .mcp.json and passes --mcp-config', () => {
     const servers: McpServerConfig[] = [
       {

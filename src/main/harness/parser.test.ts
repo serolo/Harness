@@ -215,4 +215,82 @@ describe('normalize — normalization table', () => {
       { type: 'event', event: { kind: 'tool_use', name: 'Edit', input: {} } },
     ]);
   });
+
+  it('maps AskUserQuestion to a structured question request', () => {
+    expect(
+      normalize({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tool-question-1',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [
+                  {
+                    header: 'Approach',
+                    question: 'Which implementation should I use?',
+                    options: [
+                      { label: 'Simple', description: 'Smallest change' },
+                      { label: 'Complete', description: 'Full workflow' },
+                    ],
+                    multiSelect: false,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'event',
+        event: {
+          kind: 'question_request',
+          requestId: 'tool-question-1',
+          questions: [
+            {
+              id: undefined,
+              header: 'Approach',
+              question: 'Which implementation should I use?',
+              multiSelect: false,
+              options: [
+                { label: 'Simple', description: 'Smallest change' },
+                { label: 'Complete', description: 'Full workflow' },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('maps a can_use_tool control request to a permission request', () => {
+    expect(
+      normalize({
+        type: 'control_request',
+        request_id: 'permission-1',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Bash',
+          input: { command: 'npm publish' },
+          title: 'Claude wants to publish a package',
+          description: 'This command changes an external registry.',
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'event',
+        event: {
+          kind: 'permission_request',
+          requestId: 'permission-1',
+          title: 'Claude wants to publish a package',
+          description: 'This command changes an external registry.',
+          toolName: 'Bash',
+          input: { command: 'npm publish' },
+        },
+      },
+    ]);
+  });
 });

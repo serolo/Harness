@@ -12,7 +12,7 @@ export interface ChatPanelProps {
 }
 
 export function ChatPanel({ workspaceId }: ChatPanelProps): React.JSX.Element {
-  const { turns, isBusy, sendTurn, interrupt } = useChat(workspaceId);
+  const { turns, isBusy, sendTurn, interrupt, clear } = useChat(workspaceId);
 
   if (!workspaceId) {
     return (
@@ -37,8 +37,11 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): React.JSX.Element {
           </div>
           <button
             type="button"
-            className="rounded-1 p-1 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-            aria-label="New chat"
+            className="rounded-1 p-1 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Clear chat"
+            data-testid="chat-clear"
+            disabled={isBusy}
+            onClick={() => void clear()}
           >
             <Plus className="h-4 w-4" aria-hidden />
           </button>
@@ -54,10 +57,12 @@ export function ChatPanel({ workspaceId }: ChatPanelProps): React.JSX.Element {
       <Transcript turns={turns} workspaceId={workspaceId} />
       <Composer
         isBusy={isBusy}
+        workspaceId={workspaceId}
         onSend={(prompt, attachments, mode, harness) =>
           sendTurn(prompt, attachments, mode, harness)
         }
         onInterrupt={interrupt}
+        onClear={clear}
       />
     </div>
   );

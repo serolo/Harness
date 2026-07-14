@@ -48,6 +48,8 @@ export interface GitSettings {
   branchPrefix: string;
   /** Strategy used by the Merge button (spec §5.6). */
   mergeStrategy: 'merge' | 'squash' | 'rebase';
+  /** Remove managed worktrees from disk when their workspace is archived. */
+  deleteWorktreeOnArchive: boolean;
 }
 
 /** `[agent]` — default harness + run mode + permission policy (spec §5.7). */
@@ -78,6 +80,8 @@ export interface NotificationSettings {
   onError: boolean;
   /** Umbrella toggle for attention-needing states (errors, permission prompts). */
   onNeedsAttention: boolean;
+  /** Sound played when any chat turn completes cleanly; `none` disables it. */
+  completionSound: CompletionSound;
 }
 
 /**
@@ -128,4 +132,26 @@ export interface SettingsIssue {
   keyPath?: string;
   /** Human-readable description (TOML parse error or zod message). */
   message: string;
+}
+
+// --- Completion-sound settings (APPEND-ONLY) -------------------------------
+
+/** macOS system tones available for a clean chat-turn completion. */
+export const COMPLETION_SOUNDS = [
+  'none',
+  'glass',
+  'hero',
+  'ping',
+  'pop',
+  'submarine',
+] as const;
+
+export type CompletionSound = (typeof COMPLETION_SOUNDS)[number];
+
+/** Runtime guard for untrusted IPC/settings values. */
+export function isCompletionSound(value: unknown): value is CompletionSound {
+  return (
+    typeof value === 'string' &&
+    (COMPLETION_SOUNDS as readonly string[]).includes(value)
+  );
 }

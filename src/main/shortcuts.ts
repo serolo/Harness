@@ -16,6 +16,13 @@ export interface ShortcutAction {
   accelerator: string;
 }
 
+/**
+ * Native Electron View-menu roles. Keeping these as roles (instead of forwarding
+ * renderer actions) preserves the platform's standard zoom behavior and keyboard
+ * accelerators, including ⌘+ / ⌘- / ⌘0 on macOS.
+ */
+export const NATIVE_VIEW_ROLES = ['resetZoom', 'zoomIn', 'zoomOut'] as const;
+
 /** Build the `⌘1…⌘9` "select workspace N" entries. */
 function workspaceSelectShortcuts(): ShortcutAction[] {
   const out: ShortcutAction[] = [];
@@ -44,6 +51,11 @@ export const DEFAULT_SHORTCUTS: readonly ShortcutAction[] = [
     id: 'openPr',
     label: 'Open Pull Request',
     accelerator: 'CmdOrCtrl+Shift+P',
+  },
+  {
+    id: 'archiveWorkspace',
+    label: 'Archive Workspace',
+    accelerator: 'CmdOrCtrl+Shift+A',
   },
   { id: 'showTerminal', label: 'Show Terminal', accelerator: 'CmdOrCtrl+T' },
   {

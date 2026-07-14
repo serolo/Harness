@@ -36,6 +36,12 @@ function installApi(): {
         return Promise.resolve([]);
       case 'diff:get':
         return Promise.resolve({ baseRef: 'main', headRef: 'HEAD', files: [] });
+      case 'workspace:archivePreview':
+        return Promise.resolve({
+          hasUncommittedChanges: false,
+          changedFileCount: 0,
+          willDeleteWorktree: true,
+        });
       case 'settings:getEffective':
       case 'settings:getProvenance':
         // Contract-honest objects so the settings overlay renders (getEffective never
@@ -185,6 +191,39 @@ describe('AppLayout menu:action dispatch (Track H1)', () => {
     });
     await waitFor(() =>
       expect(useWorkspacesStore.getState().selectedWorkspaceId).toBe('w2'),
+    );
+  });
+
+  it('archives the selected workspace on archiveWorkspace', async () => {
+    const { api, listeners } = installApi();
+    const workspace = {
+      id: 'w1',
+      projectId: 'p1',
+      name: 'selected workspace',
+      status: 'idle',
+    } as Workspace;
+    useWorkspacesStore.setState({
+      selectedWorkspaceId: workspace.id,
+      selectedProjectId: workspace.projectId,
+      workspaces: [workspace],
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(
+      <Providers>
+        <AppLayout />
+      </Providers>,
+    );
+
+    act(() => {
+      listeners['menu:action']?.forEach((cb) =>
+        cb({ actionId: 'archiveWorkspace' }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('workspace:archive', {
+        id: 'w1',
+      }),
     );
   });
 });

@@ -13,6 +13,7 @@ interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   stream: ReturnType<typeof vi.fn>;
+  cancelStream: ReturnType<typeof vi.fn>;
 }
 
 function installApi(opts: {
@@ -28,6 +29,7 @@ function installApi(opts: {
     invoke,
     on: vi.fn(() => () => {}),
     stream: opts.stream ?? vi.fn(() => Promise.resolve()),
+    cancelStream: vi.fn(),
   };
   (window as unknown as { api: ApiStub }).api = api;
   return api;
@@ -91,7 +93,7 @@ describe('RunPanel', () => {
       'run:start',
       { workspaceId: 'ws1', scriptName: 'dev' },
       expect.any(Function),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      expect.objectContaining({ id: expect.any(String) }),
     );
   });
 

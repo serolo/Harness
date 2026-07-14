@@ -27,7 +27,10 @@ import type {
   McpServerConfig,
   PermissionPolicy,
 } from '@shared/harness';
-import type { EffectiveSettings as SharedEffectiveSettings } from '@shared/settings';
+import {
+  COMPLETION_SOUNDS,
+  type EffectiveSettings as SharedEffectiveSettings,
+} from '@shared/settings';
 
 // --- [agent] enum mirrors of the frozen @shared/harness unions ---------------
 
@@ -99,6 +102,8 @@ const gitSchema = z
     branchPrefix: z.string().default('agent'),
     /** Strategy used by the Merge button (spec §5.6). */
     mergeStrategy: z.enum(['merge', 'squash', 'rebase']).default('squash'),
+    /** Remove managed worktrees from disk when their workspace is archived. */
+    deleteWorktreeOnArchive: z.boolean().default(true),
   })
   .default({});
 
@@ -171,6 +176,8 @@ const notificationsSchema = z
     onError: z.boolean().default(true),
     /** Umbrella toggle for attention-needing states (errors, permission prompts). */
     onNeedsAttention: z.boolean().default(true),
+    /** macOS system sound for successful chat completion; `none` disables it. */
+    completionSound: z.enum(COMPLETION_SOUNDS).default('glass'),
   })
   .default({});
 

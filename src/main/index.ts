@@ -66,7 +66,11 @@ import type { EventChannel, EventPayload } from '@shared/ipc';
 import type { AppContext } from './context';
 import { registerIpc, focusRefreshWorkspaceIds } from './ipc/register';
 import { resolveDeepLink } from './deeplink';
-import { resolveShortcuts, type ShortcutAction } from './shortcuts';
+import {
+  NATIVE_VIEW_ROLES,
+  resolveShortcuts,
+  type ShortcutAction,
+} from './shortcuts';
 import { initLogging } from './logging';
 
 // --- Constants -------------------------------------------------------------
@@ -634,6 +638,12 @@ function buildAppMenu(actions: readonly ShortcutAction[]): Menu {
         { type: 'separator' },
         item('commandPalette'),
         item('openSettings'),
+        { type: 'separator' },
+        ...NATIVE_VIEW_ROLES.map((role): MenuItemConstructorOptions => ({
+          role,
+        })),
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
       ]),
     },
     {
@@ -641,6 +651,7 @@ function buildAppMenu(actions: readonly ShortcutAction[]): Menu {
       submenu: nonNull([
         item('newWorkspace'),
         item('openPr'),
+        item('archiveWorkspace'),
         { type: 'separator' },
         ...workspaceItems,
       ]),

@@ -33,8 +33,8 @@ export function useProjects(): UseQueryResult<Project[]> {
 }
 
 /**
- * Fetches the workspaces for `projectId`, including archived ones so the
- * sidebar can show the restore option. Disabled when `projectId` is null.
+ * Fetches active workspaces for `projectId`. Archived workspaces are intentionally
+ * omitted from the project tree. Disabled when `projectId` is null.
  */
 export function useWorkspaces(
   projectId: string | null,
@@ -44,7 +44,7 @@ export function useWorkspaces(
     queryFn: () =>
       invoke('workspace:list', {
         projectId: projectId!,
-        includeArchived: true,
+        includeArchived: false,
       }),
     enabled: projectId != null,
   });
@@ -62,8 +62,8 @@ export function useWorkspaces(
  *                          the Zustand store (so the new item appears immediately).
  * - `workspace:status`   → update just the status field in-place in the cache and
  *                          store (avoids a full refetch for every status tick).
- * - `workspace:archived` → set status to `'archived'` and `worktreePath` to null
- *                          in cache + store.
+ * - `workspace:archived` → set status to `'archived'` and retain/null the path
+ *                          according to the archive deletion setting.
  *
  * The effect cleans up ALL three subscriptions on unmount (leaks otherwise).
  * Mirrors the active-guard discipline in IpcHealth.tsx.
@@ -146,15 +146,18 @@ export function useWorkspaceEvents(): void {
       },
     );
 
-    const unsubArchived = onEvent('workspace:archived', ({ workspaceId }) => {
-      if (!active) return;
-      patchInCache(workspaceId, (ws) => ({
-        ...ws,
-        status: 'archived',
-        worktreePath: null,
-      }));
-      markArchived(workspaceId);
-    });
+    const unsubArchived = onEvent(
+      'workspace:archived',
+      ({ workspaceId, worktreePath }) => {
+        if (!active) return;
+        patchInCache(workspaceId, (ws) => ({
+          ...ws,
+          status: 'archived',
+          worktreePath: worktreePath ?? null,
+        }));
+        markArchived(workspaceId, worktreePath);
+      },
+    );
 
     return () => {
       active = false;

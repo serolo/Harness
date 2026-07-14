@@ -22,7 +22,7 @@
   /* Fixed layout metrics (app shell) */
   --sidebar-width: 240px;
   --context-width: 320px;
-  --titlebar-height: 38px;
+  --titlebar-height: 42px;
   --control-height: 28px; /* default control */
   --control-height-lg: 34px; /* primary CTAs, composer send */
 }

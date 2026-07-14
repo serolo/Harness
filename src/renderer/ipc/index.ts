@@ -79,9 +79,29 @@ export function subscribeStream<S extends StreamChannel>(
   onChunk: (chunk: StreamChunk<S>) => void,
   opts?: { signal?: AbortSignal },
 ): Promise<void> {
+  const id = globalThis.crypto.randomUUID();
+  const signal = opts?.signal;
+  let aborted = signal?.aborted ?? false;
+
+  if (aborted) {
+    return Promise.reject(new DOMException('stream aborted', 'AbortError'));
+  }
+
+  const onAbort = (): void => {
+    aborted = true;
+    window.api.cancelStream(id);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+
   return window.api
-    .stream(channel, arg, onChunk, opts)
+    .stream(channel, arg, onChunk, { id })
     .catch((reason: unknown) => {
+      if (aborted) {
+        throw new DOMException('stream aborted', 'AbortError');
+      }
       throw reviveError(reason);
+    })
+    .finally(() => {
+      signal?.removeEventListener('abort', onAbort);
     });
 }

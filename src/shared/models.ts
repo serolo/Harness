@@ -14,6 +14,9 @@ export type WorkspaceStatus =
 export type WorkspaceSourceKind =
   'none' | 'branch' | 'pr' | 'github_issue' | 'linear_issue';
 
+/** Whether Harness owns an added git worktree or uses the project's checkout. */
+export type WorkspaceLocation = 'worktree' | 'project';
+
 /** A registered git repository managed by the app (spec §3 `projects`). */
 export interface Project {
   id: string; // uuid (v7)
@@ -43,6 +46,12 @@ export interface Workspace {
   createdAt: number; // created_at — epoch millis
   archivedAt: number | null; // archived_at — epoch millis
   prNumber: number | null; // pr_number — GitHub PR number (Phase 5, migration 0007), NULL until a PR is opened
+  /** Location ownership. Optional for compatibility with older persisted/client DTOs. */
+  location?: WorkspaceLocation; // location — worktree (managed) | project (never removed)
+  /** User-controlled attention marker shown in the workspace list. */
+  isUnread?: boolean;
+  /** User-controlled pin; pinned workspaces sort before unpinned siblings. */
+  isPinned?: boolean;
 }
 
 /**
@@ -67,6 +76,8 @@ export interface CreateWorkspaceReq {
   sourceKind?: WorkspaceSourceKind;
   /** PR number / issue key / branch name matching `sourceKind`. */
   sourceRef?: string;
+  /** Create an isolated worktree (default), or use the project's current checkout. */
+  location?: WorkspaceLocation;
 }
 
 /**

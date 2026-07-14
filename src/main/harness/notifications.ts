@@ -8,7 +8,9 @@
 // can carry secrets.
 
 import { Notification } from 'electron';
+import { spawn } from 'node:child_process';
 import type { TurnStatus } from '@shared/models';
+import type { CompletionSound } from '@shared/settings';
 import type { SettingsService } from '../settings';
 import { logger } from '../logging';
 
@@ -27,15 +29,52 @@ export interface NotificationServiceDeps {
   settings: SettingsService;
   /** Route a clicked deep link (reuse `index.ts`'s handler). Optional in tests. */
   onDeepLink?: (url: string) => void;
+  /** Test seam; production uses the allowlisted macOS system-sound player. */
+  playSound?: (sound: CompletionSound) => void;
+}
+
+const SYSTEM_SOUND_FILES: Record<Exclude<CompletionSound, 'none'>, string> = {
+  glass: '/System/Library/Sounds/Glass.aiff',
+  hero: '/System/Library/Sounds/Hero.aiff',
+  ping: '/System/Library/Sounds/Ping.aiff',
+  pop: '/System/Library/Sounds/Pop.aiff',
+  submarine: '/System/Library/Sounds/Submarine.aiff',
+};
+
+/**
+ * Play an allowlisted macOS system sound without a shell. The setting selects a map
+ * key, never a path, so renderer/config input cannot influence the executable or args.
+ */
+export function playCompletionSound(sound: CompletionSound): void {
+  if (sound === 'none') return;
+  try {
+    const child = spawn('/usr/bin/afplay', [SYSTEM_SOUND_FILES[sound]], {
+      stdio: 'ignore',
+    });
+    child.once('error', (err) => {
+      logger.warn(
+        `[notifications] failed to play completion sound: ${err.message}`,
+      );
+    });
+    child.unref();
+  } catch (err) {
+    logger.warn(
+      `[notifications] failed to play completion sound: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 export class NotificationService {
   private readonly settings: SettingsService;
   private readonly onDeepLink?: (url: string) => void;
+  private readonly playSound: (sound: CompletionSound) => void;
 
   constructor(deps: NotificationServiceDeps) {
     this.settings = deps.settings;
     this.onDeepLink = deps.onDeepLink;
+    this.playSound = deps.playSound ?? playCompletionSound;
   }
 
   /**
@@ -46,6 +85,11 @@ export class NotificationService {
   turnDone(info: TurnDoneInfo): void {
     try {
       const s = this.settings.get().notifications;
+      // Completion audio is a separate preference from native notification banners.
+      // It still works when desktop notifications are disabled or unsupported.
+      if (info.status === 'completed' && s.completionSound !== 'none') {
+        this.playSound(s.completionSound);
+      }
       if (!s.enabled) return;
       if (info.status === 'interrupted') return; // user asked for it — no toast
       if (info.status === 'error' && !s.onError) return;

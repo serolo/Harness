@@ -54,14 +54,19 @@ export interface Api {
 
   /**
    * Start a scoped stream: `onChunk` runs per chunk; the Promise resolves on `end` and
-   * rejects (typed `AppError`) on `error`. Pass `opts.signal` to cancel early.
+   * rejects (typed `AppError`) on `error`. The renderer allocates the serializable
+   * subscription id so it can request cancellation without passing an `AbortSignal`
+   * through contextBridge (which would strip its prototype methods).
    */
   stream<S extends StreamChannel>(
     channel: S,
     arg: StreamArg<S>,
     onChunk: (chunk: StreamChunk<S>) => void,
-    opts?: { signal?: AbortSignal },
+    opts: { id: string },
   ): Promise<void>;
+
+  /** Cancel an active scoped stream by its renderer-allocated subscription id. */
+  cancelStream(id: string): void;
 }
 
 declare global {

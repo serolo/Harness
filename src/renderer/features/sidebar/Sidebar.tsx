@@ -1,48 +1,37 @@
-// Sidebar feature — project switcher, workspace list with live status, and
-// the New Workspace dialog trigger.
-//
-// Architecture:
-//   - `useWorkspaceEvents()` mounts once here and subscribes to all three
-//     `workspace:*` broadcast events, keeping TanStack cache + Zustand store live.
-//   - `<ProjectSwitcher>` lets the user switch between registered projects.
-//   - `<WorkspaceItem>` renders each workspace row with status badge + actions.
-//   - Live (non-archived) workspaces render at the top; archived rows are greyed
-//     and collapsed at the bottom with a toggle.
-//   - `data-testid="sidebar"` on the root nav; `data-testid="sidebar-empty"` on
-//     the empty state paragraph (preserved from Phase 0 for tests).
+// Persistent project tree: every project is visible and expands to its sessions.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { FolderPlus } from 'lucide-react';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useUiStore } from '@renderer/stores/ui';
-import { useWorkspaces, useWorkspaceEvents } from './hooks';
-import { ProjectSwitcher } from './ProjectSwitcher';
-import { WorkspaceItem } from './WorkspaceItem';
+import { useProjects, useWorkspaceEvents } from './hooks';
+import { AddProjectMenu } from './AddProjectMenu';
 import { NewWorkspaceDialog } from './NewWorkspaceDialog';
+import { ProjectGroup } from './ProjectGroup';
 
-/**
- * The left rail: project switcher, "New Workspace" button, workspace list with
- * live status badges, and archived rows with restore actions.
- */
 export function Sidebar(): React.JSX.Element {
-  // Mount workspace event subscriptions for the lifetime of the sidebar.
   useWorkspaceEvents();
 
   const selectedProjectId = useWorkspacesStore((s) => s.selectedProjectId);
-  const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
-  const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
+  const selectProject = useWorkspacesStore((s) => s.selectProject);
+  const setProjects = useWorkspacesStore((s) => s.setProjects);
+  const { data: projects = [] } = useProjects();
 
-  const { data: workspaces = [] } = useWorkspaces(selectedProjectId);
-
-  // The dialog's open-state lives in the shared UI store so the app menu / ⌘K palette
-  // ("New Workspace") can open it too — not just the local "+ New" button.
   const dialogOpen = useUiStore((s) => s.newWorkspaceOpen);
   const setDialogOpen = useUiStore((s) => s.setNewWorkspaceOpen);
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
 
-  const liveWorkspaces = workspaces.filter((w) => w.status !== 'archived');
-  const archivedWorkspaces = workspaces.filter((w) => w.status === 'archived');
-  const hasWorkspaces =
-    liveWorkspaces.length > 0 || archivedWorkspaces.length > 0;
+  useEffect(() => {
+    setProjects(projects);
+    if (selectedProjectId === null && projects.length > 0) {
+      selectProject(projects[0].id);
+    }
+  }, [projects, selectProject, selectedProjectId, setProjects]);
+
+  function openNewWorkspace(projectId: string): void {
+    selectProject(projectId);
+    setDialogOpen(true);
+  }
 
   return (
     <nav
@@ -50,82 +39,49 @@ export function Sidebar(): React.JSX.Element {
       aria-label="Workspaces"
       data-testid="sidebar"
     >
-      {/* Project switcher */}
-      <ProjectSwitcher />
-
-      {/* Section header + New Workspace button */}
       <div className="flex items-center justify-between">
-        <h2 className="px-1 text-xs font-semibold uppercase tracking-caps text-fg-3">
-          Workspaces
-        </h2>
+        <h2 className="px-1 text-sm font-semibold text-fg-2">Projects</h2>
         <button
           type="button"
-          onClick={() => setDialogOpen(true)}
-          disabled={selectedProjectId == null}
-          className="rounded-1 px-1.5 py-0.5 text-xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2 disabled:cursor-not-allowed disabled:opacity-40"
-          data-testid="new-workspace-button"
-          title={
-            selectedProjectId == null
-              ? 'Select a project first'
-              : 'New Workspace'
-          }
+          onClick={() => setAddProjectOpen((value) => !value)}
+          className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+          data-testid="add-project-button"
+          title="Add project"
+          aria-label="Add project"
         >
-          + New
+          <FolderPlus className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
 
-      {/* Workspace list */}
-      {!hasWorkspaces ? (
-        <p className="px-1 text-sm text-fg-3" data-testid="sidebar-empty">
-          No workspaces yet.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-0.5 overflow-y-auto">
-          {/* Live workspaces */}
-          {liveWorkspaces.length > 0 && (
-            <ul className="flex flex-col gap-0.5">
-              {liveWorkspaces.map((ws) => (
-                <WorkspaceItem
-                  key={ws.id}
-                  workspace={ws}
-                  isSelected={ws.id === selectedWorkspaceId}
-                  onSelect={selectWorkspace}
-                />
-              ))}
-            </ul>
-          )}
-
-          {/* Archived workspaces — collapsed by default */}
-          {archivedWorkspaces.length > 0 && (
-            <div className="mt-1">
-              <button
-                type="button"
-                onClick={() => setArchivedExpanded((v) => !v)}
-                className="w-full rounded-1 px-2 py-1 text-left text-xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2"
-                aria-expanded={archivedExpanded}
-              >
-                {archivedExpanded ? '▾' : '▸'} Archived (
-                {archivedWorkspaces.length})
-              </button>
-
-              {archivedExpanded && (
-                <ul className="mt-0.5 flex flex-col gap-0.5">
-                  {archivedWorkspaces.map((ws) => (
-                    <WorkspaceItem
-                      key={ws.id}
-                      workspace={ws}
-                      isSelected={ws.id === selectedWorkspaceId}
-                      onSelect={selectWorkspace}
-                    />
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
+      {addProjectOpen && (
+        <div className="rounded-2 border border-border-1 bg-surface-card p-2">
+          <AddProjectMenu onDone={() => setAddProjectOpen(false)} />
         </div>
       )}
 
-      {/* New Workspace dialog */}
+      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+        {projects.length === 0 ? (
+          <p
+            className="px-1 py-2 text-sm text-fg-3"
+            data-testid="sidebar-empty"
+          >
+            No projects yet.
+          </p>
+        ) : (
+          projects.map((project, index) => (
+            <ProjectGroup
+              key={project.id}
+              project={project}
+              defaultExpanded={
+                project.id === selectedProjectId ||
+                (selectedProjectId === null && index === 0)
+              }
+              onNewWorkspace={openNewWorkspace}
+            />
+          ))
+        )}
+      </div>
+
       {dialogOpen && (
         <NewWorkspaceDialog
           projectId={selectedProjectId}

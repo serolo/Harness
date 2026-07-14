@@ -1,18 +1,7 @@
-// Renderer: AppLayout renders + the IPC-OK indicator reflects the app:ping result
-// (Task 10 / phase doc §7). Runs under jsdom (see vitest.config environmentMatchGlobs).
-//
-// We do NOT boot Electron. Instead we stub `window.api` — the ONLY main-process access
-// point the renderer has (src/preload/api.d.ts) — so `invoke('app:ping', …)` resolves or
-// rejects on demand. The renderer IPC funnel (src/renderer/ipc) calls `window.api.invoke`
-// under the hood, so stubbing `window.api` exercises the real funnel + real component.
-//
-// Phase 1 note: <AppLayout> now renders <Sidebar> which issues TanStack queries for
-// `project:list` and `workspace:list`. We wrap renders in <Providers> (which supplies
-// the QueryClientProvider) and make the `invoke` stub dispatch per-channel so both the
-// IPC-health check AND the sidebar queries resolve correctly.
+// Renderer AppLayout structure and adjustable pane interactions.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 import { AppLayout } from '@renderer/app/AppLayout';
 import { Providers } from '@renderer/app/providers';
@@ -28,7 +17,6 @@ interface ApiStub {
  * Install a stubbed `window.api`.
  *
  * The `invoke` mock dispatches on channel so:
- *   - 'app:ping'        → 'ok'   (IpcHealth)
  *   - 'project:list'    → []     (Sidebar ProjectSwitcher)
  *   - 'workspace:list'  → []     (Sidebar workspace list)
  *
@@ -56,6 +44,7 @@ function installApi(
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.clear();
   delete (window as unknown as { api?: unknown }).api;
 });
 
@@ -64,110 +53,71 @@ describe('AppLayout structure', () => {
     installApi();
   });
 
-  it('renders the three-pane layout and both placeholder panes', async () => {
+  it('renders the three-pane layout and both placeholder panes', () => {
     render(
       <Providers>
         <AppLayout />
       </Providers>,
     );
     expect(screen.getByTestId('app-layout')).toBeInTheDocument();
+    expect(screen.getByTestId('center-pane')).toContainElement(
+      screen.getByTestId('workspace-title'),
+    );
     expect(
       screen.getByText('Select a workspace to begin.'),
     ).toBeInTheDocument();
     expect(screen.getByText('Context panel')).toBeInTheDocument();
-    // Let the IpcHealth mount effect settle so its state update is inside act(...).
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'ok',
-      );
-    });
+    expect(screen.queryByTestId('ipc-health')).not.toBeInTheDocument();
   });
-});
 
-describe('IPC health indicator', () => {
-  it('starts pending, then flips to the ok state when app:ping resolves "ok"', async () => {
-    const api = installApi();
-
+  it('toggles the left and right panes independently while preserving the center', () => {
     render(
       <Providers>
         <AppLayout />
       </Providers>,
     );
 
-    // Immediately after mount the effect is in flight → pending.
-    const health = screen.getByTestId('ipc-health');
-    expect(health).toHaveAttribute('data-state', 'pending');
+    expect(screen.getByTestId('left-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('right-pane')).toBeInTheDocument();
 
-    // Once the promise resolves, the dot flips to ok ("IPC OK").
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'ok',
-      );
-    });
-    expect(screen.getByText('IPC OK')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('toggle-left-pane'));
+    expect(screen.queryByTestId('left-pane')).not.toBeInTheDocument();
+    expect(screen.getByTestId('right-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('center-pane')).toBeInTheDocument();
 
-    // It called through the funnel with the frozen channel + void arg.
-    expect(api.invoke).toHaveBeenCalledWith('app:ping', undefined);
+    fireEvent.click(screen.getByTestId('toggle-right-pane'));
+    expect(screen.queryByTestId('right-pane')).not.toBeInTheDocument();
+    expect(screen.getByTestId('center-pane')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('toggle-left-pane'));
+    fireEvent.click(screen.getByTestId('toggle-right-pane'));
+    expect(screen.getByTestId('left-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('right-pane')).toBeInTheDocument();
   });
 
-  it('flips to the error state when app:ping rejects', async () => {
-    // Override just app:ping to reject; other channels still resolve happily.
-    const invoke = vi.fn((channel: string, _req?: unknown) => {
-      if (channel === 'app:ping')
-        return Promise.reject(new Error('no main process'));
-      if (channel === 'project:list') return Promise.resolve([]);
-      if (channel === 'workspace:list') return Promise.resolve([]);
-      return Promise.resolve(undefined);
-    });
-    const api: ApiStub = {
-      invoke,
-      on: vi.fn(() => () => {}),
-      stream: vi.fn(() => Promise.resolve()),
-    };
-    (window as unknown as { api: ApiStub }).api = api;
-
+  it('resizes both side panes by drag or accessible keyboard dividers', () => {
     render(
       <Providers>
         <AppLayout />
       </Providers>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'error',
-      );
+    expect(screen.getByTestId('left-pane')).toHaveStyle({ width: '280px' });
+    fireEvent.keyDown(screen.getByTestId('left-resize-handle'), {
+      key: 'ArrowRight',
     });
-    expect(screen.getByText('IPC error')).toBeInTheDocument();
-  });
-
-  it('treats an unexpected (non-"ok") response as an error', async () => {
-    const invoke = vi.fn((channel: string, _req?: unknown) => {
-      if (channel === 'app:ping') return Promise.resolve('pong');
-      if (channel === 'project:list') return Promise.resolve([]);
-      if (channel === 'workspace:list') return Promise.resolve([]);
-      return Promise.resolve(undefined);
+    expect(screen.getByTestId('left-pane')).toHaveStyle({ width: '296px' });
+    fireEvent.mouseDown(screen.getByTestId('left-resize-handle'), {
+      clientX: 296,
     });
-    const api: ApiStub = {
-      invoke,
-      on: vi.fn(() => () => {}),
-      stream: vi.fn(() => Promise.resolve()),
-    };
-    (window as unknown as { api: ApiStub }).api = api;
+    fireEvent.mouseMove(window, { clientX: 340 });
+    fireEvent.mouseUp(window);
+    expect(screen.getByTestId('left-pane')).toHaveStyle({ width: '340px' });
 
-    render(
-      <Providers>
-        <AppLayout />
-      </Providers>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId('ipc-health')).toHaveAttribute(
-        'data-state',
-        'error',
-      );
+    expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '360px' });
+    fireEvent.keyDown(screen.getByTestId('right-resize-handle'), {
+      key: 'ArrowLeft',
     });
+    expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '376px' });
   });
 });

@@ -32,6 +32,8 @@ import type {
   StreamArg,
   StreamChannel,
   StreamChunk,
+  WorkspaceOpenApp,
+  WorkspaceOpenAppId,
 } from '@shared/ipc';
 import type { StreamSink } from '@shared/ipc';
 import type { AgentEvent, HarnessId, StartTurnOpts } from '@shared/harness';
@@ -43,12 +45,17 @@ import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
 import { TodosRepo } from '../db/repos/todos';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
-import { githubCliAuthStatus, githubCliToken } from '../integrations/github/ghCli';
+import {
+  githubCliAuthStatus,
+  githubCliToken,
+} from '../integrations/github/ghCli';
 import { discoverGitSshKeys } from '../git/sshKeys';
 import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
 import { repoDir } from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
+import { isCompletionSound } from '@shared/settings';
+import { playCompletionSound } from '../harness/notifications';
 import { resolveDeepLink } from '../deeplink';
 import { buildEnv } from '../process/env';
 import type { PtyChunk } from '../pty';
@@ -241,6 +248,107 @@ function openInIde(
   });
 }
 
+interface WorkspaceAppConfig extends WorkspaceOpenApp {
+  application: string;
+}
+
+/** Fixed application names keep the renderer from choosing a binary or command. */
+const WORKSPACE_OPEN_APPS: readonly WorkspaceAppConfig[] = [
+  { id: 'finder', label: 'Finder', kind: 'finder', application: 'Finder' },
+  {
+    id: 'terminal',
+    label: 'Terminal',
+    kind: 'terminal',
+    application: 'Terminal',
+  },
+  {
+    id: 'iterm',
+    label: 'iTerm',
+    kind: 'terminal',
+    application: 'iTerm',
+  },
+  { id: 'warp', label: 'Warp', kind: 'terminal', application: 'Warp' },
+  {
+    id: 'vscode',
+    label: 'Visual Studio Code',
+    kind: 'editor',
+    application: 'Visual Studio Code',
+  },
+  { id: 'cursor', label: 'Cursor', kind: 'editor', application: 'Cursor' },
+  {
+    id: 'sublime',
+    label: 'Sublime Text',
+    kind: 'editor',
+    application: 'Sublime Text',
+  },
+  { id: 'xcode', label: 'Xcode', kind: 'editor', application: 'Xcode' },
+  {
+    id: 'webstorm',
+    label: 'WebStorm',
+    kind: 'editor',
+    application: 'WebStorm',
+  },
+  { id: 'fork', label: 'Fork', kind: 'git', application: 'Fork' },
+  {
+    id: 'devin',
+    label: 'Devin Desktop',
+    kind: 'editor',
+    application: 'Devin',
+  },
+] as const;
+
+/** Run macOS `open` without a shell and resolve with its exit status. */
+function runMacOpen(args: readonly string[]): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawnChild('/usr/bin/open', [...args], { stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', (code) => resolve(code ?? 1));
+  });
+}
+
+async function listInstalledWorkspaceApps(): Promise<WorkspaceOpenApp[]> {
+  if (process.platform !== 'darwin') return [];
+  const availability = await Promise.all(
+    WORKSPACE_OPEN_APPS.map(async (candidate) => {
+      try {
+        return (await runMacOpen(['-Ra', candidate.application])) === 0;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return WORKSPACE_OPEN_APPS.filter((_, index) => availability[index]).map(
+    ({ id, label, kind }) => ({ id, label, kind }),
+  );
+}
+
+async function openWorkspaceInApp(
+  appId: WorkspaceOpenAppId,
+  workspacePath: string,
+): Promise<void> {
+  if (process.platform !== 'darwin') {
+    throw new AppError('conflict', 'opening in an application requires macOS');
+  }
+  const target = WORKSPACE_OPEN_APPS.find(
+    (candidate) => candidate.id === appId,
+  );
+  if (!target) {
+    throw new AppError('invalid_input', 'unknown workspace application', {
+      appId: String(appId),
+    });
+  }
+  const args =
+    target.id === 'finder'
+      ? [workspacePath]
+      : ['-a', target.application, workspacePath];
+  const exitCode = await runMacOpen(args);
+  if (exitCode !== 0) {
+    throw new AppError('not_found', `${target.label} is not installed`, {
+      appId,
+    });
+  }
+}
+
 /**
  * The registry of stream producers, keyed by `StreamChannel`. Adding a new streaming
  * channel = adding an entry here (and to `StreamChannels` in @shared/ipc). Typed so a
@@ -297,15 +405,17 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
   },
 
   // Create a workspace: delegate to WorkspaceManager, mapping each setup-log chunk to a
-  // `{ kind: 'setupLog' }` frame, then push the terminal `{ kind: 'created', workspace }`
-  // frame. Async work runs in an IIFE; failures route to `sink.error(...)`.
+  // `{ kind: 'setupLog' }` frame. Push `{ kind: 'created' }` as soon as the row is
+  // persisted (before setup) so the dialog can close immediately; setup continues and
+  // status changes arrive through the existing workspace broadcast events.
   'workspace:create': (arg, ctx, sink) => {
     void (async () => {
       try {
-        const workspace = await ctx.workspaces.create(arg, (chunk) =>
-          sink.push({ kind: 'setupLog', chunk }),
+        await ctx.workspaces.create(
+          arg,
+          (chunk) => sink.push({ kind: 'setupLog', chunk }),
+          (workspace) => sink.push({ kind: 'created', workspace }),
         );
-        sink.push({ kind: 'created', workspace });
         sink.end();
       } catch (e) {
         sink.error(toAppError(e));
@@ -348,7 +458,9 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
 
         const harnessOverride =
-          typeof arg.harness === 'string' ? (arg.harness as HarnessId) : undefined;
+          typeof arg.harness === 'string'
+            ? (arg.harness as HarnessId)
+            : undefined;
         if (
           harnessOverride !== undefined &&
           !['claude_code', 'codex', 'cursor'].includes(harnessOverride)
@@ -616,9 +728,8 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
 
 /**
  * Wire the scoped-stream control channels. The renderer's `api.stream(channel, arg)`:
- *   1. invokes `stream:start` → main allocates a subscription id, starts the producer,
- *      and returns `{ id }`;
- *   2. subscribes to `stream:<id>` for `chunk`/`end`/`error` frames;
+ *   1. the renderer allocates an id and preload subscribes to `stream:<id>`;
+ *   2. invokes `stream:start` with that id → main starts the producer and returns it;
  *   3. sends `stream:cancel` with the id if it tears down before `end`.
  *
  * `stream:start` is itself inside the error boundary (an unknown channel rejects with a
@@ -630,7 +741,7 @@ function registerStreamControl(ctx: AppContext): void {
     STREAM_START_CHANNEL,
     async (
       event: IpcMainInvokeEvent,
-      payload: { channel: StreamChannel; arg: unknown },
+      payload: { channel: StreamChannel; arg: unknown; id: string },
     ): Promise<{ id: string }> => {
       try {
         const producer = streamProducers[payload.channel] as
@@ -640,13 +751,22 @@ function registerStreamControl(ctx: AppContext): void {
             new Error(`unknown stream channel: ${String(payload.channel)}`),
           );
         }
+        if (
+          typeof payload.id !== 'string' ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            payload.id,
+          )
+        ) {
+          throw new AppError('invalid_input', 'invalid stream subscription id');
+        }
         let producerTeardown: (() => void) | undefined;
         const { id, sink } = createStream<StreamChunk<StreamChannel>>({
           webContents: event.sender,
+          id: payload.id,
           onClose: () => producerTeardown?.(),
         });
-        // Kick the producer on the next tick so the renderer has the id + its
-        // `stream:<id>` listener attached before the first chunk can arrive.
+        // Preload attached `stream:<id>` before invoking this handler, so even a
+        // producer that completes synchronously cannot race its listener.
         queueMicrotask(() => {
           try {
             producerTeardown =
@@ -756,6 +876,18 @@ export function registerIpc(ctx: AppContext): void {
     await ctx.workspaces.archive(req.id);
   });
   handle('workspace:restore', async (req) => ctx.workspaces.restore(req.id));
+  handle('workspace:archivePreview', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'workspace id is required');
+    }
+    return ctx.workspaces.archivePreview(req.id);
+  });
+  handle('workspace:update', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'workspace id is required');
+    }
+    return ctx.workspaces.update(req.id, req);
+  });
 
   // --- Phase 2: harness + chat ---
 
@@ -882,6 +1014,34 @@ export function registerIpc(ctx: AppContext): void {
       });
     }
     await openInIde(req.ide, workspace.worktreePath);
+  });
+
+  // workspace:listOpenApps — return only allowlisted apps registered with LaunchServices.
+  handle('workspace:listOpenApps', async () => listInstalledWorkspaceApps());
+
+  // workspace:openInApp — resolve the path from persistence and launch a fixed app name.
+  // Neither an executable nor a filesystem path is accepted from the renderer.
+  handle('workspace:openInApp', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (!WORKSPACE_OPEN_APPS.some((candidate) => candidate.id === req.appId)) {
+      throw new AppError('invalid_input', 'unknown workspace application', {
+        appId: String(req.appId),
+      });
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (!workspace) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    if (!workspace.worktreePath) {
+      throw new AppError('conflict', 'workspace has no checkout', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    await openWorkspaceInApp(req.appId, workspace.worktreePath);
   });
 
   // --- Phase 4: diff review + checkpoints ---
@@ -1127,7 +1287,10 @@ export function registerIpc(ctx: AppContext): void {
       if (frame.kind === 'connected') account = frame.account;
     });
     if (account === null) {
-      throw new AppError('integration', 'GitHub CLI connection did not complete');
+      throw new AppError(
+        'integration',
+        'GitHub CLI connection did not complete',
+      );
     }
     return account;
   });
@@ -1352,6 +1515,15 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'keyPath is required');
     }
     return ctx.settings.set(req.layer, req.keyPath, req.value);
+  });
+
+  // Sound names are narrowed to the shared allowlist before the privileged main
+  // process starts afplay. No renderer-provided executable, path, or shell text is used.
+  handle('notifications:previewSound', async (req) => {
+    if (!isCompletionSound(req.sound)) {
+      throw new AppError('invalid_input', 'Unknown completion sound');
+    }
+    playCompletionSound(req.sound);
   });
 
   // slash:list — the slash-command catalogue built from `agent.prompts` (spec §5.4).

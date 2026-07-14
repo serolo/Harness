@@ -16,14 +16,19 @@ import { migration0003TurnsEvents } from './0003_turns_events';
 import { migration0005DiffReview } from './0005_diff_review';
 import { migration0006Integrations } from './0006_integrations';
 import { migration0007WorkspacePr } from './0007_workspace_pr';
+import { migration0008WorkspaceLocation } from './0008_workspace_location';
+import { migration0009WorkspaceMenu } from './0009_workspace_menu';
 
 /**
  * One numbered migration. `up` receives the raw better-sqlite3 handle and runs
  * synchronously; the runner wraps each call in a transaction, so `up` must not
- * open its own. `version` MUST be unique, contiguous, and strictly increasing.
+ * open its own. Additive migrations may provide `isApplied` when they can safely
+ * verify their schema change independently of `user_version`. This repairs databases
+ * produced by parallel feature branches that temporarily reused a version number.
  */
 export interface Migration {
   version: number;
+  isApplied?(db: SqliteDb): boolean;
   up(db: SqliteDb): void;
 }
 
@@ -38,6 +43,8 @@ const migrations: readonly Migration[] = [
   migration0005DiffReview,
   migration0006Integrations,
   migration0007WorkspacePr,
+  migration0008WorkspaceLocation,
+  migration0009WorkspaceMenu,
 ];
 
 /** Read the current schema version from `PRAGMA user_version`. */
@@ -49,7 +56,8 @@ function getUserVersion(db: SqliteDb): number {
 
 /**
  * Apply all pending migrations in ascending version order. Idempotent and
- * re-runnable: a DB already at (or above) a migration's version skips it.
+ * re-runnable: migrations normally skip by version; migrations with a schema probe
+ * can repair a missing additive change even when user_version is already at or above it.
  *
  * Each migration is applied inside its own transaction and the `user_version` is
  * bumped in the SAME transaction — so a mid-migration crash leaves the version
@@ -57,18 +65,26 @@ function getUserVersion(db: SqliteDb): number {
  */
 export function runMigrations(db: SqliteDb): void {
   const ordered = [...migrations].sort((a, b) => a.version - b.version);
-  const current = getUserVersion(db);
+  let current = getUserVersion(db);
 
   for (const migration of ordered) {
-    if (migration.version <= current) {
-      continue; // already applied — skip (idempotent re-run)
+    const hasSchemaProbe = migration.isApplied !== undefined;
+    const schemaApplied = migration.isApplied?.(db) ?? false;
+    if (migration.version <= current && (!hasSchemaProbe || schemaApplied)) {
+      continue;
     }
 
     // better-sqlite3 transaction: throws → rolls back, leaving user_version intact.
     const apply = db.transaction((m: Migration) => {
-      m.up(db);
-      // PRAGMA can't be parameterized; version is an integer we control (not user input).
-      db.pragma(`user_version = ${m.version}`);
+      // A schema probe can report that an additive change already exists even when
+      // user_version is behind. In that case only advance the version marker.
+      if (!schemaApplied) {
+        m.up(db);
+      }
+      const nextVersion = Math.max(current, m.version);
+      // PRAGMA can't be parameterized; versions are integers controlled by migrations.
+      db.pragma(`user_version = ${nextVersion}`);
+      current = nextVersion;
     });
     apply(migration);
   }

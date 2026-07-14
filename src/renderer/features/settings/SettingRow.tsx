@@ -107,7 +107,7 @@ function FieldControl({
       <Select
         options={(field.options ?? []).map((opt) => ({
           value: opt,
-          label: opt,
+          label: field.optionLabels?.[opt] ?? opt,
         }))}
         className="w-full"
         data-testid={testId}

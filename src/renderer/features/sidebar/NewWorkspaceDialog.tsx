@@ -2,8 +2,10 @@
 //
 // NOT a Radix Dialog. There is no @radix-ui/react-dialog in this project.
 //
+// Location and worktree naming are shared by every source and stay mounted above the
+// source picker. Switching source changes only the source-specific content below it.
 // Source tabs:
-//   - Branch  : the classic flow — base branch + optional custom name + harness.
+//   - Branch  : base branch.
 //   - From PR : lists the project's open PRs (`github:listPrs`); selecting one creates
 //               a workspace seeded from the PR head (`sourceKind:'pr'`).
 //   - From issue: lists the project's open issues (`github:listIssues`); selecting one
@@ -24,35 +26,24 @@
 // the primitive — Dialog has no slot for the tabbed source picker + streaming log body
 // this component drives, so re-using its visual recipe (not its markup) keeps the same
 // look without forcing the multi-tab logic through a single `children` slot. The source
-// tabs (data-testid + aria-pressed + per-tab disabled) and the harness/base-branch/PR/issue
-// controls stay hand-rolled or adopt `Input`/`Select`/`Button`/`IconButton` where doing so
-// doesn't drop a `data-testid` or a `disabled` per-option requirement (see the harness
-// `<Select>` vs. keeping a raw `<input>`/`<select>` for the rest).
+// tabs (data-testid + aria-pressed + per-tab disabled) and the location/base-branch/PR/issue
+// controls stay hand-rolled or adopt `Input`/`Select`/`Button`/`IconButton` where useful.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { HarnessId } from '@shared/harness';
 import type { CreateWorkspaceReq } from '@shared/models';
 import type { IssueListItem, PrListItem } from '@shared/github';
-import type { LinearIssue } from '@shared/linear';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useComposerStore } from '@renderer/stores/composer';
 import { Button, IconButton, Input, Select } from '@renderer/components/ui';
 import { SetupLogPanel } from './SetupLogPanel';
 
-const HARNESS_OPTIONS: { value: HarnessId; label: string }[] = [
-  { value: 'claude_code', label: 'Claude Code' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'cursor', label: 'Cursor' },
-];
-
-type SourceTab = 'branch' | 'pr' | 'issue' | 'linear';
+type SourceTab = 'branch' | 'pr' | 'issue';
 
 const TABS: { id: SourceTab; label: string }[] = [
   { id: 'branch', label: 'Branch' },
   { id: 'pr', label: 'From PR' },
   { id: 'issue', label: 'From issue' },
-  { id: 'linear', label: 'From Linear' },
 ];
 
 /**
@@ -62,14 +53,6 @@ const TABS: { id: SourceTab; label: string }[] = [
  */
 function issuePrompt(issue: IssueListItem): string {
   return `${issue.title}\n\n${issue.url}`;
-}
-
-/**
- * Build the one-time composer prompt for a workspace seeded from a Linear issue. Seeds the
- * identifier + title plus the issue URL — enough for the agent to pick up the thread.
- */
-function linearIssuePrompt(issue: LinearIssue): string {
-  return `${issue.identifier} ${issue.title}\n\n${issue.url}`;
 }
 
 /**
@@ -128,12 +111,15 @@ export function NewWorkspaceDialog({
   const [baseBranches, setBaseBranches] = useState<string[]>([]);
   const [branchListLoading, setBranchListLoading] = useState(false);
   const [branchListError, setBranchListError] = useState<string | null>(null);
-  const [harness, setHarness] = useState<HarnessId>('claude_code');
+  const [location, setLocation] = useState<'project' | 'worktree'>('worktree');
+  const [worktreeNaming, setWorktreeNaming] = useState<'automatic' | 'custom'>(
+    'automatic',
+  );
+  const [worktreeName, setWorktreeName] = useState('');
 
   // PR / issue list state (loaded lazily when the matching tab opens).
   const [prs, setPrs] = useState<PrListItem[] | null>(null);
   const [issues, setIssues] = useState<IssueListItem[] | null>(null);
-  const [linearIssues, setLinearIssues] = useState<LinearIssue[] | null>(null);
   const [listLoading, setListLoading] = useState(false);
   // Set when a list fetch rejects (typically "no account connected") → empty state.
   const [listError, setListError] = useState<string | null>(null);
@@ -143,12 +129,8 @@ export function NewWorkspaceDialog({
   const [githubToken, setGithubToken] = useState('');
   const [githubReload, setGithubReload] = useState(0);
 
-  // Linear inline-connect affordance (shown in the Linear empty state — no account yet).
-  // `linearReload` bumps to re-run the list-load effect after a successful connect.
-  const [linearToken, setLinearToken] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [linearReload, setLinearReload] = useState(0);
 
   // Streaming state
   const [isStreaming, setIsStreaming] = useState(false);
@@ -219,12 +201,10 @@ export function NewWorkspaceDialog({
     setListError(null);
 
     const load = (async (): Promise<void> => {
-      if (activeTab === 'pr' || activeTab === 'issue') {
-        const connected = await ensureGithubConnected();
-        if (!connected) {
-          if (active) setListError('no GitHub account connected');
-          return;
-        }
+      const connected = await ensureGithubConnected();
+      if (!connected) {
+        if (active) setListError('no GitHub account connected');
+        return;
       }
 
       if (activeTab === 'pr') {
@@ -239,9 +219,8 @@ export function NewWorkspaceDialog({
         return;
       }
 
-      // 'linear' — issues for the active Linear account (project-agnostic).
-      const rows = await invoke('linear:listIssues', {});
-      if (active) setLinearIssues(rows);
+      const rows = await invoke('github:listIssues', { projectId });
+      if (active) setIssues(rows);
     })();
 
     void load
@@ -256,7 +235,7 @@ export function NewWorkspaceDialog({
     return () => {
       active = false;
     };
-  }, [activeTab, projectId, githubReload, linearReload]);
+  }, [activeTab, projectId, githubReload]);
 
   function handleClose(): void {
     abortRef.current?.abort();
@@ -265,7 +244,7 @@ export function NewWorkspaceDialog({
 
   /**
    * Drive the `workspace:create` stream for a request. Shared by all three tabs.
-   * `onCreated` runs (with the new workspace id) on the terminal `created` frame,
+   * `onCreated` runs (with the new workspace id) on the persisted `created` frame,
    * before selection + close — used by the issue flow to stash the pending prompt.
    */
   const runCreate = useCallback(
@@ -312,12 +291,23 @@ export function NewWorkspaceDialog({
     [projectId, isStreaming, selectWorkspace, onClose],
   );
 
+  function locationOptions(): Pick<CreateWorkspaceReq, 'location' | 'name'> {
+    return {
+      location,
+      ...(location === 'worktree' &&
+      worktreeNaming === 'custom' &&
+      worktreeName.trim() !== ''
+        ? { name: worktreeName.trim() }
+        : {}),
+    };
+  }
+
   function handleBranchSubmit(e: React.FormEvent): void {
     e.preventDefault();
     if (baseBranch.trim() === '') return;
     void runCreate({
+      ...locationOptions(),
       baseBranch: baseBranch.trim(),
-      harness,
       sourceKind: 'branch',
     });
   }
@@ -326,7 +316,7 @@ export function NewWorkspaceDialog({
     // Seed the worktree from the PR head; the name/branch are auto-allocated by main
     // (consistent with the branch flow leaving them blank).
     void runCreate({
-      harness,
+      ...locationOptions(),
       sourceKind: 'pr',
       sourceRef: String(pr.number),
     });
@@ -338,21 +328,11 @@ export function NewWorkspaceDialog({
     const prompt = issuePrompt(issue);
     void runCreate(
       {
-        harness,
+        ...locationOptions(),
         sourceKind: 'github_issue',
         sourceRef: String(issue.number),
       },
       (workspaceId) => setPendingPrompt(workspaceId, prompt),
-    );
-  }
-
-  function handleSelectLinearIssue(issue: LinearIssue): void {
-    // Linear issues are not a git ref, so we create a normal branch-from-base workspace
-    // (sourceKind:'branch') and seed the composer with the issue text. Provenance-tagging
-    // as a distinct `linear_issue` source is a follow-on (would touch frozen @shared/models).
-    const prompt = linearIssuePrompt(issue);
-    void runCreate({ harness, sourceKind: 'branch' }, (workspaceId) =>
-      setPendingPrompt(workspaceId, prompt),
     );
   }
 
@@ -388,36 +368,11 @@ export function NewWorkspaceDialog({
     }
   }
 
-  /**
-   * Connect a Linear account inline (API-key paste) when the issue list reports none. Drives
-   * the `linear:connect` stream; on the terminal `connected` frame, clears the key and bumps
-   * `linearReload` to refetch the issue list. The key lives only in local state — never logged.
-   */
-  async function handleConnectLinear(): Promise<void> {
-    const token = linearToken.trim();
-    if (token === '' || connecting) return;
-    setConnecting(true);
-    setConnectError(null);
-    try {
-      await subscribeStream(
-        'linear:connect',
-        { mode: 'apiKey', token },
-        (chunk) => {
-          if (chunk.kind === 'connected') {
-            setLinearToken('');
-            setListError(null);
-            setLinearReload((k) => k + 1);
-          } else if (chunk.kind === 'error') {
-            setConnectError(chunk.message);
-          }
-        },
-      );
-    } catch (err) {
-      setConnectError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setConnecting(false);
-    }
-  }
+  const selectedLocation = location;
+  const customNameInvalid =
+    selectedLocation === 'worktree' &&
+    worktreeNaming === 'custom' &&
+    !/^[a-z0-9](?:[a-z0-9-]{0,62})$/.test(worktreeName.trim());
 
   return (
     <>
@@ -450,8 +405,100 @@ export function NewWorkspaceDialog({
 
           {/* Body */}
           <div className="p-4">
-            {/* Source type tabs */}
-            <div className="mb-4">
+            <fieldset className="mb-4">
+              <legend className="mb-1.5 text-xs font-medium uppercase tracking-caps text-fg-3">
+                Location
+              </legend>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  data-testid="location-project"
+                  aria-pressed={selectedLocation === 'project'}
+                  disabled={isStreaming}
+                  onClick={() => setLocation('project')}
+                  className={`rounded-2 border px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    selectedLocation === 'project'
+                      ? 'border-accent bg-accent-muted text-fg-1'
+                      : 'border-border-1 bg-surface-well text-fg-2'
+                  }`}
+                >
+                  <span className="block font-medium">Current workspace</span>
+                  <span className="mt-0.5 block text-fg-3">
+                    Work in the project folder
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="location-worktree"
+                  aria-pressed={selectedLocation === 'worktree'}
+                  disabled={isStreaming}
+                  onClick={() => setLocation('worktree')}
+                  className={`rounded-2 border px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    selectedLocation === 'worktree'
+                      ? 'border-accent bg-accent-muted text-fg-1'
+                      : 'border-border-1 bg-surface-well text-fg-2'
+                  }`}
+                >
+                  <span className="block font-medium">Add worktree</span>
+                  <span className="mt-0.5 block text-fg-3">
+                    Create an isolated checkout
+                  </span>
+                </button>
+              </div>
+            </fieldset>
+
+            {selectedLocation === 'worktree' && (
+              <fieldset className="mb-4">
+                <legend className="mb-1 text-xs text-fg-2">
+                  Worktree name
+                </legend>
+                <div className="flex gap-3 text-xs text-fg-2">
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="radio"
+                      name="worktree-naming"
+                      checked={worktreeNaming === 'automatic'}
+                      onChange={() => setWorktreeNaming('automatic')}
+                      disabled={isStreaming}
+                      data-testid="worktree-name-automatic"
+                    />
+                    Assign automatically
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="radio"
+                      name="worktree-naming"
+                      checked={worktreeNaming === 'custom'}
+                      onChange={() => setWorktreeNaming('custom')}
+                      disabled={isStreaming}
+                      data-testid="worktree-name-custom"
+                    />
+                    Choose a name
+                  </label>
+                </div>
+                {worktreeNaming === 'custom' && (
+                  <div className="mt-2">
+                    <Input
+                      value={worktreeName}
+                      onChange={(e) => setWorktreeName(e.target.value)}
+                      placeholder="my-worktree"
+                      disabled={isStreaming}
+                      data-testid="worktree-name-input"
+                      aria-invalid={customNameInvalid}
+                    />
+                    {customNameInvalid && worktreeName.trim() !== '' && (
+                      <p className="mt-1 text-xs text-danger">
+                        Use 1–63 lowercase letters, numbers, or hyphens.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </fieldset>
+            )}
+
+            {/* Source selection is intentionally below location + naming. Changing it
+                swaps only the source-specific controls that follow. */}
+            <div className="mb-4" data-testid="source-section">
               <p className="mb-1.5 text-xs font-medium uppercase tracking-caps text-fg-3">
                 Source
               </p>
@@ -475,18 +522,6 @@ export function NewWorkspaceDialog({
                 ))}
               </div>
             </div>
-
-            {/* Harness (shared across all source tabs) */}
-            <label className="mb-4 block">
-              <span className="mb-1 block text-xs text-fg-2">Harness</span>
-              <Select
-                value={harness}
-                onChange={(e) => setHarness(e.target.value as HarnessId)}
-                disabled={isStreaming}
-                className="w-full"
-                options={HARNESS_OPTIONS}
-              />
-            </label>
 
             {/* --- Branch tab --- */}
             {activeTab === 'branch' && (
@@ -533,7 +568,8 @@ export function NewWorkspaceDialog({
                       isStreaming ||
                       branchListLoading ||
                       branchListError !== null ||
-                      baseBranch.trim() === ''
+                      baseBranch.trim() === '' ||
+                      customNameInvalid
                     }
                   >
                     {isStreaming ? 'Creating…' : 'Create'}
@@ -545,114 +581,71 @@ export function NewWorkspaceDialog({
             {/* --- From PR / From issue tabs --- */}
             {activeTab !== 'branch' && (
               <div data-testid={`${activeTab}-list`}>
+                {activeTab === 'pr' && selectedLocation === 'project' ? (
+                  <p
+                    className="mb-3 rounded-2 border border-warn/30 bg-warn-muted px-2.5 py-2 text-xs text-warn"
+                    data-testid="pr-location-warning"
+                  >
+                    Pull requests require an isolated worktree. Select Add
+                    worktree above to continue.
+                  </p>
+                ) : null}
                 {listLoading && (
                   <p className="py-4 text-center text-xs text-fg-3">Loading…</p>
                 )}
 
-                {/* No-account (or error) empty state — the invoke rejected. GitHub tabs
-                    show a static hint; the Linear tab shows an inline connect affordance. */}
+                {/* No-account (or error) empty state — the invoke rejected. */}
                 {!listLoading &&
                   listError !== null &&
-                  activeTab !== 'linear' && (
-                    listError === 'no GitHub account connected' ? (
-                      <div
-                        data-testid="github-empty"
-                        className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
-                      >
-                        <p className="text-sm text-fg-2 text-center">
-                          Connect GitHub to list{' '}
-                          {activeTab === 'pr' ? 'pull requests' : 'issues'}.
-                        </p>
-                        <p className="mt-1 text-center text-xs text-fg-3">
-                          Paste a GitHub personal access token with repo access.
-                        </p>
-                        <div className="mt-2 flex gap-2">
-                          <Input
-                            type="password"
-                            value={githubToken}
-                            onChange={(e) => setGithubToken(e.target.value)}
-                            placeholder="github_pat_…"
-                            disabled={connecting}
-                            data-testid="github-token-input"
-                            className="flex-1"
-                          />
-                          <Button
-                            type="button"
-                            variant="primary"
-                            onClick={() => void handleConnectGithub()}
-                            disabled={connecting || githubToken.trim() === ''}
-                            data-testid="github-connect-submit"
-                          >
-                            {connecting ? 'Connecting…' : 'Connect'}
-                          </Button>
-                        </div>
-                        {connectError && (
-                          <p
-                            data-testid="github-connect-error"
-                            className="mt-2 text-xs text-danger"
-                          >
-                            {connectError}
-                          </p>
-                        )}
-                      </div>
-                    ) : (
-                      <div
-                        data-testid="github-list-error"
-                        className="rounded-2 border border-danger/30 bg-danger-muted px-3 py-4"
-                      >
-                        <p
-                          className="text-xs text-danger"
-                        >
-                          {listError}
-                        </p>
-                      </div>
-                    )
-                  )}
-
-                {/* Linear no-account empty state: inline API-key connect. */}
-                {!listLoading &&
-                  listError !== null &&
-                  activeTab === 'linear' && (
+                  (listError === 'no GitHub account connected' ? (
                     <div
-                      data-testid="linear-connect"
+                      data-testid="github-empty"
                       className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
                     >
-                      <p className="text-sm text-fg-2">Connect Linear</p>
-                      <p className="mt-1 text-xs text-fg-3">
-                        Paste a Linear API key (starts with{' '}
-                        <code className="text-fg-2">lin_api_</code>) to list
-                        your issues.
+                      <p className="text-sm text-fg-2 text-center">
+                        Connect GitHub to list{' '}
+                        {activeTab === 'pr' ? 'pull requests' : 'issues'}.
+                      </p>
+                      <p className="mt-1 text-center text-xs text-fg-3">
+                        Paste a GitHub personal access token with repo access.
                       </p>
                       <div className="mt-2 flex gap-2">
                         <Input
                           type="password"
-                          value={linearToken}
-                          onChange={(e) => setLinearToken(e.target.value)}
-                          placeholder="lin_api_…"
+                          value={githubToken}
+                          onChange={(e) => setGithubToken(e.target.value)}
+                          placeholder="github_pat_…"
                           disabled={connecting}
-                          data-testid="linear-token-input"
+                          data-testid="github-token-input"
                           className="flex-1"
                         />
                         <Button
                           type="button"
                           variant="primary"
-                          onClick={() => void handleConnectLinear()}
-                          disabled={connecting || linearToken.trim() === ''}
-                          data-testid="linear-connect-submit"
+                          onClick={() => void handleConnectGithub()}
+                          disabled={connecting || githubToken.trim() === ''}
+                          data-testid="github-connect-submit"
                         >
                           {connecting ? 'Connecting…' : 'Connect'}
                         </Button>
                       </div>
                       {connectError && (
                         <p
-                          data-testid="linear-connect-error"
+                          data-testid="github-connect-error"
                           className="mt-2 text-xs text-danger"
                         >
                           {connectError}
                         </p>
                       )}
                     </div>
-                  )}
+                  ) : (
+                    <div
+                      data-testid="github-list-error"
+                      className="rounded-2 border border-danger/30 bg-danger-muted px-3 py-4"
+                    >
+                      <p className="text-xs text-danger">{listError}</p>
+                    </div>
+                  ))}
 
                 {/* PR list */}
                 {!listLoading &&
@@ -664,7 +657,11 @@ export function NewWorkspaceDialog({
                         <li key={pr.number}>
                           <button
                             type="button"
-                            disabled={isStreaming}
+                            disabled={
+                              isStreaming ||
+                              customNameInvalid ||
+                              selectedLocation === 'project'
+                            }
                             onClick={() => handleSelectPr(pr)}
                             data-testid="pr-item"
                             data-pr-number={pr.number}
@@ -697,7 +694,7 @@ export function NewWorkspaceDialog({
                         <li key={issue.number}>
                           <button
                             type="button"
-                            disabled={isStreaming}
+                            disabled={isStreaming || customNameInvalid}
                             onClick={() => handleSelectIssue(issue)}
                             data-testid="issue-item"
                             data-issue-number={issue.number}
@@ -716,38 +713,6 @@ export function NewWorkspaceDialog({
                   ) : (
                     <p className="py-4 text-center text-xs text-fg-3">
                       No open issues.
-                    </p>
-                  ))}
-
-                {/* Linear issue list */}
-                {!listLoading &&
-                  listError === null &&
-                  activeTab === 'linear' &&
-                  (linearIssues && linearIssues.length > 0 ? (
-                    <ul className="max-h-64 space-y-1 overflow-y-auto">
-                      {linearIssues.map((issue) => (
-                        <li key={issue.id}>
-                          <button
-                            type="button"
-                            disabled={isStreaming}
-                            onClick={() => handleSelectLinearIssue(issue)}
-                            data-testid="linear-issue-item"
-                            data-issue-id={issue.id}
-                            className="w-full rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:border-border-2 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <span className="block truncate text-sm text-fg-1">
-                              {issue.identifier} · {issue.title}
-                            </span>
-                            <span className="text-xs text-fg-3">
-                              {issue.state ?? 'no state'}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="py-4 text-center text-xs text-fg-3">
-                      No Linear issues.
                     </p>
                   ))}
               </div>

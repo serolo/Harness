@@ -46,6 +46,7 @@ import type {
   TodoInput,
 } from './review';
 import type {
+  CompletionSound,
   EffectiveSettings,
   SettingsIssue,
   SettingsProvenance,
@@ -92,7 +93,8 @@ export type CloneProgress =
 /**
  * Chunks streamed over the `workspace:create` scoped stream (Phase 1). `phase` frames
  * mark lifecycle steps, `setupLog` frames carry combined stdout/stderr from the setup
- * script, and the terminal `created` frame carries the persisted `Workspace`. APPEND-ONLY.
+ * script. The `created` frame carries the persisted `Workspace` before setup starts,
+ * allowing creation UI to close while setup continues. APPEND-ONLY.
  */
 export type WorkspaceCreateEvent =
   | {
@@ -137,7 +139,7 @@ export interface Commands {
   };
   /** Fetch a single workspace DTO by id, or null if it does not exist. */
   'workspace:get': { req: { id: string }; res: Workspace | null };
-  /** Archive a workspace (worktree removed, DB rows kept, status `archived`). */
+  /** Archive a workspace; configured policy decides whether its worktree is removed. */
   'workspace:archive': { req: { id: string }; res: void };
   /** Restore an archived workspace (worktree re-created, status back to `idle`). */
   'workspace:restore': { req: { id: string }; res: Workspace };
@@ -310,6 +312,42 @@ export interface Commands {
   };
   /** Settings-gated workflow-state transition (e.g. on PR open/merge). */
   'linear:transition': { req: { issueId: string; stateId: string }; res: void };
+
+  // --- Workspace archive safety (APPEND-ONLY) ---
+  /** Inspect dirty state and deletion behavior before confirming an archive. */
+  'workspace:archivePreview': {
+    req: { id: string };
+    res: WorkspaceArchivePreview;
+  };
+
+  // --- External workspace applications (APPEND-ONLY) ---
+  /** Detect supported applications currently registered with macOS. */
+  'workspace:listOpenApps': { req: void; res: WorkspaceOpenApp[] };
+  /** Open a workspace checkout in one detected application. */
+  'workspace:openInApp': {
+    req: { workspaceId: string; appId: WorkspaceOpenAppId };
+    res: void;
+  };
+
+  // --- Workspace context-menu actions (APPEND-ONLY) ---
+  /** Update user-controlled workspace metadata and/or its visible lifecycle status. */
+  'workspace:update': {
+    req: {
+      id: string;
+      name?: string;
+      status?: Workspace['status'];
+      isUnread?: boolean;
+      isPinned?: boolean;
+    };
+    res: Workspace;
+  };
+
+  // --- Completion-sound settings (APPEND-ONLY) ---
+  /** Preview one allowlisted macOS completion sound from Settings. */
+  'notifications:previewSound': {
+    req: { sound: CompletionSound };
+    res: void;
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -328,7 +366,11 @@ export interface Events {
   // --- Active from Phase 1 ---
   'workspace:status': { workspaceId: string; status: Workspace['status'] };
   'workspace:created': { workspace: Workspace };
-  'workspace:archived': { workspaceId: string };
+  'workspace:archived': {
+    workspaceId: string;
+    /** Null when deleted; retained when archive deletion is disabled. */
+    worktreePath?: string | null;
+  };
 
   // --- Reserved for later phases (typed now, emitted later) ---
   /** Reserved (Phase 2): a single streamed AgentEvent chunk for a turn. */
@@ -465,6 +507,27 @@ export interface HarnessInfo {
 /** External IDEs that can be launched at a workspace worktree. */
 export type IdeName = 'cursor' | 'code';
 
+/** Safe allowlisted applications that can open a workspace checkout. */
+export type WorkspaceOpenAppId =
+  | 'finder'
+  | 'terminal'
+  | 'iterm'
+  | 'warp'
+  | 'vscode'
+  | 'cursor'
+  | 'sublime'
+  | 'xcode'
+  | 'webstorm'
+  | 'fork'
+  | 'devin';
+
+/** An allowlisted application that macOS reports as installed. */
+export interface WorkspaceOpenApp {
+  id: WorkspaceOpenAppId;
+  label: string;
+  kind: 'finder' | 'terminal' | 'editor' | 'git';
+}
+
 /** Start argument for the `pty:open` stream. `cols`/`rows` seed the initial viewport. */
 export interface PtyOpenArg {
   workspaceId: string;
@@ -503,6 +566,13 @@ export interface RunScriptInfo {
   icon?: string;
   running: boolean;
   runId?: string;
+}
+
+/** Safety information shown before archiving a workspace. */
+export interface WorkspaceArchivePreview {
+  hasUncommittedChanges: boolean;
+  changedFileCount: number;
+  willDeleteWorktree: boolean;
 }
 
 // --- Phase 6 DTOs (APPEND-ONLY) ----------------------------------------------

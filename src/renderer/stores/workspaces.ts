@@ -3,8 +3,8 @@
 // Phase 0 seeded this empty. Phase 1 extends it with:
 //  - `selectedProjectId` — which project's workspaces the sidebar shows.
 //  - `upsertProject`    — insert or replace a Project by id (used after add/clone).
-//  - `markArchived`     — flip a workspace to `archived` and null its worktreePath
-//                         (used by the `workspace:archived` event handler in hooks.ts).
+//  - `markArchived`     — flip a workspace to `archived` and update its retained/null
+//                         checkout path (used by the archived event handler).
 //
 // Everything already here (setProjects, setWorkspaces, upsertWorkspace,
 // selectWorkspace, selectedWorkspaceId) is preserved unchanged.
@@ -35,6 +35,8 @@ export interface WorkspacesState {
   setProjects: (projects: Project[]) => void;
   /** Replace the full workspace list. */
   setWorkspaces: (workspaces: Workspace[]) => void;
+  /** Replace only one project's workspaces while retaining every other project. */
+  setProjectWorkspaces: (projectId: string, workspaces: Workspace[]) => void;
   /** Insert or update a single workspace (by id). */
   upsertWorkspace: (workspace: Workspace) => void;
   /** Focus a workspace (or clear focus with null). */
@@ -50,11 +52,9 @@ export interface WorkspacesState {
    */
   upsertProject: (project: Project) => void;
   /**
-   * Mark a workspace as archived in place: sets `status` to `'archived'` and
-   * `worktreePath` to null. Called by the `workspace:archived` event subscriber in
-   * `hooks.ts` so the sidebar badge updates without waiting for a cache refetch.
+   * Mark a workspace as archived in place and reflect whether its checkout was kept.
    */
-  markArchived: (id: string) => void;
+  markArchived: (id: string, worktreePath?: string | null) => void;
 }
 
 /**
@@ -70,6 +70,27 @@ export const useWorkspacesStore = create<WorkspacesState>((set) => ({
   setProjects: (projects) => set({ projects }),
 
   setWorkspaces: (workspaces) => set({ workspaces }),
+
+  setProjectWorkspaces: (projectId, workspaces) =>
+    set((state) => {
+      const current = state.workspaces.filter(
+        (workspace) => workspace.projectId === projectId,
+      );
+      if (
+        current.length === workspaces.length &&
+        current.every((workspace, index) => workspace === workspaces[index])
+      ) {
+        return state;
+      }
+      return {
+        workspaces: [
+          ...state.workspaces.filter(
+            (workspace) => workspace.projectId !== projectId,
+          ),
+          ...workspaces,
+        ],
+      };
+    }),
 
   upsertWorkspace: (workspace) =>
     set((state) => {
@@ -99,12 +120,16 @@ export const useWorkspacesStore = create<WorkspacesState>((set) => ({
       return { projects: next };
     }),
 
-  markArchived: (id) =>
+  markArchived: (id, worktreePath) =>
     set((state) => {
       const idx = state.workspaces.findIndex((w) => w.id === id);
       if (idx === -1) return state;
       const next = state.workspaces.slice();
-      next[idx] = { ...next[idx], status: 'archived', worktreePath: null };
+      next[idx] = {
+        ...next[idx],
+        status: 'archived',
+        worktreePath: worktreePath ?? null,
+      };
       return { workspaces: next };
     }),
 }));

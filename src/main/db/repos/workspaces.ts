@@ -7,6 +7,7 @@
 import { v7 as uuidv7 } from 'uuid';
 import type {
   Workspace,
+  WorkspaceLocation,
   WorkspaceSourceKind,
   WorkspaceStatus,
 } from '@shared/models';
@@ -30,6 +31,9 @@ export interface CreateWorkspaceInput {
   sourceRef?: string | null;
   port?: number | null;
   prNumber?: number | null;
+  location?: WorkspaceLocation;
+  isUnread?: boolean;
+  isPinned?: boolean;
 }
 
 /**
@@ -48,6 +52,9 @@ export interface UpdateWorkspaceInput {
   port?: number | null;
   archivedAt?: number | null;
   prNumber?: number | null;
+  location?: WorkspaceLocation;
+  isUnread?: boolean;
+  isPinned?: boolean;
 }
 
 /** Map a DB row to the shared `Workspace` DTO (snake_case → camelCase). */
@@ -67,6 +74,9 @@ function rowToWorkspace(row: WorkspacesTable): Workspace {
     createdAt: row.created_at,
     archivedAt: row.archived_at,
     prNumber: row.pr_number,
+    location: row.location,
+    isUnread: row.is_unread === 1,
+    isPinned: row.is_pinned === 1,
   };
 }
 
@@ -92,6 +102,9 @@ export class WorkspacesRepo {
       harness: input.harness,
       port: input.port ?? null,
       pr_number: input.prNumber ?? null, // migration 0007 — set when a PR is opened (or seeded from a PR source)
+      location: input.location ?? 'worktree',
+      is_unread: input.isUnread ? 1 : 0,
+      is_pinned: input.isPinned ? 1 : 0,
       created_at: Date.now(),
       archived_at: null,
     };
@@ -162,6 +175,9 @@ export class WorkspacesRepo {
     if (patch.port !== undefined) set.port = patch.port;
     if (patch.archivedAt !== undefined) set.archived_at = patch.archivedAt;
     if (patch.prNumber !== undefined) set.pr_number = patch.prNumber;
+    if (patch.location !== undefined) set.location = patch.location;
+    if (patch.isUnread !== undefined) set.is_unread = patch.isUnread ? 1 : 0;
+    if (patch.isPinned !== undefined) set.is_pinned = patch.isPinned ? 1 : 0;
 
     // Nothing to change → return the current row unmodified.
     if (Object.keys(set).length === 0) {

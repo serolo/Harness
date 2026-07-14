@@ -1,6 +1,4 @@
-// Root React component (Phase 0): composes the app-wide providers around the 3-pane
-// layout. The IPC-OK indicator is hosted inside AppLayout (left-rail footer) so it is
-// always visible; App just wires providers → layout.
+// Root React component: composes the app-wide providers around the 3-pane layout.
 
 import { Providers } from '@renderer/app/providers';
 import { AppLayout } from '@renderer/app/AppLayout';

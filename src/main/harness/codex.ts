@@ -368,6 +368,9 @@ export function buildArgs(opts: StartTurnOpts): string[] {
     args.push('--mcp-config', mcpConfigPath);
   }
 
+  // Phase 12: `opts.model` is Claude-specific (preset aliases target `claude --model`);
+  // codex keeps its CLI default and ignores it (design doc §2 out-of-scope).
+
   // `--` ends flag parsing; the prompt then cannot be read as an option even if it
   // begins with a dash. This is the last argument.
   args.push('--', prompt);

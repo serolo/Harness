@@ -186,7 +186,9 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     await renderComposerFor('claude_code');
     fireEvent.click(await screen.findByTestId('composer-model'));
 
-    expect(await screen.findByTestId('composer-model-menu')).toBeInTheDocument();
+    expect(
+      await screen.findByTestId('composer-model-menu'),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('composer-model-claude_code')).toHaveTextContent(
       'Claude Code',
     );

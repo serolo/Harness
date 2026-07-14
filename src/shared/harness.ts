@@ -29,6 +29,8 @@ export interface StartTurnOpts {
   mode?: AgentMode; // "plan" | "default" | "auto_accept"
   mcpConfig: McpServerConfig[];
   permissionPolicy: PermissionPolicy;
+  /** Optional model override passed to the CLI (e.g. `--model sonnet`). APPEND-ONLY (Phase 12). */
+  model?: string;
 }
 
 export interface TurnHandle {

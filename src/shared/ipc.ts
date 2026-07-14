@@ -52,6 +52,7 @@ import type {
   WritableSettingLayer,
 } from './settings';
 import type { SlashCommand } from './slash';
+import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
 
 /**
  * Main-side push handle produced by the stream helper `createStream()`
@@ -310,6 +311,20 @@ export interface Commands {
   };
   /** Settings-gated workflow-state transition (e.g. on PR open/merge). */
   'linear:transition': { req: { issueId: string; stateId: string }; res: void };
+
+  // --- Phase 12: per-workspace scheduled agent tasks (APPEND-ONLY) ---
+  /** List a workspace's tasks (created_at ASC; the UI does any display grouping). */
+  'task:list': { req: { workspaceId: string }; res: ScheduledTask[] };
+  /** Create a task (state derived: scheduledAt present → 'scheduled', absent → 'pending'). */
+  'task:create': { req: CreateTaskReq; res: ScheduledTask };
+  /** Edit prompt/model/mode/schedule. Rejected with 'conflict' while running. */
+  'task:update': { req: UpdateTaskReq; res: ScheduledTask };
+  /** Delete a task. Rejected with 'conflict' while running. */
+  'task:delete': { req: { id: string }; res: void };
+  /** Fire a task immediately (queues if the workspace is busy). */
+  'task:runNow': { req: { id: string }; res: ScheduledTask };
+  /** Manually mark a task done without running it. */
+  'task:markDone': { req: { id: string }; res: ScheduledTask };
 }
 
 export type CommandChannel = keyof Commands;
@@ -359,6 +374,10 @@ export interface Events {
    * `selectWorkspace:<n>`); the renderer dispatches it against the current UI.
    */
   'menu:action': { actionId: string };
+
+  // --- Phase 12: scheduled tasks (APPEND-ONLY) ---
+  /** A scheduled task for this workspace changed (created/updated/fired/finished). */
+  'task:changed': { workspaceId: string };
 }
 
 export type EventChannel = keyof Events;

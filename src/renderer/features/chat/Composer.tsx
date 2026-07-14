@@ -146,7 +146,8 @@ export function Composer({
   }, [harnessInfoById, selectedModel]);
   const selectedHarnessInfo =
     selectedModel === undefined ? undefined : harnessInfoById[selectedModel];
-  const supportsPlan = selectedHarnessInfo?.capabilities.supportsPlanMode ?? true;
+  const supportsPlan =
+    selectedHarnessInfo?.capabilities.supportsPlanMode ?? true;
   const canSend = !isBusy && !disabled && text.trim().length > 0;
   const activeSlashQuery = slashQuery(text);
   const slashMatches = useMemo(
@@ -201,10 +202,7 @@ export function Composer({
   }
 
   return (
-    <div
-      className="shrink-0 bg-surface-app px-6 pb-5"
-      data-testid="composer"
-    >
+    <div className="shrink-0 bg-surface-app px-6 pb-5" data-testid="composer">
       <div className="relative mx-auto w-full max-w-[1120px]">
         {slashOpen ? (
           <div

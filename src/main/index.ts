@@ -48,6 +48,8 @@ import { DiffCommentsRepo } from './db/repos/comments';
 import { CheckpointService } from './checkpoint';
 import { CheckpointsRepo } from './db/repos/checkpoints';
 import { TodosRepo } from './db/repos/todos';
+import { ScheduledTasksRepo } from './db/repos/tasks';
+import { TaskScheduler } from './scheduler';
 import { ChecksService } from './checks';
 import { IntegrationService } from './integrations';
 import { LinearService } from './integrations/linear';
@@ -339,6 +341,12 @@ function createAppContext(): AppContext {
     diff,
   });
 
+  // Phase 12: forward-declared so the harness `onTurnEnd` hook (below) can drain the
+  // workspace's queued tasks; assigned after the supervisor is constructed. `let` is
+  // required (not const) because that closure captures `scheduler` before this assignment.
+  // eslint-disable-next-line prefer-const -- forward-referenced by the onTurnEnd closure above its assignment
+  let scheduler: TaskScheduler | undefined;
+
   // The harness supervisor owns live turns + drives status through the turn lifecycle.
   // Phase 4 wires two best-effort hooks: persist the agent's todo set on each
   // `todo_update`, and — after a turn finalizes — snapshot a checkpoint, recompute the
@@ -358,6 +366,9 @@ function createAppContext(): AppContext {
       });
     },
     onTurnEnd: (workspaceId, turnId) => {
+      // Phase 12: drain the workspace's queued scheduled tasks (FIFO, one per turn-end).
+      // Fire-and-forget with its own error handling inside the scheduler.
+      scheduler?.onWorkspaceTurnEnd(workspaceId);
       void (async () => {
         // Snapshot the worktree under refs/checkpoints/<ws>/<idx> (best-effort).
         try {
@@ -389,6 +400,21 @@ function createAppContext(): AppContext {
         }
       })();
     },
+  });
+
+  // Phase 12: scheduled tasks — the repo + the firing service. The scheduler goes
+  // ENTIRELY through the supervisor (persistence/status/notifications come free), resolves
+  // the workspace's last session id as the resume mechanism, and mirrors each fired turn's
+  // events to the reserved `turn:event` broadcast. `start()`/`stop()` are wired in
+  // `whenReady`/`before-quit` below.
+  const tasks = new ScheduledTasksRepo(db);
+  scheduler = new TaskScheduler({
+    repo: tasks,
+    harness,
+    getWorkspace: (id) => workspaces.get(id),
+    settings: { get: () => settings.get() },
+    latestSessionId: (workspaceId) => recorder.latestSessionId(workspaceId),
+    emit,
   });
 
   // Register the harness backing the frozen `claude_code` id (D2): the real CLI
@@ -469,6 +495,8 @@ function createAppContext(): AppContext {
     prWorkflow,
     onboarding,
     updater,
+    tasks,
+    scheduler,
   };
 
   return ctx;
@@ -692,6 +720,14 @@ if (!gotSingleInstanceLock) {
     registerIpc(ctx);
     logger.info('[startup] IPC registered');
 
+    // Phase 12: reconcile scheduled tasks at boot (overdue → missed), then start the tick
+    // loop. Fire-and-forget; a failure is logged inside the service and never blocks boot.
+    void ctx.scheduler
+      .start()
+      .catch((err) =>
+        logger.error(`[startup] scheduler start failed: ${String(err)}`),
+      );
+
     createWindow();
     logger.info('[startup] window created');
 
@@ -749,6 +785,14 @@ if (!gotSingleInstanceLock) {
       ctx.updater.dispose();
     } catch (err) {
       logger.error(`[shutdown] updater teardown failed: ${String(err)}`);
+    }
+    // Phase 12: stop the scheduler tick loop. In-flight scheduler turns are interrupted by
+    // the `harness.quitAll()` below; their stale `running` rows are fixed on next boot's
+    // reconcile.
+    try {
+      ctx.scheduler.stop();
+    } catch (err) {
+      logger.error(`[shutdown] scheduler teardown failed: ${String(err)}`);
     }
     // Phase 5: detach the per-window focus-refresh listener so it can't fire (or retain
     // the window) during/after teardown. Mirrors the diff-watcher teardown above.

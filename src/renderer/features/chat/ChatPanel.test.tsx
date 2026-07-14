@@ -207,7 +207,9 @@ describe('ChatPanel streaming', () => {
   });
 
   it('shows a pre-start stream error instead of dropping it', async () => {
-    const stream = vi.fn(() => Promise.reject(new Error('claude not available')));
+    const stream = vi.fn(() =>
+      Promise.reject(new Error('claude not available')),
+    );
     installApi({ stream });
 
     render(<ChatPanel workspaceId="ws1" />);

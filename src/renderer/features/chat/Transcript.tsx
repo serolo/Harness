@@ -11,13 +11,20 @@ import { FileEditChip } from './FileEditChip';
 import { TodoList } from './TodoList';
 import { ErrorCard } from './ErrorCard';
 import { TurnDivider } from './TurnDivider';
+import { LimitResumeOffer } from './LimitResumeOffer';
 
 export interface TranscriptProps {
   turns: RenderedTurn[];
+  /** The workspace this transcript belongs to; threads into the limit-resume offer. */
+  workspaceId?: string | null;
 }
 
 /** Render one AgentEvent to its card/component. */
-function renderEvent(event: AgentEvent, key: string): React.JSX.Element | null {
+function renderEvent(
+  event: AgentEvent,
+  key: string,
+  workspaceId?: string | null,
+): React.JSX.Element | null {
   switch (event.kind) {
     case 'text':
       return <TextMessage key={key} delta={event.delta} />;
@@ -37,7 +44,17 @@ function renderEvent(event: AgentEvent, key: string): React.JSX.Element | null {
     case 'todo_update':
       return <TodoList key={key} todos={event.todos} />;
     case 'error':
-      return <ErrorCard key={key} message={event.message} />;
+      return (
+        <div key={key}>
+          <ErrorCard message={event.message} />
+          {workspaceId ? (
+            <LimitResumeOffer
+              workspaceId={workspaceId}
+              message={event.message}
+            />
+          ) : null}
+        </div>
+      );
     case 'turn_end':
       return null; // represented by the TurnDivider
     default:
@@ -45,7 +62,10 @@ function renderEvent(event: AgentEvent, key: string): React.JSX.Element | null {
   }
 }
 
-export function Transcript({ turns }: TranscriptProps): React.JSX.Element {
+export function Transcript({
+  turns,
+  workspaceId,
+}: TranscriptProps): React.JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
@@ -83,7 +103,7 @@ export function Transcript({ turns }: TranscriptProps): React.JSX.Element {
           >
             <div className="space-y-5">
               {turn.events.map((event, i) =>
-                renderEvent(event, `${turn.turnId}-${i}`),
+                renderEvent(event, `${turn.turnId}-${i}`, workspaceId),
               )}
             </div>
             <TurnDivider status={turn.status} usage={turn.usage} />

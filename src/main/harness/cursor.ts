@@ -145,6 +145,9 @@ export function buildCommand(opts: StartTurnOpts): RawCommand {
     args.push('--force');
   }
 
+  // Phase 12: `opts.model` is Claude-specific; cursor-agent keeps its CLI default and
+  // ignores it (design doc §2 out-of-scope).
+
   // `--` ends flag parsing; the prompt is the final, discrete argument.
   args.push('--', prompt);
   return { shell: CURSOR_BIN, args };

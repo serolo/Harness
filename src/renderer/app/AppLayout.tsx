@@ -24,6 +24,8 @@ import { IpcHealth } from '@renderer/components/IpcHealth';
 import { ChatPanel } from '@renderer/features/chat/ChatPanel';
 import { TerminalPanel } from '@renderer/features/terminal/TerminalPanel';
 import { DiffPanel } from '@renderer/features/diff/DiffPanel';
+import { TasksPanel } from '@renderer/features/tasks/TasksPanel';
+import { useSchedulerTurnEvents } from '@renderer/features/tasks/useSchedulerTurnEvents';
 import { ChecksPanel } from '@renderer/features/checks/ChecksPanel';
 import { SettingsPanel } from '@renderer/features/settings/SettingsPanel';
 import { CommandPalette } from '@renderer/features/palette/CommandPalette';
@@ -47,12 +49,13 @@ function PanePlaceholder({ label }: { label: string }): React.JSX.Element {
 }
 
 /** Which view the center pane shows for the selected workspace. */
-type CenterTab = 'chat' | 'terminal' | 'diff';
+type CenterTab = 'chat' | 'terminal' | 'diff' | 'tasks';
 
 const CENTER_TABS: { id: CenterTab; label: string }[] = [
   { id: 'chat', label: 'Chat' },
   { id: 'terminal', label: 'Terminal' },
   { id: 'diff', label: 'Diff' },
+  { id: 'tasks', label: 'Tasks' },
 ];
 
 // `-webkit-app-region` is a WebKit/Electron-only CSS property with no Tailwind utility —
@@ -78,6 +81,10 @@ export function AppLayout(): React.JSX.Element {
 
   const togglePalette = useUiStore((s) => s.togglePalette);
   const setNewWorkspaceOpen = useUiStore((s) => s.setNewWorkspaceOpen);
+
+  // Phase 12: route scheduler-fired turn events (the reserved `turn:event` broadcast) into
+  // the shared chat store so a task firing in any workspace is visible there. Mounted once.
+  useSchedulerTurnEvents();
 
   const activeWorkspaceName = useMemo(
     () => workspaces.find((w) => w.id === selectedWorkspaceId)?.name ?? null,
@@ -246,8 +253,10 @@ export function AppLayout(): React.JSX.Element {
               <ChatPanel workspaceId={selectedWorkspaceId} />
             ) : centerTab === 'terminal' ? (
               <TerminalPanel workspaceId={selectedWorkspaceId} />
-            ) : (
+            ) : centerTab === 'diff' ? (
               <DiffPanel workspaceId={selectedWorkspaceId} />
+            ) : (
+              <TasksPanel workspaceId={selectedWorkspaceId} />
             )}
           </div>
         </main>

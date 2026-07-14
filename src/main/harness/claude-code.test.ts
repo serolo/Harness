@@ -60,3 +60,31 @@ describe('Claude Code adapter — MCP passthrough (settings → .mcp.json)', () 
     expect(args).not.toContain('--mcp-config');
   });
 });
+
+describe('Claude Code adapter — model threading (Phase 12)', () => {
+  it('emits ["--model", value] as two discrete argv elements', () => {
+    const args = buildArgs({ ...opts([]), model: 'sonnet' });
+    const i = args.indexOf('--model');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe('sonnet');
+  });
+
+  it('omits --model entirely when opts.model is undefined', () => {
+    const args = buildArgs(opts([]));
+    expect(args).not.toContain('--model');
+  });
+
+  it('keeps a hostile model string a SINGLE inert argv element (never shell)', () => {
+    // Even a string full of shell metacharacters is passed as ONE argument under
+    // spawn(shell:false); it is never split or interpreted. (The IPC boundary rejects
+    // such a string via MODEL_PATTERN before it reaches here — this is defense in depth.)
+    const hostile = 'sonnet; rm -rf / #$(whoami)';
+    const args = buildArgs({ ...opts([]), model: hostile });
+    const i = args.indexOf('--model');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe(hostile);
+    // No other argv element contains a fragment of the injected payload.
+    const others = args.filter((_, idx) => idx !== i + 1);
+    expect(others.some((a) => a.includes('rm -rf'))).toBe(false);
+  });
+});

@@ -34,3 +34,13 @@ emitted**. Phase 3 delivers PTY output and run-script logs over **scoped streams
 scopes each stream to one pty/run (no per-frame id, natural teardown via the stream's `AbortSignal`)
 and matches the `turn:start` shape. The reserved entries are frozen/append-only — do **not** remove or
 reorder them; the only broadcast this phase emits is the existing `workspace:status` `running` overlay.
+
+## Phase 12 divergence — `turn:event` is now emitted (scheduler-only)
+The reserved broadcast `Events['turn:event']` (`{ workspaceId, turnId, event }`), typed since Phase 2
+and previously never emitted, is now emitted **by the `TaskScheduler` only** (`src/main/scheduler`).
+A scheduler-fired turn has no scoped `turn:start` stream (it runs in main, not from a renderer
+`api.stream`), so its `AgentEvent`s are mirrored to this broadcast; the renderer routes them into the
+shared chat store via `useSchedulerTurnEvents` (mounted once in `AppLayout`). **User-initiated turns
+keep flowing over the scoped `turn:start` stream** — the emitter set for `turn:event` MUST stay
+scheduler-only, or user turns would double-render. The `task:changed { workspaceId }` broadcast (also
+Phase 12) tells the renderer's Tasks tab to refetch after any task mutation.

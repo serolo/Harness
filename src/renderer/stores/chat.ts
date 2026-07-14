@@ -86,7 +86,10 @@ export const useChatStore = create<ChatState>((set) => ({
         return {
           byWorkspace: {
             ...state.byWorkspace,
-            [workspaceId]: [...turns.slice(0, -1), { ...turn, events: last.events }],
+            [workspaceId]: [
+              ...turns.slice(0, -1),
+              { ...turn, events: last.events },
+            ],
           },
         };
       }

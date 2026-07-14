@@ -42,8 +42,13 @@ import { AppError, encodeAppErrorMessage } from '@shared/errors';
 import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
 import { TodosRepo } from '../db/repos/todos';
+import { MODEL_PATTERN, type TaskState } from '@shared/tasks';
+import { emitAll } from './events';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
-import { githubCliAuthStatus, githubCliToken } from '../integrations/github/ghCli';
+import {
+  githubCliAuthStatus,
+  githubCliToken,
+} from '../integrations/github/ghCli';
 import { discoverGitSshKeys } from '../git/sshKeys';
 import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
@@ -106,6 +111,34 @@ function trackForFocusRefresh(workspaceId: string): void {
  */
 export function focusRefreshWorkspaceIds(): string[] {
   return [...trackedFocusRefreshIds];
+}
+
+/** States a task can be `runNow`/`markDone` from (anything but `running`/`done`). */
+const RUNNABLE_TASK_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'pending',
+  'scheduled',
+  'missed',
+  'error',
+  'queued',
+]);
+
+/** Narrow an untrusted string to the closed `AgentMode` set. */
+function isAgentMode(value: unknown): boolean {
+  return value === 'plan' || value === 'default' || value === 'auto_accept';
+}
+
+/** True when a task may be fired / marked done (state gate for `task:runNow`/`markDone`). */
+function isRunnableState(state: TaskState): boolean {
+  return RUNNABLE_TASK_STATES.has(state);
+}
+
+/** Broadcast `task:changed` for a workspace to every open renderer (Phase 12). */
+function emitTaskChanged(workspaceId: string): void {
+  emitAll(
+    BrowserWindow.getAllWindows().map((w) => w.webContents),
+    'task:changed',
+    { workspaceId },
+  );
 }
 
 /**
@@ -348,7 +381,9 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
 
         const harnessOverride =
-          typeof arg.harness === 'string' ? (arg.harness as HarnessId) : undefined;
+          typeof arg.harness === 'string'
+            ? (arg.harness as HarnessId)
+            : undefined;
         if (
           harnessOverride !== undefined &&
           !['claude_code', 'codex', 'cursor'].includes(harnessOverride)
@@ -1127,7 +1162,10 @@ export function registerIpc(ctx: AppContext): void {
       if (frame.kind === 'connected') account = frame.account;
     });
     if (account === null) {
-      throw new AppError('integration', 'GitHub CLI connection did not complete');
+      throw new AppError(
+        'integration',
+        'GitHub CLI connection did not complete',
+      );
     }
     return account;
   });
@@ -1390,6 +1428,158 @@ export function registerIpc(ctx: AppContext): void {
   // update:install — quit + install a downloaded update. Rejects with a typed AppError
   // (through the boundary) when updates are unsupported or nothing is downloaded yet.
   handle('update:install', async () => ctx.updater.install());
+
+  // --- Phase 12: scheduled tasks (APPEND-ONLY) ---
+  // HEIGHTENED-SCRUTINY (IPC boundary): every handler narrows its untrusted payload
+  // before acting — non-empty strings, `scheduledAt` a POSITIVE integer (a past time is
+  // allowed; it simply fires on the next tick), `mode` in the closed AgentMode set,
+  // `model` against MODEL_PATTERN (rejecting whitespace/shell metacharacters BEFORE the
+  // string can reach spawn argv), and `origin` in its closed set. Every mutating handler
+  // broadcasts `task:changed { workspaceId }` so open renderers refetch.
+
+  // task:list — a workspace's scheduled tasks (created_at ASC).
+  handle('task:list', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    return ctx.tasks.list(req.workspaceId);
+  });
+
+  // task:create — create a task (state derived from whether a time is given). Validates
+  // every field and verifies the workspace exists before persisting.
+  handle('task:create', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    if (typeof req.prompt !== 'string' || req.prompt.trim() === '') {
+      throw new AppError('invalid_input', 'prompt is required');
+    }
+    if (
+      req.scheduledAt !== undefined &&
+      (!Number.isInteger(req.scheduledAt) || req.scheduledAt <= 0)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'scheduledAt must be a positive integer (epoch millis)',
+      );
+    }
+    if (req.mode !== undefined && !isAgentMode(req.mode)) {
+      throw new AppError(
+        'invalid_input',
+        'mode must be plan|default|auto_accept',
+      );
+    }
+    if (req.model !== undefined && !MODEL_PATTERN.test(req.model)) {
+      throw new AppError(
+        'invalid_input',
+        'model contains unsupported characters',
+      );
+    }
+    if (
+      req.origin !== undefined &&
+      req.origin !== 'user' &&
+      req.origin !== 'limit_resume'
+    ) {
+      throw new AppError('invalid_input', 'origin must be user|limit_resume');
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (!workspace) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    const task = await ctx.tasks.create(req);
+    emitTaskChanged(task.workspaceId);
+    return task;
+  });
+
+  // task:update — edit prompt/model/mode/schedule (nullable variants). The repo rejects a
+  // running task with `conflict` and re-derives state when the schedule changes.
+  handle('task:update', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    if (
+      req.prompt !== undefined &&
+      (typeof req.prompt !== 'string' || req.prompt.trim() === '')
+    ) {
+      throw new AppError('invalid_input', 'prompt must be a non-empty string');
+    }
+    if (
+      req.scheduledAt !== undefined &&
+      req.scheduledAt !== null &&
+      (!Number.isInteger(req.scheduledAt) || req.scheduledAt <= 0)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'scheduledAt must be a positive integer or null',
+      );
+    }
+    if (req.mode !== undefined && req.mode !== null && !isAgentMode(req.mode)) {
+      throw new AppError(
+        'invalid_input',
+        'mode must be plan|default|auto_accept',
+      );
+    }
+    if (
+      req.model !== undefined &&
+      req.model !== null &&
+      !MODEL_PATTERN.test(req.model)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'model contains unsupported characters',
+      );
+    }
+    const { id, ...patch } = req;
+    const task = await ctx.tasks.update(id, patch);
+    emitTaskChanged(task.workspaceId);
+    return task;
+  });
+
+  // task:delete — remove a task (repo rejects a running task with `conflict`). Fetch first
+  // so the `task:changed` broadcast carries the right workspaceId.
+  handle('task:delete', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    const task = await ctx.tasks.get(req.id);
+    await ctx.tasks.delete(req.id);
+    emitTaskChanged(task.workspaceId);
+  });
+
+  // task:runNow — fire immediately (queues if the workspace is busy). Only valid from a
+  // non-terminal, non-running state; the scheduler owns the actual firing.
+  handle('task:runNow', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    const task = await ctx.tasks.get(req.id);
+    if (!isRunnableState(task.state)) {
+      throw new AppError('conflict', `cannot run a ${task.state} task`, {
+        id: req.id,
+      });
+    }
+    const updated = await ctx.scheduler.runNow(req.id);
+    emitTaskChanged(updated.workspaceId);
+    return updated;
+  });
+
+  // task:markDone — mark a task done without running it (same state gate as runNow).
+  handle('task:markDone', async (req) => {
+    if (typeof req.id !== 'string' || req.id === '') {
+      throw new AppError('invalid_input', 'id is required');
+    }
+    const task = await ctx.tasks.get(req.id);
+    if (!isRunnableState(task.state)) {
+      throw new AppError('conflict', `cannot mark a ${task.state} task done`, {
+        id: req.id,
+      });
+    }
+    const updated = await ctx.tasks.setState(req.id, 'done');
+    emitTaskChanged(updated.workspaceId);
+    return updated;
+  });
 
   registerStreamControl(ctx);
 

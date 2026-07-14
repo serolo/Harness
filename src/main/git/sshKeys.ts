@@ -11,12 +11,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 
 import type { GitSshKey } from '@shared/git';
 
-const DEFAULT_IDENTITY_NAMES = [
-  'id_ed25519',
-  'id_ecdsa',
-  'id_rsa',
-  'id_dsa',
-];
+const DEFAULT_IDENTITY_NAMES = ['id_ed25519', 'id_ecdsa', 'id_rsa', 'id_dsa'];
 
 type Source = GitSshKey['source'];
 

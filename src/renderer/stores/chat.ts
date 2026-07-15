@@ -17,6 +17,8 @@ export interface RenderedTurn {
   status: TurnStatus;
   sessionId?: string;
   events: AgentEvent[];
+  startedAt?: number;
+  endedAt?: number;
   usage?: Usage;
 }
 
@@ -34,6 +36,7 @@ export interface ChatState {
     turnId: string,
     sessionId: string,
     initialEvent?: AgentEvent,
+    startedAt?: number,
   ) => void;
   /** Append one event to the workspace's latest (streaming) turn, coalescing text. */
   appendEvent: (workspaceId: string, event: AgentEvent) => void;
@@ -77,23 +80,28 @@ export const useChatStore = create<ChatState>((set) => ({
       byWorkspace: { ...state.byWorkspace, [workspaceId]: turns },
     })),
 
-  startTurn: (workspaceId, turnId, sessionId, initialEvent) =>
+  startTurn: (workspaceId, turnId, sessionId, initialEvent, startedAt) =>
     set((state) => {
       const turns = state.byWorkspace[workspaceId] ?? [];
+      const last = turns[turns.length - 1];
       const turn: RenderedTurn = {
         turnId,
         status: 'streaming',
         sessionId: sessionId || undefined,
         events: initialEvent ? [initialEvent] : [],
+        startedAt: startedAt ?? Date.now(),
       };
-      const last = turns[turns.length - 1];
       if (last?.turnId.startsWith('pending:') && last.status === 'streaming') {
         return {
           byWorkspace: {
             ...state.byWorkspace,
             [workspaceId]: [
               ...turns.slice(0, -1),
-              { ...turn, events: last.events },
+              {
+                ...turn,
+                events: last.events,
+                startedAt: last.startedAt ?? turn.startedAt,
+              },
             ],
           },
         };
@@ -119,7 +127,12 @@ export const useChatStore = create<ChatState>((set) => ({
       const turns = state.byWorkspace[workspaceId] ?? [];
       if (turns.length === 0) return state;
       const next = turns.slice();
-      next[next.length - 1] = { ...next[next.length - 1], status, usage };
+      next[next.length - 1] = {
+        ...next[next.length - 1],
+        status,
+        usage,
+        endedAt: Date.now(),
+      };
       return {
         byWorkspace: { ...state.byWorkspace, [workspaceId]: next },
       };

@@ -97,7 +97,7 @@ describe('WorkspaceItem context menu', () => {
     );
   });
 
-  it('renames inline and copies the stable workspace deep link', async () => {
+  it('renames from a modal and copies the stable workspace deep link', async () => {
     const invoke = installWorkspaceUpdateApi();
     const writeText = vi.fn(() => Promise.resolve());
     Object.defineProperty(navigator, 'clipboard', {
@@ -108,9 +108,11 @@ describe('WorkspaceItem context menu', () => {
 
     fireEvent.contextMenu(screen.getByTestId('workspace-item'));
     fireEvent.click(screen.getByTestId('workspace-menu-rename'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
     const input = screen.getByTestId('workspace-rename-input');
     fireEvent.change(input, { target: { value: 'Fix workspace menu' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByTestId('workspace-rename-branch-checkbox')).not.toBeChecked();
+    fireEvent.click(screen.getByText('Rename'));
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('workspace:update', {
         id: 'ws-1',
@@ -122,6 +124,31 @@ describe('WorkspaceItem context menu', () => {
     fireEvent.click(screen.getByTestId('workspace-menu-copy-link'));
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith('harness://workspace/ws-1'),
+    );
+  });
+
+  it('can rename the branch while leaving the worktree path unchanged', async () => {
+    const invoke = installWorkspaceUpdateApi();
+    renderItem();
+
+    fireEvent.contextMenu(screen.getByTestId('workspace-item'));
+    fireEvent.click(screen.getByTestId('workspace-menu-rename'));
+    const input = screen.getByTestId('workspace-rename-input');
+    fireEvent.change(input, {
+      target: { value: 'W2BT-21830/prev-stay-room (#42)' },
+    });
+    expect(
+      screen.getByText('agent/paris -> agent/w2bt-21830-prev-stay-room-42'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('workspace-rename-branch-checkbox'));
+    fireEvent.click(screen.getByText('Rename'));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('workspace:update', {
+        id: 'ws-1',
+        name: 'W2BT-21830/prev-stay-room (#42)',
+        renameBranch: true,
+      }),
     );
   });
 });

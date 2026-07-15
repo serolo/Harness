@@ -61,6 +61,7 @@ let tmpDir: string;
 let db: AppDatabase;
 let repo: ScheduledTasksRepo;
 let workspaceId: string;
+let recorderClear: ReturnType<typeof vi.fn>;
 
 const FAKE_EVENT = { sender: {} } as unknown as IpcMainInvokeEvent;
 
@@ -100,6 +101,7 @@ beforeEach(async () => {
     status: 'idle',
   });
   workspaceId = workspace.id;
+  recorderClear = vi.fn(async () => undefined);
 
   capturedHandlers.clear();
 
@@ -110,6 +112,9 @@ beforeEach(async () => {
     },
     scheduler: {
       runNow: async (id: string) => repo.setState(id, 'running'),
+    },
+    recorder: {
+      clear: recorderClear,
     },
   } as unknown as AppContext;
 
@@ -229,5 +234,19 @@ describe('task:runNow / task:markDone — state gating', () => {
     const task = await repo.create({ workspaceId, prompt: 'go' });
     expect(await invokeCode('task:markDone', { id: task.id })).toBe('OK');
     expect((await repo.get(task.id)).state).toBe('done');
+  });
+});
+
+describe('chat:clear — handler registration', () => {
+  it('clears the recorder for the requested workspace', async () => {
+    expect(await invokeCode('chat:clear', { workspaceId })).toBe('OK');
+    expect(recorderClear).toHaveBeenCalledWith(workspaceId);
+  });
+
+  it('rejects an empty workspaceId', async () => {
+    expect(await invokeCode('chat:clear', { workspaceId: '' })).toBe(
+      'invalid_input',
+    );
+    expect(recorderClear).not.toHaveBeenCalled();
   });
 });

@@ -35,6 +35,8 @@ import type {
 import type { AgentEvent } from '@shared/harness';
 import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
+import { childProcessEnv } from '../process/childEnv';
+import { resolveExecutable } from '../process/executable';
 import {
   RawTerminalTranscript,
   type RawCommand,
@@ -92,7 +94,10 @@ export class CursorHarness implements Harness {
    */
   async detect(): Promise<DetectResult> {
     try {
-      const { stdout } = await execa(CURSOR_BIN, ['--version']);
+      const { stdout } = await execa(resolveExecutable(CURSOR_BIN), ['--version'], {
+        env: childProcessEnv(),
+        extendEnv: false,
+      });
       const version = parseVersion(stdout);
       if (version && isOlderThan(version, MIN_CURSOR_VERSION)) {
         logger.warn(
@@ -148,7 +153,7 @@ export function buildCommand(opts: StartTurnOpts): RawCommand {
 
   // `--` ends flag parsing; the prompt is the final, discrete argument.
   args.push('--', prompt);
-  return { shell: CURSOR_BIN, args };
+  return { shell: resolveExecutable(CURSOR_BIN), args };
 }
 
 // ---------------------------------------------------------------------------

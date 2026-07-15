@@ -45,6 +45,7 @@ function installApi(): {
       case 'comment:list':
       case 'harness:list':
       case 'run:list':
+      case 'task:list':
       case 'workspace:listOpenApps':
         return Promise.resolve([]);
       case 'chat:history':
@@ -105,6 +106,10 @@ describe('AppLayout deep-link navigation', () => {
 
     expect(screen.queryByTestId('center-tabs')).not.toBeInTheDocument();
     expect(screen.getByTestId('right-git-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('right-tasks-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('right-work-area').lastElementChild).toBe(
+      screen.getByTestId('right-terminal-pane'),
+    );
 
     // Fire the broadcast main would send after resolving `harness://workspace/ws-9/diff`.
     act(() => {

@@ -50,7 +50,8 @@
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\({dependencies:p.dependencies, devDependencies:p.devDependencies},null,1\\)\\)\")",
       "Bash(node scripts/vitest-electron.mjs run src/main/db/repos/turns.test.ts)",
       "Bash(node scripts/vitest-electron.mjs run src/main/harness/parser.test.ts)",
-      "Bash(echo \"TSC_EXIT=$?\")"
+      "Bash(echo \"TSC_EXIT=$?\")",
+      "Bash(git -C /Users/sebastian.romero/src/WT/w2-platform fetch origin --prune)"
     ]
   }
 }

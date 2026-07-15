@@ -73,6 +73,9 @@ describe('SettingsService — defaults (0 file layers)', () => {
       onNeedsAttention: true,
       completionSound: 'glass',
     });
+    expect(s.appearance).toEqual({
+      theme: 'dark',
+    });
   });
 
   it('accepts a supported completion sound and rejects unknown sound names', () => {
@@ -88,6 +91,24 @@ describe('SettingsService — defaults (0 file layers)', () => {
     writeFileSync(
       userFile(),
       ['[notifications]', 'completionSound = "../../secret"'].join('\n'),
+      'utf8',
+    );
+    expect(() => svc.load({ userPath: userFile() })).toThrow();
+  });
+
+  it('accepts supported appearance themes and rejects unknown theme names', () => {
+    writeFileSync(
+      userFile(),
+      ['[appearance]', 'theme = "light"'].join('\n'),
+      'utf8',
+    );
+    const svc = new SettingsService();
+    svc.load({ userPath: userFile() });
+    expect(svc.get().appearance.theme).toBe('light');
+
+    writeFileSync(
+      userFile(),
+      ['[appearance]', 'theme = "sepia"'].join('\n'),
       'utf8',
     );
     expect(() => svc.load({ userPath: userFile() })).toThrow();

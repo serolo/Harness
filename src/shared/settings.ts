@@ -84,6 +84,12 @@ export interface NotificationSettings {
   completionSound: CompletionSound;
 }
 
+/** `[appearance]` — app-wide visual preferences. */
+export interface AppearanceSettings {
+  /** Color theme applied to the renderer root. */
+  theme: AppearanceTheme;
+}
+
 /**
  * The full merged settings object. The layered merge (`src/main/settings`) fills
  * every section from defaults, so a consumer always receives a fully-populated
@@ -98,6 +104,7 @@ export interface EffectiveSettings {
   /** `[mcp]` — MCP servers passed through to the agent CLI. */
   mcp: McpServerConfig[];
   notifications: NotificationSettings;
+  appearance: AppearanceSettings;
 }
 
 /**
@@ -153,5 +160,19 @@ export function isCompletionSound(value: unknown): value is CompletionSound {
   return (
     typeof value === 'string' &&
     (COMPLETION_SOUNDS as readonly string[]).includes(value)
+  );
+}
+
+// --- Appearance settings (APPEND-ONLY) --------------------------------------
+
+export const APPEARANCE_THEMES = ['dark', 'light'] as const;
+
+export type AppearanceTheme = (typeof APPEARANCE_THEMES)[number];
+
+/** Runtime guard for untrusted IPC/settings values. */
+export function isAppearanceTheme(value: unknown): value is AppearanceTheme {
+  return (
+    typeof value === 'string' &&
+    (APPEARANCE_THEMES as readonly string[]).includes(value)
   );
 }

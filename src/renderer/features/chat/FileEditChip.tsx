@@ -2,10 +2,12 @@
 // transcript exposes workspace navigation context.
 
 import { FilePenLine } from 'lucide-react';
+import { FileReferencePill } from './FileReferencePill';
 
 export interface FileEditChipProps {
   path: string;
   op: 'create' | 'modify' | 'delete';
+  onOpenFile?: (path: string) => void;
 }
 
 const OP_LABEL: Record<FileEditChipProps['op'], string> = {
@@ -23,9 +25,8 @@ const OP_CLASS: Record<FileEditChipProps['op'], string> = {
 export function FileEditChip({
   path,
   op,
+  onOpenFile,
 }: FileEditChipProps): React.JSX.Element {
-  const fileName = path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-
   return (
     <div
       className="flex min-h-8 min-w-0 items-center gap-2 rounded-2 px-1.5 text-base text-fg-2"
@@ -34,12 +35,7 @@ export function FileEditChip({
     >
       <FilePenLine className={`h-4 w-4 shrink-0 ${OP_CLASS[op]}`} aria-hidden />
       <span className="shrink-0 font-medium text-fg-1">{OP_LABEL[op]}</span>
-      <code
-        className="min-w-0 truncate rounded-1 border border-border-2 bg-bg-3 px-2 py-0.5 font-mono text-sm text-fg-2"
-        title={path}
-      >
-        {fileName}
-      </code>
+      <FileReferencePill path={path} onOpenFile={onOpenFile} />
     </div>
   );
 }

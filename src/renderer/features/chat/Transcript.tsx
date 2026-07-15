@@ -2,7 +2,7 @@
 // Auto-scrolls to the bottom as new content streams in, but PAUSES auto-scroll when the
 // user has scrolled up (so reading history isn't yanked back down).
 
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import type { AgentEvent } from '@shared/harness';
 import type { RenderedTurn } from '@renderer/stores/chat';
 import { TextMessage } from './TextMessage';
@@ -17,11 +17,44 @@ import { QuestionCard } from './QuestionCard';
 import { PermissionCard } from './PermissionCard';
 import { permissionFromToolResult } from './toolResults';
 import { ModelActivity } from './ModelActivity';
+import { StreamingElapsed } from './StreamingElapsed';
+import { ActivityChip } from './ActivityChip';
 
 export interface TranscriptProps {
   turns: RenderedTurn[];
   /** The workspace this transcript belongs to; threads into the limit-resume offer. */
   workspaceId?: string | null;
+  onOpenFile?: (path: string) => void;
+}
+
+function transcriptScrollKey(turns: RenderedTurn[]): string {
+  return turns
+    .map((turn) => {
+      const eventKey = turn.events
+        .map((event) => {
+          switch (event.kind) {
+            case 'text':
+              return `text:${event.delta.length}`;
+            case 'user_message':
+              return `user:${event.text.length}`;
+            case 'activity':
+              return `activity:${event.title}:${event.detail ?? ''}`;
+            case 'tool_use':
+              return `tool:${event.name}`;
+            case 'file_edit':
+              return `edit:${event.path}:${event.op}`;
+            case 'todo_update':
+              return `todo:${event.todos.length}`;
+            case 'error':
+              return `error:${event.message.length}`;
+            default:
+              return event.kind;
+          }
+        })
+        .join(',');
+      return `${turn.turnId}:${turn.status}:${eventKey}`;
+    })
+    .join('|');
 }
 
 /** Render one AgentEvent to its card/component. */
@@ -30,6 +63,7 @@ function renderEvent(
   key: string,
   workspaceId?: string | null,
   toolResult?: unknown,
+  onOpenFile?: (path: string) => void,
 ): React.JSX.Element | null {
   switch (event.kind) {
     case 'user_message':
@@ -47,7 +81,9 @@ function renderEvent(
         />
       );
     case 'text':
-      return <TextMessage key={key} delta={event.delta} />;
+      return <TextMessage key={key} delta={event.delta} onOpenFile={onOpenFile} />;
+    case 'activity':
+      return <ActivityChip key={key} title={event.title} detail={event.detail} />;
     case 'tool_use':
       return (
         <ToolCard
@@ -55,6 +91,7 @@ function renderEvent(
           name={event.name}
           payload={event.input}
           result={toolResult}
+          onOpenFile={onOpenFile}
         />
       );
     case 'tool_result': {
@@ -64,7 +101,14 @@ function renderEvent(
       return permission ? <PermissionCard key={key} {...permission} /> : null;
     }
     case 'file_edit':
-      return <FileEditChip key={key} path={event.path} op={event.op} />;
+      return (
+        <FileEditChip
+          key={key}
+          path={event.path}
+          op={event.op}
+          onOpenFile={onOpenFile}
+        />
+      );
     case 'todo_update':
       return <TodoList key={key} todos={event.todos} />;
     case 'error':
@@ -92,6 +136,7 @@ function isActivityEvent(event: AgentEvent): boolean {
   }
   return (
     event.kind === 'text' ||
+    event.kind === 'activity' ||
     event.kind === 'tool_use' ||
     event.kind === 'file_edit' ||
     event.kind === 'todo_update'
@@ -152,6 +197,7 @@ function renderEvents(
   events: AgentEvent[],
   keyPrefix: string,
   workspaceId?: string | null,
+  onOpenFile?: (path: string) => void,
 ): React.JSX.Element[] {
   const rendered: React.JSX.Element[] = [];
   const toolResults = pairToolResults(events);
@@ -172,6 +218,7 @@ function renderEvents(
           `${keyPrefix}-${absoluteIndex}`,
           workspaceId,
           toolResults.get(absoluteIndex),
+          onOpenFile,
         );
         if (item) rendered.push(item);
       });
@@ -186,6 +233,7 @@ function renderEvents(
     const toolCount = earlierEvents.filter(isToolActivity).length;
     const toolNames = earlierEvents.flatMap((event) => {
       if (event.kind === 'tool_use') return [event.name];
+      if (event.kind === 'activity') return [event.title];
       if (event.kind === 'file_edit') return ['Edit'];
       if (event.kind === 'todo_update') return ['TodoWrite'];
       return [];
@@ -197,6 +245,7 @@ function renderEvents(
         `${keyPrefix}-${absoluteIndex}`,
         workspaceId,
         toolResults.get(absoluteIndex),
+        onOpenFile,
       );
       return item ? [item] : [];
     });
@@ -219,6 +268,7 @@ function renderEvents(
         `${keyPrefix}-${absoluteIndex}`,
         workspaceId,
         toolResults.get(absoluteIndex),
+        onOpenFile,
       );
       if (item) rendered.push(item);
     });
@@ -232,6 +282,7 @@ function renderEvents(
       `${keyPrefix}-${index}`,
       workspaceId,
       toolResults.get(index),
+      onOpenFile,
     );
     if (item) rendered.push(item);
     segmentStart = index + 1;
@@ -244,10 +295,11 @@ function renderEvents(
 export function Transcript({
   turns,
   workspaceId,
+  onOpenFile,
 }: TranscriptProps): React.JSX.Element {
-  const endRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
+  const scrollKey = transcriptScrollKey(turns);
 
   // Track whether the user is near the bottom; only auto-scroll when pinned.
   function handleScroll(): void {
@@ -257,19 +309,25 @@ export function Transcript({
     pinnedToBottom.current = distanceFromBottom < 40;
   }
 
-  useEffect(() => {
-    // `scrollIntoView` is absent under jsdom (tests) — guard so it stays a no-op there.
-    const end = endRef.current;
-    if (pinnedToBottom.current && typeof end?.scrollIntoView === 'function') {
-      end.scrollIntoView({ block: 'end' });
-    }
-  }, [turns]);
+  useLayoutEffect(() => {
+    if (!pinnedToBottom.current) return;
+    const el = containerRef.current;
+    if (!el) return;
+
+    const scrollToBottom = (): void => {
+      el.scrollTop = el.scrollHeight;
+    };
+
+    scrollToBottom();
+    const frame = window.requestAnimationFrame(scrollToBottom);
+    return () => window.cancelAnimationFrame(frame);
+  }, [scrollKey]);
 
   return (
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="min-h-0 flex-1 overflow-y-auto px-6 pb-8 pt-8"
+      className="scrollbar-bare min-h-0 flex-1 overflow-y-auto px-6 pb-8 pt-8"
       data-testid="transcript"
     >
       <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8">
@@ -281,13 +339,16 @@ export function Transcript({
             data-status={turn.status}
           >
             <div className="space-y-3">
-              {renderEvents(turn.events, turn.turnId, workspaceId)}
+              {renderEvents(turn.events, turn.turnId, workspaceId, onOpenFile)}
             </div>
-            <TurnDivider status={turn.status} usage={turn.usage} />
+            {turn.status === 'streaming' ? (
+              <StreamingElapsed startedAt={turn.startedAt} />
+            ) : (
+              <TurnDivider status={turn.status} usage={turn.usage} />
+            )}
           </div>
         ))}
       </div>
-      <div ref={endRef} />
     </div>
   );
 }

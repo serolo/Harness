@@ -19,6 +19,7 @@ import { v7 as uuidv7 } from 'uuid';
 import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
 import type { ProcessRegistry } from '../process';
+import { childProcessEnv } from '../process/childEnv';
 
 /** Options for spawning a PTY (spec §5.2 — env includes PORT/APP_PORT + ws vars). */
 export interface PtySpawnOptions {
@@ -106,7 +107,7 @@ export class PtyService {
     const nodePty = await loadNodePty();
     const shell = options.shell ?? process.env['SHELL'] ?? '/bin/zsh';
     const args = options.args ?? [];
-    const env = { ...process.env, ...options.env } as Record<string, string>;
+    const env = childProcessEnv(options.env);
     const id = uuidv7();
 
     const proc = nodePty.spawn(shell, args, {
@@ -173,7 +174,7 @@ export class PtyService {
     kill(): void;
   }> {
     const nodePty = await loadNodePty();
-    const env = { ...process.env, ...options.env } as Record<string, string>;
+    const env = childProcessEnv(options.env);
     const id = uuidv7();
 
     const proc = nodePty.spawn(options.shell, options.args, {

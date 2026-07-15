@@ -68,6 +68,26 @@ describe('normalizeCodex — normalization table (ASSUMED codex format)', () => 
     ]);
   });
 
+  it('maps current item.started events to live activity', () => {
+    expect(
+      normalizeCodex({
+        type: 'item.started',
+        item: { id: 'item_0', type: 'agent_message' },
+      }),
+    ).toEqual([
+      { type: 'event', event: { kind: 'activity', title: 'Responding' } },
+    ]);
+
+    expect(
+      normalizeCodex({
+        type: 'item.started',
+        item: { id: 'item_1', type: 'web_search', query: 'Harness' },
+      }),
+    ).toEqual([
+      { type: 'event', event: { kind: 'activity', title: 'Web search' } },
+    ]);
+  });
+
   it('maps app-server questions and approvals to distinct interactions', () => {
     expect(
       normalizeCodex({

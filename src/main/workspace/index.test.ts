@@ -121,6 +121,9 @@ function makeSettings(setupScript: string): EffectiveSettings {
       onNeedsAttention: true,
       completionSound: 'glass',
     },
+    appearance: {
+      theme: 'dark',
+    },
   };
 }
 
@@ -425,6 +428,32 @@ describe('WorkspaceManager.archive', () => {
     });
   });
 
+  it('previews a stale workspace whose worktree directory is already missing', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId });
+    rmSync(ws.worktreePath!, { recursive: true, force: true });
+
+    await expect(manager.archivePreview(ws.id)).resolves.toEqual({
+      hasUncommittedChanges: false,
+      changedFileCount: 0,
+      willDeleteWorktree: true,
+    });
+  });
+
+  it('archives a stale workspace whose worktree directory is already missing', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({ projectId });
+    rmSync(ws.worktreePath!, { recursive: true, force: true });
+
+    await manager.archive(ws.id);
+
+    expect(await manager.get(ws.id)).toMatchObject({
+      status: 'archived',
+      worktreePath: null,
+    });
+    expect(stopSpy).toHaveBeenCalledWith(ws.id);
+  });
+
   it('preserves and reuses a managed worktree when deletion is disabled', async () => {
     const manager = buildManager('echo ok', false);
     const ws = await manager.create({ projectId });
@@ -583,13 +612,87 @@ describe('WorkspaceManager.update', () => {
     });
   });
 
-  it('rejects unsafe, duplicate, and archived status updates', async () => {
+  it('renames the git branch on request without changing the worktree path', async () => {
+    const manager = buildManager('echo ok');
+    const workspace = await manager.create({ projectId, name: 'original' });
+    const worktreePath = workspace.worktreePath;
+
+    const updated = await manager.update(workspace.id, {
+      name: 'Fix context menu',
+      renameBranch: true,
+    });
+
+    expect(updated).toMatchObject({
+      name: 'Fix context menu',
+      branch: 'agent/fix-context-menu',
+      worktreePath,
+    });
+    await expect(
+      execa('git', [
+        '-C',
+        sourceRepoPath,
+        'show-ref',
+        '--verify',
+        '--quiet',
+        'refs/heads/agent/fix-context-menu',
+      ]),
+    ).resolves.toBeTruthy();
+  });
+
+  it('allows special characters in the display name and sanitizes them for branch rename', async () => {
+    const manager = buildManager('echo ok');
+    const workspace = await manager.create({ projectId, name: 'original' });
+
+    const updated = await manager.update(workspace.id, {
+      name: 'W2BT-21830/prev-stay-room (#42)',
+      renameBranch: true,
+    });
+
+    expect(updated).toMatchObject({
+      name: 'W2BT-21830/prev-stay-room (#42)',
+      branch: 'agent/w2bt-21830-prev-stay-room-42',
+      worktreePath: workspace.worktreePath,
+    });
+  });
+
+  it('does not rename the branch for a metadata-only workspace rename', async () => {
+    const manager = buildManager('echo ok');
+    const workspace = await manager.create({ projectId, name: 'original' });
+
+    const updated = await manager.update(workspace.id, {
+      name: 'W2BT-21830/prev-stay-room (#42)',
+    });
+
+    expect(updated).toMatchObject({
+      name: 'W2BT-21830/prev-stay-room (#42)',
+      branch: 'agent/original',
+      worktreePath: workspace.worktreePath,
+    });
+  });
+
+  it('rejects branch rename when the derived branch already exists', async () => {
+    const manager = buildManager('echo ok');
+    const workspace = await manager.create({ projectId, name: 'original' });
+    await execa('git', ['-C', sourceRepoPath, 'branch', 'agent/conflict']);
+
+    await expect(
+      manager.update(workspace.id, {
+        name: 'Conflict',
+        renameBranch: true,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('rejects empty/control-character, duplicate, and archived status updates', async () => {
     const manager = buildManager('echo ok');
     const first = await manager.create({ projectId, name: 'first' });
     const second = await manager.create({ projectId, name: 'second' });
 
     await expect(
-      manager.update(first.id, { name: '../outside' }),
+      manager.update(first.id, { name: '   ' }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+    await expect(
+      manager.update(first.id, { name: 'bad\u0000name' }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
     await expect(
       manager.update(first.id, { name: second.name }),

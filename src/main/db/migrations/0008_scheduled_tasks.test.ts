@@ -62,11 +62,11 @@ async function seedTurn(
 }
 
 describe('migration 0008 (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 8 (latest)', () => {
+  it('applies all migrations: user_version becomes 9 (latest)', () => {
     db = openDb(dbFile);
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(8);
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
     } finally {
       raw.close();
     }
@@ -179,7 +179,42 @@ describe('migration 0008 (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(8);
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
+      const count = raw
+        .prepare(
+          "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'",
+        )
+        .get() as { n: number };
+      expect(count.n).toBe(1);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('repairs an existing latest-version DB that is missing scheduled_tasks', async () => {
+    db = openDb(dbFile);
+    await db.destroy();
+    db = undefined;
+
+    const stale = new BetterSqlite3(dbFile);
+    try {
+      stale.exec(`
+        DROP INDEX idx_scheduled_tasks_due;
+        DROP INDEX idx_scheduled_tasks_workspace_id;
+        DROP TABLE scheduled_tasks;
+      `);
+      stale.pragma('user_version = 9');
+    } finally {
+      stale.close();
+    }
+
+    expect(() => {
+      db = openDb(dbFile);
+    }).not.toThrow();
+
+    const raw = new BetterSqlite3(dbFile, { readonly: true });
+    try {
+      expect(raw.pragma('user_version', { simple: true })).toBe(9);
       const count = raw
         .prepare(
           "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'",

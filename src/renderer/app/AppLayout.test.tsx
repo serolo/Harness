@@ -53,7 +53,7 @@ describe('AppLayout structure', () => {
     installApi();
   });
 
-  it('renders the three-pane layout and both placeholder panes', () => {
+  it('renders the three-pane layout with chat, Git changes, and terminal placeholders', () => {
     render(
       <Providers>
         <AppLayout />
@@ -66,7 +66,16 @@ describe('AppLayout structure', () => {
     expect(
       screen.getByText('Select a workspace to begin.'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Context panel')).toBeInTheDocument();
+    expect(
+      screen.getByText('Select a workspace to view its diff.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Select a workspace to view its tasks.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Select a workspace to open a terminal.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Context panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ipc-health')).not.toBeInTheDocument();
   });
 
@@ -119,5 +128,41 @@ describe('AppLayout structure', () => {
       key: 'ArrowLeft',
     });
     expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '376px' });
+  });
+
+  it('resizes the stacked Git, tasks, and terminal work panes', () => {
+    render(
+      <Providers>
+        <AppLayout />
+      </Providers>,
+    );
+
+    expect(screen.getByTestId('right-tasks-pane')).toHaveStyle({
+      height: '224px',
+    });
+    fireEvent.keyDown(screen.getByTestId('tasks-resize-handle'), {
+      key: 'ArrowUp',
+    });
+    expect(screen.getByTestId('right-tasks-pane')).toHaveStyle({
+      height: '240px',
+    });
+    fireEvent.mouseDown(screen.getByTestId('tasks-resize-handle'), {
+      clientY: 240,
+    });
+    fireEvent.mouseMove(window, { clientY: 200 });
+    fireEvent.mouseUp(window);
+    expect(screen.getByTestId('right-tasks-pane')).toHaveStyle({
+      height: '280px',
+    });
+
+    expect(screen.getByTestId('right-terminal-pane')).toHaveStyle({
+      height: '256px',
+    });
+    fireEvent.keyDown(screen.getByTestId('terminal-resize-handle'), {
+      key: 'ArrowDown',
+    });
+    expect(screen.getByTestId('right-terminal-pane')).toHaveStyle({
+      height: '240px',
+    });
   });
 });

@@ -29,22 +29,28 @@
 // tabs (data-testid + aria-pressed + per-tab disabled) and the location/base-branch/PR/issue
 // controls stay hand-rolled or adopt `Input`/`Select`/`Button`/`IconButton` where useful.
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { GitBranch, GitPullRequest, CircleDot, CornerDownLeft } from 'lucide-react';
 import type { CreateWorkspaceReq } from '@shared/models';
 import type { IssueListItem, PrListItem } from '@shared/github';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useComposerStore } from '@renderer/stores/composer';
-import { Button, IconButton, Input, Select } from '@renderer/components/ui';
+import { Button, IconButton, Input } from '@renderer/components/ui';
 import { SetupLogPanel } from './SetupLogPanel';
 
 type SourceTab = 'branch' | 'pr' | 'issue';
 
 const TABS: { id: SourceTab; label: string }[] = [
-  { id: 'branch', label: 'Branch' },
-  { id: 'pr', label: 'From PR' },
-  { id: 'issue', label: 'From issue' },
+  { id: 'pr', label: 'PRs' },
+  { id: 'branch', label: 'Branches' },
+  { id: 'issue', label: 'Issues' },
 ];
+
+interface BranchChoice {
+  ref: string;
+  label: string;
+}
 
 /**
  * Build the one-time composer prompt for a workspace seeded from a GitHub issue.
@@ -87,6 +93,35 @@ function isMissingIpcHandler(err: unknown): boolean {
   return err instanceof Error && /No handler registered/i.test(err.message);
 }
 
+function branchChoices(branches: string[]): BranchChoice[] {
+  const remoteChoices: BranchChoice[] = [];
+  const remoteLabels = new Set<string>();
+  const localChoices: BranchChoice[] = [];
+
+  for (const branch of branches) {
+    if (branch === 'origin/HEAD') continue;
+    if (branch.startsWith('origin/')) {
+      const label = branch.slice('origin/'.length);
+      if (label === '' || remoteLabels.has(label)) continue;
+      remoteLabels.add(label);
+      remoteChoices.push({ ref: branch, label });
+      continue;
+    }
+    localChoices.push({ ref: branch, label: branch });
+  }
+
+  return [
+    ...remoteChoices,
+    ...localChoices.filter((choice) => !remoteLabels.has(choice.label)),
+  ];
+}
+
+function matchesFilter(value: string, filter: string): boolean {
+  const needle = filter.trim().toLowerCase();
+  if (needle === '') return true;
+  return value.toLowerCase().includes(needle);
+}
+
 export interface NewWorkspaceDialogProps {
   /** The project to create the workspace under. Must be set before submission. */
   projectId: string | null;
@@ -107,10 +142,10 @@ export function NewWorkspaceDialog({
 
   // Form state
   const [activeTab, setActiveTab] = useState<SourceTab>('branch');
-  const [baseBranch, setBaseBranch] = useState('');
   const [baseBranches, setBaseBranches] = useState<string[]>([]);
   const [branchListLoading, setBranchListLoading] = useState(false);
   const [branchListError, setBranchListError] = useState<string | null>(null);
+  const [sourceFilter, setSourceFilter] = useState('');
   const [location, setLocation] = useState<'project' | 'worktree'>('worktree');
   const [worktreeNaming, setWorktreeNaming] = useState<'automatic' | 'custom'>(
     'automatic',
@@ -158,21 +193,13 @@ export function NewWorkspaceDialog({
     setBranchListError(null);
 
     void invoke('project:listBranches', { projectId })
-      .then(({ defaultBranch, branches }) => {
+      .then(({ branches }) => {
         if (!active) return;
         setBaseBranches(branches);
-        setBaseBranch((prev) => {
-          if (prev !== '' && branches.includes(prev)) return prev;
-          if (branches.includes(defaultBranch)) return defaultBranch;
-          const remoteDefault = `origin/${defaultBranch}`;
-          if (branches.includes(remoteDefault)) return remoteDefault;
-          return branches[0] ?? '';
-        });
       })
       .catch((err: unknown) => {
         if (!active) return;
         setBaseBranches([]);
-        setBaseBranch('');
         setBranchListError(
           isMissingIpcHandler(err)
             ? 'Restart the app to load the latest branch list support.'
@@ -302,12 +329,11 @@ export function NewWorkspaceDialog({
     };
   }
 
-  function handleBranchSubmit(e: React.FormEvent): void {
-    e.preventDefault();
-    if (baseBranch.trim() === '') return;
+  function handleSelectBranch(branch: BranchChoice): void {
+    if (customNameInvalid) return;
     void runCreate({
       ...locationOptions(),
-      baseBranch: baseBranch.trim(),
+      baseBranch: branch.ref,
       sourceKind: 'branch',
     });
   }
@@ -373,6 +399,30 @@ export function NewWorkspaceDialog({
     selectedLocation === 'worktree' &&
     worktreeNaming === 'custom' &&
     !/^[a-z0-9](?:[a-z0-9-]{0,62})$/.test(worktreeName.trim());
+  const branchRows = useMemo(
+    () =>
+      branchChoices(baseBranches).filter((branch) =>
+        matchesFilter(branch.label, sourceFilter),
+      ),
+    [baseBranches, sourceFilter],
+  );
+  const prRows = useMemo(
+    () =>
+      (prs ?? []).filter((pr) =>
+        matchesFilter(
+          `${pr.title} ${pr.number} ${pr.author ?? ''}`,
+          sourceFilter,
+        ),
+      ),
+    [prs, sourceFilter],
+  );
+  const issueRows = useMemo(
+    () =>
+      (issues ?? []).filter((issue) =>
+        matchesFilter(`${issue.title} ${issue.number}`, sourceFilter),
+      ),
+    [issues, sourceFilter],
+  );
 
   return (
     <>
@@ -499,10 +549,15 @@ export function NewWorkspaceDialog({
             {/* Source selection is intentionally below location + naming. Changing it
                 swaps only the source-specific controls that follow. */}
             <div className="mb-4" data-testid="source-section">
-              <p className="mb-1.5 text-xs font-medium uppercase tracking-caps text-fg-3">
-                Source
-              </p>
-              <div className="flex gap-1 rounded-2 border border-border-2 bg-surface-well p-0.5">
+              <Input
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value)}
+                placeholder="Search by name"
+                disabled={isStreaming}
+                data-testid="source-filter"
+                className="mb-3 h-12 rounded-3 border-border-1 bg-surface-overlay px-4 text-sm"
+              />
+              <div className="flex gap-1 border-y border-border-1 py-2">
                 {TABS.map(({ id, label }) => (
                   <button
                     key={id}
@@ -510,7 +565,7 @@ export function NewWorkspaceDialog({
                     disabled={isStreaming}
                     onClick={() => setActiveTab(id)}
                     data-testid={`source-tab-${id}`}
-                    className={`flex-1 rounded-1 px-2 py-1 text-xs transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`rounded-2 px-3 py-2 text-sm font-medium transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
                       activeTab === id
                         ? 'bg-bg-4 text-fg-1'
                         : 'text-fg-2 hover:text-fg-1'
@@ -525,27 +580,12 @@ export function NewWorkspaceDialog({
 
             {/* --- Branch tab --- */}
             {activeTab === 'branch' && (
-              <form onSubmit={handleBranchSubmit}>
-                <label className="mb-3 block">
-                  <span className="mb-1 block text-xs text-fg-2">
-                    Base branch
-                  </span>
-                  <Select
-                    value={baseBranch}
-                    onChange={(e) => setBaseBranch(e.target.value)}
-                    disabled={isStreaming || branchListLoading}
-                    className="w-full"
-                    data-testid="base-branch-select"
-                    options={
-                      branchListLoading
-                        ? [{ value: '', label: 'Loading branches...' }]
-                        : baseBranches.map((branch) => ({
-                            value: branch,
-                            label: branch,
-                          }))
-                    }
-                  />
-                </label>
+              <div>
+                {branchListLoading && (
+                  <p className="py-4 text-center text-xs text-fg-3">
+                    Loading branches...
+                  </p>
+                )}
 
                 {branchListError !== null && (
                   <p
@@ -556,26 +596,50 @@ export function NewWorkspaceDialog({
                   </p>
                 )}
 
+                {!branchListLoading &&
+                  branchListError === null &&
+                  (branchRows.length > 0 ? (
+                    <ul className="max-h-64 space-y-1 overflow-y-auto">
+                      {branchRows.map((branch) => (
+                        <li key={branch.ref}>
+                          <button
+                            type="button"
+                            disabled={isStreaming || customNameInvalid}
+                            onClick={() => handleSelectBranch(branch)}
+                            data-testid="branch-item"
+                            data-branch-ref={branch.ref}
+                            className="group flex w-full items-center gap-3 rounded-2 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:bg-bg-4 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <GitBranch
+                              className="h-4 w-4 shrink-0 text-fg-3"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm text-fg-1">
+                              {branch.label}
+                            </span>
+                            <span className="hidden items-center gap-1 text-xs text-fg-3 group-hover:inline-flex">
+                              Select
+                              <CornerDownLeft
+                                className="h-3.5 w-3.5"
+                                aria-hidden="true"
+                              />
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="py-4 text-center text-xs text-fg-3">
+                      No branches found.
+                    </p>
+                  ))}
+
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" onClick={handleClose}>
                     Cancel
                   </Button>
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    disabled={
-                      !projectId ||
-                      isStreaming ||
-                      branchListLoading ||
-                      branchListError !== null ||
-                      baseBranch.trim() === '' ||
-                      customNameInvalid
-                    }
-                  >
-                    {isStreaming ? 'Creating…' : 'Create'}
-                  </Button>
                 </div>
-              </form>
+              </div>
             )}
 
             {/* --- From PR / From issue tabs --- */}
@@ -651,9 +715,9 @@ export function NewWorkspaceDialog({
                 {!listLoading &&
                   listError === null &&
                   activeTab === 'pr' &&
-                  (prs && prs.length > 0 ? (
+                  (prRows.length > 0 ? (
                     <ul className="max-h-64 space-y-1 overflow-y-auto">
-                      {prs.map((pr) => (
+                      {prRows.map((pr) => (
                         <li key={pr.number}>
                           <button
                             type="button"
@@ -665,14 +729,27 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectPr(pr)}
                             data-testid="pr-item"
                             data-pr-number={pr.number}
-                            className="w-full rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:border-border-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="group flex w-full items-center gap-3 rounded-2 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:bg-bg-4 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <span className="block truncate text-sm text-fg-1">
-                              {pr.title}
+                            <GitPullRequest
+                              className="h-4 w-4 shrink-0 text-fg-3"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm text-fg-1">
+                                {pr.title}
+                              </span>
+                              <span className="text-xs text-fg-3">
+                                #{pr.number}
+                                {pr.author ? ` · ${pr.author}` : ''}
+                              </span>
                             </span>
-                            <span className="text-xs text-fg-3">
-                              #{pr.number}
-                              {pr.author ? ` · ${pr.author}` : ''}
+                            <span className="hidden items-center gap-1 text-xs text-fg-3 group-hover:inline-flex">
+                              Select
+                              <CornerDownLeft
+                                className="h-3.5 w-3.5"
+                                aria-hidden="true"
+                              />
                             </span>
                           </button>
                         </li>
@@ -688,9 +765,9 @@ export function NewWorkspaceDialog({
                 {!listLoading &&
                   listError === null &&
                   activeTab === 'issue' &&
-                  (issues && issues.length > 0 ? (
+                  (issueRows.length > 0 ? (
                     <ul className="max-h-64 space-y-1 overflow-y-auto">
-                      {issues.map((issue) => (
+                      {issueRows.map((issue) => (
                         <li key={issue.number}>
                           <button
                             type="button"
@@ -698,13 +775,26 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectIssue(issue)}
                             data-testid="issue-item"
                             data-issue-number={issue.number}
-                            className="w-full rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:border-border-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="group flex w-full items-center gap-3 rounded-2 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:bg-bg-4 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <span className="block truncate text-sm text-fg-1">
-                              {issue.title}
+                            <CircleDot
+                              className="h-4 w-4 shrink-0 text-fg-3"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm text-fg-1">
+                                {issue.title}
+                              </span>
+                              <span className="text-xs text-fg-3">
+                                #{issue.number}
+                              </span>
                             </span>
-                            <span className="text-xs text-fg-3">
-                              #{issue.number}
+                            <span className="hidden items-center gap-1 text-xs text-fg-3 group-hover:inline-flex">
+                              Select
+                              <CornerDownLeft
+                                className="h-3.5 w-3.5"
+                                aria-hidden="true"
+                              />
                             </span>
                           </button>
                         </li>

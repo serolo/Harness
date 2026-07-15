@@ -38,6 +38,8 @@ import type {
   CommitInfo,
   DiffComment,
   DiffCommentState,
+  DiffMenuInfo,
+  DiffQuery,
   DiffSet,
   FileDiff,
   NewDiffComment,
@@ -53,6 +55,11 @@ import type {
   WritableSettingLayer,
 } from './settings';
 import type { SlashCommand } from './slash';
+import type {
+  CreateTaskReq,
+  ScheduledTask,
+  UpdateTaskReq,
+} from './tasks';
 
 /**
  * Main-side push handle produced by the stream helper `createStream()`
@@ -152,6 +159,13 @@ export interface Commands {
    * open. Fetching it also clears a `needs_attention` workspace back to `idle` (D4).
    */
   'chat:history': { req: { workspaceId: string }; res: ChatHistory };
+  /** Delete all persisted turns/events for a workspace transcript. */
+  'chat:clear': { req: { workspaceId: string }; res: void };
+  /** Read a text file from the workspace checkout for a read-only chat tab preview. */
+  'workspace:readFile': {
+    req: { workspaceId: string; path: string };
+    res: { path: string; content: string };
+  };
   /** Probe whether a registered harness CLI is installed/authenticated. */
   'harness:detect': { req: { id: HarnessId }; res: DetectResult };
   /** List registered harnesses with capabilities + a detect summary. */
@@ -179,6 +193,18 @@ export interface Commands {
   'diff:get': { req: { workspaceId: string }; res: DiffSet };
   /** Fetch one file's old/new content + parsed hunks, fetched lazily by Monaco. */
   'diff:file': { req: { workspaceId: string; path: string }; res: FileDiff };
+  /** Fetch target-branch and scope metadata for the Git changes panel. */
+  'diff:menu': {
+    req: { workspaceId: string; targetRef?: string };
+    res: DiffMenuInfo;
+  };
+  /** Compute a diff for an explicit target/scope query. */
+  'diff:query': { req: DiffQuery; res: DiffSet };
+  /** Fetch one file for an explicit target/scope query. */
+  'diff:fileQuery': {
+    req: DiffQuery & { path: string };
+    res: FileDiff;
+  };
   /** List commits in `base..HEAD`, for the diff viewer's commit filter. */
   'diff:commits': { req: { workspaceId: string }; res: CommitInfo[] };
   /** Create an inline diff comment (starts in `open` state). */
@@ -277,8 +303,15 @@ export interface Commands {
   'settings:schema': { req: void; res: EffectiveSettings };
 
   // --- Phase 6: polish — slash / deep links / auto-update / onboarding (APPEND-ONLY) ---
-  /** The slash-command catalogue built from `settings.agent.prompts` (spec §5.4). */
-  'slash:list': { req: void; res: SlashCommand[] };
+  /**
+   * Slash catalogue for the composer: configured prompts plus native Claude/Codex
+   * commands and skills. Optional workspace/harness scope lets main prefer workspace
+   * skills and filter provider-specific skill roots.
+   */
+  'slash:list': {
+    req: { workspaceId?: string; harness?: HarnessId } | void;
+    res: SlashCommand[];
+  };
   /** Parse an `harness://…` deep link into a nav target, or null if unroutable. */
   'deepLink:resolve': { req: { url: string }; res: DeepLinkTarget | null };
   /** Check for an application update; returns the current updater status (spec §6.5). */
@@ -335,6 +368,7 @@ export interface Commands {
     req: {
       id: string;
       name?: string;
+      renameBranch?: boolean;
       status?: Workspace['status'];
       isUnread?: boolean;
       isPinned?: boolean;
@@ -348,6 +382,20 @@ export interface Commands {
     req: { sound: CompletionSound };
     res: void;
   };
+
+  // --- Scheduled agent tasks (APPEND-ONLY) ---
+  /** List scheduled/manual tasks for one workspace. */
+  'task:list': { req: { workspaceId: string }; res: ScheduledTask[] };
+  /** Create a scheduled/manual agent task. */
+  'task:create': { req: CreateTaskReq; res: ScheduledTask };
+  /** Update an existing scheduled/manual agent task. */
+  'task:update': { req: UpdateTaskReq; res: ScheduledTask };
+  /** Delete a scheduled/manual agent task. */
+  'task:delete': { req: { id: string }; res: void };
+  /** Fire a pending/scheduled/missed/error task immediately. */
+  'task:runNow': { req: { id: string }; res: ScheduledTask };
+  /** Mark a pending/scheduled/missed/error task done without running it. */
+  'task:markDone': { req: { id: string }; res: ScheduledTask };
 }
 
 export type CommandChannel = keyof Commands;
@@ -387,6 +435,8 @@ export interface Events {
   'settings:changed': Record<string, never>;
   /** Reserved (Phase 2/5): a workspace needs the user's attention. */
   'notify:needsAttention': { workspaceId: string; reason: string };
+  /** A scheduled task changed and subscribers should refetch that workspace's list. */
+  'task:changed': { workspaceId: string };
 
   // --- Phase 6: deep-link navigation + app menu accelerators (APPEND-ONLY) ---
   /**

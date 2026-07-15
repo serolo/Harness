@@ -8,13 +8,212 @@
 // for fine-grained control over `--progress` stderr streaming.
 
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 
-import { execa } from 'execa';
+import { execa, type Options, type ResultPromise } from 'execa';
 
 import { AppError } from '@shared/errors';
+
+/**
+ * Run the system git binary with stdio options that are safe for Electron's main
+ * process. In packaged/GUI launches, inherited stdin can be absent or closed; always
+ * ignore it while preserving captured stdout/stderr for callers and error details.
+ */
+type GitExecaResult = ResultPromise<{
+  stdin: 'ignore';
+  stdout: 'pipe';
+  stderr: 'pipe';
+  encoding: 'utf8';
+  buffer: true;
+}>;
+
+interface NodePtyProcess {
+  onData(listener: (data: string) => void): void;
+  onExit(listener: (e: { exitCode: number }) => void): void;
+  kill(signal?: string): void;
+}
+
+interface NodePtyModule {
+  spawn(
+    file: string,
+    args: string[],
+    options: {
+      name?: string;
+      cwd?: string;
+      env?: Record<string, string>;
+      cols?: number;
+      rows?: number;
+    },
+  ): NodePtyProcess;
+}
+
+interface GitPtyResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  command: string;
+}
+
+let nodePtyPromise: Promise<NodePtyModule> | undefined;
+
+function loadNodePty(): Promise<NodePtyModule> {
+  if (nodePtyPromise === undefined) {
+    nodePtyPromise = import('node-pty').then(
+      (m) =>
+        (m as unknown as { default?: NodePtyModule }).default ??
+        (m as unknown as NodePtyModule),
+    );
+  }
+  return nodePtyPromise;
+}
+
+export function gitExeca(
+  args: readonly string[],
+  options: Options = {},
+): GitExecaResult {
+  const child = execa('git', args, {
+    ...options,
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    encoding: 'utf8',
+    buffer: true,
+  }) as GitExecaResult;
+
+  const withEbadfFallback = child.catch((err: unknown) => {
+    if (!isEbadfSpawnError(err)) throw err;
+    return gitPtyExec(args, options);
+  }) as GitExecaResult;
+
+  Object.assign(withEbadfFallback, {
+    stdout: child.stdout,
+    stderr: child.stderr,
+  });
+
+  return withEbadfFallback;
+}
+
+async function gitPtyExec(
+  args: readonly string[],
+  options: Options,
+): Promise<GitPtyResult> {
+  const nodePty = await loadNodePty();
+  const command = `git ${args.map(formatCommandArg).join(' ')}`;
+  const captureDir = await mkdtemp(join(tmpdir(), 'harness-git-pty-'));
+  const stdoutPath = join(captureDir, 'stdout');
+  const stderrPath = join(captureDir, 'stderr');
+  const env = {
+    ...stringEnv(process.env),
+    ...stringEnv(options.env as Record<string, unknown> | undefined),
+    HARNESS_GIT_STDOUT: stdoutPath,
+    HARNESS_GIT_STDERR: stderrPath,
+  };
+
+  return new Promise<GitPtyResult>((resolvePromise, reject) => {
+    let settled = false;
+    const proc = nodePty.spawn(
+      '/bin/zsh',
+      [
+        '-f',
+        '-c',
+        'git "$@" > "$HARNESS_GIT_STDOUT" 2> "$HARNESS_GIT_STDERR"',
+        'git',
+        ...args,
+      ],
+      {
+        name: 'xterm-color',
+        cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
+        env,
+        cols: 160,
+        rows: 40,
+      },
+    );
+
+    const abort = (): void => {
+      if (settled) return;
+      try {
+        proc.kill();
+      } catch {
+        // Best effort; the exit handler below resolves/rejects if the process exists.
+      }
+    };
+
+    options.cancelSignal?.addEventListener('abort', abort, { once: true });
+
+    proc.onExit(({ exitCode }) => {
+      settled = true;
+      options.cancelSignal?.removeEventListener('abort', abort);
+      void (async () => {
+        const [stdout, stderr] = await Promise.all([
+          readTextIfExists(stdoutPath),
+          readTextIfExists(stderrPath),
+        ]);
+        await rm(captureDir, { recursive: true, force: true });
+        if (exitCode === 0) {
+          resolvePromise({
+            stdout,
+            stderr,
+            exitCode,
+            command,
+          });
+        } else {
+          const err = new Error(
+            `Command failed with exit code ${exitCode}: ${command}`,
+          ) as Error & {
+            stdout: string;
+            stderr: string;
+            exitCode: number;
+            command: string;
+            shortMessage: string;
+          };
+          err.stdout = stdout;
+          err.stderr = stderr;
+          err.exitCode = exitCode;
+          err.command = command;
+          err.shortMessage = err.message;
+          reject(err);
+        }
+      })().catch((err: unknown) => {
+        void rm(captureDir, { recursive: true, force: true });
+        reject(err);
+      });
+    });
+  });
+}
+
+async function readTextIfExists(path: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function isEbadfSpawnError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  return code === 'EBADF' || err.message.includes('EBADF');
+}
+
+function stringEnv(
+  env: Record<string, unknown> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (env === undefined) return out;
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+function formatCommandArg(arg: string): string {
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
 
 // ---------------------------------------------------------------------------
 // Existing Phase-0 interfaces (frozen — DO NOT modify)
@@ -502,7 +701,7 @@ export class GitService {
       // one-liner because we need to attach a stderr listener BEFORE awaiting
       // the process exit.  execa v9 returns the child-process object directly
       // when called without await — we attach the listener then await.
-      const cp = execa('git', args, { cancelSignal: opts.signal });
+      const cp = gitExeca(args, { cancelSignal: opts.signal });
 
       if (onProgress !== undefined) {
         cp.stderr?.on('data', (buf: Buffer | string) => {
@@ -532,7 +731,7 @@ export class GitService {
   async open(repoPath: string): Promise<RepoInfo> {
     // Confirm it is actually a git repository.
     try {
-      await execa('git', ['-C', repoPath, 'rev-parse', '--git-dir']);
+      await gitExeca(['-C', repoPath, 'rev-parse', '--git-dir']);
     } catch (e) {
       throw toGitError(e, `git -C ${repoPath} rev-parse --git-dir`);
     }
@@ -540,7 +739,7 @@ export class GitService {
     // Read the origin URL, tolerating "no such remote" gracefully.
     let originUrl = '';
     try {
-      const result = await execa('git', [
+      const result = await gitExeca([
         '-C',
         repoPath,
         'remote',
@@ -579,7 +778,7 @@ export class GitService {
   async defaultBranch(repoPath: string): Promise<string> {
     // Attempt 1: fast local symref lookup.
     try {
-      const result = await execa('git', [
+      const result = await gitExeca([
         '-C',
         repoPath,
         'symbolic-ref',
@@ -597,10 +796,11 @@ export class GitService {
     // timeout so an unreachable/slow remote cannot hang the IPC handler — on timeout
     // we fall through to the local-HEAD attempt below.
     try {
-      const result = await execa(
-        'git',
+      const result = await gitExeca(
         ['-C', repoPath, 'remote', 'show', 'origin'],
-        { timeout: 5000 },
+        {
+          timeout: 5000,
+        },
       );
       const lines = result.stdout.split('\n');
       for (const line of lines) {
@@ -616,7 +816,7 @@ export class GitService {
 
     // Attempt 3: local HEAD (works for bare / no-remote repos).
     try {
-      const result = await execa('git', [
+      const result = await gitExeca([
         '-C',
         repoPath,
         'rev-parse',
@@ -636,7 +836,7 @@ export class GitService {
   async fetch(repoPath: string): Promise<void> {
     const args = ['-C', repoPath, 'fetch', 'origin', '--prune'];
     try {
-      await execa('git', args);
+      await gitExeca(args);
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
@@ -659,7 +859,7 @@ export class GitService {
       'refs/remotes/origin',
     ];
     try {
-      const result = await execa('git', args);
+      const result = await gitExeca(args);
       const seen = new Set<string>();
       for (const line of result.stdout.split('\n')) {
         const branch = line.trim();
@@ -705,7 +905,7 @@ export class GitService {
     const refspec = `pull/${prNumber}/head:${localBranch}`;
     const args = ['-C', repoPath, 'fetch', 'origin', refspec];
     try {
-      await execa('git', args);
+      await gitExeca(args);
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
@@ -732,7 +932,7 @@ export class GitService {
       `refs/heads/${name}`,
     ];
     try {
-      await execa('git', args);
+      await gitExeca(args);
       return true;
     } catch (e) {
       // ENOENT = git binary not found — that IS an error.
@@ -742,6 +942,26 @@ export class GitService {
       }
       // Any other non-zero exit: branch simply does not exist.
       return false;
+    }
+  }
+
+  /**
+   * Rename a local branch without moving any worktree directory.
+   *
+   * `git branch -m <oldName> <newName>` updates the branch ref; if the branch is
+   * checked out in a linked worktree, Git updates that worktree's HEAD metadata
+   * while leaving the checkout path unchanged.
+   */
+  async renameBranch(
+    repoPath: string,
+    oldName: string,
+    newName: string,
+  ): Promise<void> {
+    const args = ['-C', repoPath, 'branch', '-m', oldName, newName];
+    try {
+      await gitExeca(args);
+    } catch (e) {
+      throw toGitError(e, `git ${args.join(' ')}`);
     }
   }
 
@@ -773,7 +993,7 @@ export class GitService {
       : ['-C', repoPath, 'worktree', 'add', worktreePath, branch];
 
     try {
-      await execa('git', args);
+      await gitExeca(args);
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
@@ -801,7 +1021,7 @@ export class GitService {
     ];
 
     try {
-      await execa('git', args);
+      await gitExeca(args);
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
@@ -822,7 +1042,7 @@ export class GitService {
     const args = ['-C', repoPath, 'worktree', 'list', '--porcelain'];
     let stdout: string;
     try {
-      const result = await execa('git', args);
+      const result = await gitExeca(args);
       stdout = result.stdout;
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
@@ -879,12 +1099,7 @@ export class GitService {
     // SHA
     let sha: string;
     try {
-      const result = await execa('git', [
-        '-C',
-        worktreePath,
-        'rev-parse',
-        'HEAD',
-      ]);
+      const result = await gitExeca(['-C', worktreePath, 'rev-parse', 'HEAD']);
       sha = result.stdout.trim();
     } catch (e) {
       throw toGitError(e, `git -C ${worktreePath} rev-parse HEAD`);
@@ -893,7 +1108,7 @@ export class GitService {
     // Branch
     let branch: string | null;
     try {
-      const result = await execa('git', [
+      const result = await gitExeca([
         '-C',
         worktreePath,
         'rev-parse',
@@ -921,7 +1136,7 @@ export class GitService {
         `${baseRef}...HEAD`,
       ];
       try {
-        const result = await execa('git', args);
+        const result = await gitExeca(args);
         // Output: "<behind>\t<ahead>"
         const parts = result.stdout.trim().split('\t');
         if (parts.length === 2) {
@@ -945,7 +1160,7 @@ export class GitService {
   async mergeBase(worktreePath: string, a: string, b: string): Promise<string> {
     const args = ['-C', worktreePath, 'merge-base', a, b];
     try {
-      const result = await execa('git', args);
+      const result = await gitExeca(args);
       return result.stdout.trim();
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
@@ -968,7 +1183,7 @@ export class GitService {
     const args = ['-C', worktreePath, 'status', '--porcelain=v1', '-b'];
     let stdout: string;
     try {
-      const result = await execa('git', args);
+      const result = await gitExeca(args);
       stdout = result.stdout;
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
@@ -1055,9 +1270,9 @@ export class GitService {
     try {
       // Independent read-only queries — run them concurrently.
       const [nameStatus, numstat, patchResult] = await Promise.all([
-        execa('git', nameStatusArgs),
-        execa('git', numstatArgs),
-        execa('git', patchArgs),
+        gitExeca(nameStatusArgs),
+        gitExeca(numstatArgs),
+        gitExeca(patchArgs),
       ]);
       nameStatusOut = nameStatus.stdout;
       numstatOut = numstat.stdout;
@@ -1113,9 +1328,9 @@ export class GitService {
 
     try {
       const [nameStatus, numstat, patchResult] = await Promise.all([
-        execa('git', nameStatusArgs),
-        execa('git', numstatArgs),
-        execa('git', patchArgs),
+        gitExeca(nameStatusArgs),
+        gitExeca(numstatArgs),
+        gitExeca(patchArgs),
       ]);
       const stats = parseNumstatZ(numstat.stdout);
       const files: DiffFile[] = parseNameStatusZ(nameStatus.stdout).map(
@@ -1159,17 +1374,20 @@ export class GitService {
     try {
       // Seed the scratch index from HEAD, then stage all worktree changes into
       // it (adds, mods, and deletions) — the real index is untouched.
-      await execa('git', ['-C', worktreePath, 'read-tree', 'HEAD'], {
+      await gitExeca(['-C', worktreePath, 'read-tree', 'HEAD'], {
         env: indexEnv,
       });
-      await execa('git', ['-C', worktreePath, 'add', '-A'], { env: indexEnv });
+      await gitExeca(['-C', worktreePath, 'add', '-A'], { env: indexEnv });
 
-      const treeResult = await execa(
-        'git',
-        ['-C', worktreePath, 'write-tree'],
-        { env: indexEnv },
-      );
+      const treeResult = await gitExeca(['-C', worktreePath, 'write-tree'], {
+        env: indexEnv,
+      });
       const tree = treeResult.stdout.trim();
+      if (tree === '') {
+        throw new AppError('git', 'git write-tree returned an empty tree SHA', {
+          cmd: `git -C ${worktreePath} write-tree`,
+        });
+      }
 
       // Build the commit object directly (no branch/HEAD update).
       const commitArgs = ['-C', worktreePath, 'commit-tree', tree];
@@ -1187,7 +1405,7 @@ export class GitService {
         GIT_COMMITTER_NAME: 'harness',
         GIT_COMMITTER_EMAIL: 'harness@localhost',
       };
-      const commitResult = await execa('git', commitArgs, { env: commitEnv });
+      const commitResult = await gitExeca(commitArgs, { env: commitEnv });
       return commitResult.stdout.trim();
     } catch (e) {
       throw toGitError(e, `git -C ${worktreePath} commit-tree`);
@@ -1217,7 +1435,7 @@ export class GitService {
 
     const args = ['-C', worktreePath, 'update-ref', refName, sha];
     try {
-      await execa('git', args);
+      await gitExeca(args);
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
@@ -1259,7 +1477,7 @@ export class GitService {
           '-z',
           ...range,
         ];
-        const result = await execa('git', args);
+        const result = await gitExeca(args);
         for (const entry of parseNameStatusZ(result.stdout)) {
           if (entry.code === 'A' && entry.newPath !== '') {
             toDelete.add(entry.newPath);
@@ -1273,7 +1491,7 @@ export class GitService {
       // `ref`'s tree is restored by `checkout-index` below (keep it); only paths absent
       // from `ref`'s tree were genuinely created after the checkpoint → delete them.
       const refTree = new Set<string>();
-      const lsTree = await execa('git', [
+      const lsTree = await gitExeca([
         '-C',
         worktreePath,
         'ls-tree',
@@ -1285,7 +1503,7 @@ export class GitService {
       for (const p of lsTree.stdout.split('\0')) {
         if (p !== '') refTree.add(p);
       }
-      const others = await execa('git', [
+      const others = await gitExeca([
         '-C',
         worktreePath,
         'ls-files',
@@ -1298,10 +1516,10 @@ export class GitService {
       }
 
       // Restore tracked files to the `ref` tree without moving HEAD/branch.
-      await execa('git', ['-C', worktreePath, 'read-tree', ref], {
+      await gitExeca(['-C', worktreePath, 'read-tree', ref], {
         env: indexEnv,
       });
-      await execa('git', ['-C', worktreePath, 'checkout-index', '-a', '-f'], {
+      await gitExeca(['-C', worktreePath, 'checkout-index', '-a', '-f'], {
         env: indexEnv,
       });
 
@@ -1356,7 +1574,7 @@ export class GitService {
     // Stage every change (adds, modifications, and deletions) into the index.
     const addArgs = ['-C', worktreePath, 'add', '-A'];
     try {
-      await execa('git', addArgs);
+      await gitExeca(addArgs);
     } catch (e) {
       throw toGitError(e, `git ${addArgs.join(' ')}`);
     }
@@ -1367,7 +1585,7 @@ export class GitService {
     const statusArgs = ['-C', worktreePath, 'status', '--porcelain'];
     let statusOut: string;
     try {
-      const result = await execa('git', statusArgs);
+      const result = await gitExeca(statusArgs);
       statusOut = result.stdout;
     } catch (e) {
       throw toGitError(e, `git ${statusArgs.join(' ')}`);
@@ -1390,7 +1608,7 @@ export class GitService {
     };
     const commitArgs = ['-C', worktreePath, 'commit', '-m', message];
     try {
-      await execa('git', commitArgs, { env: commitEnv });
+      await gitExeca(commitArgs, { env: commitEnv });
     } catch (e) {
       // Include the fixed command shape only (not the message) in the fallback.
       throw toGitError(e, `git -C ${worktreePath} commit -m <message>`);
@@ -1399,7 +1617,7 @@ export class GitService {
     // Report the new HEAD the commit produced.
     const shaArgs = ['-C', worktreePath, 'rev-parse', 'HEAD'];
     try {
-      const result = await execa('git', shaArgs);
+      const result = await gitExeca(shaArgs);
       return { sha: result.stdout.trim() };
     } catch (e) {
       throw toGitError(e, `git ${shaArgs.join(' ')}`);
@@ -1437,7 +1655,7 @@ export class GitService {
     args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
 
     try {
-      await execa('git', args);
+      await gitExeca(args);
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
@@ -1464,7 +1682,7 @@ export class GitService {
       '@{u}',
     ];
     try {
-      await execa('git', args);
+      await gitExeca(args);
       return true;
     } catch (e) {
       // ENOENT = git binary not found — that IS an error.
@@ -1488,7 +1706,7 @@ export class GitService {
   async currentBranch(worktreePath: string): Promise<string> {
     const args = ['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'];
     try {
-      const result = await execa('git', args);
+      const result = await gitExeca(args);
       return result.stdout.trim();
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);

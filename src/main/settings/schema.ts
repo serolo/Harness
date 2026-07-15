@@ -28,6 +28,7 @@ import type {
   PermissionPolicy,
 } from '@shared/harness';
 import {
+  APPEARANCE_THEMES,
   COMPLETION_SOUNDS,
   type EffectiveSettings as SharedEffectiveSettings,
 } from '@shared/settings';
@@ -181,6 +182,16 @@ const notificationsSchema = z
   })
   .default({});
 
+// --- [appearance] ------------------------------------------------------------
+
+/** `[appearance]` — app-wide visual preferences. */
+const appearanceSchema = z
+  .object({
+    /** Color theme applied to the renderer root. */
+    theme: z.enum(APPEARANCE_THEMES).default('dark'),
+  })
+  .default({});
+
 // --- Top-level EffectiveSettings ---------------------------------------------
 
 /**
@@ -199,6 +210,8 @@ export const EffectiveSettingsSchema = z
     mcp: z.array(mcpServerConfigSchema).default([]),
     /** `[notifications]` — native turn notifications (Phase 2). */
     notifications: notificationsSchema,
+    /** `[appearance]` — renderer theme selection. */
+    appearance: appearanceSchema,
   })
   .default({});
 

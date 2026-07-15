@@ -139,6 +139,19 @@ describe('normalize — normalization table', () => {
     ]);
   });
 
+  it('surfaces thinking blocks as generic live activity', () => {
+    expect(
+      collect([
+        {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'thinking', thinking: 'private reasoning' }],
+          },
+        },
+      ]).events,
+    ).toEqual([{ kind: 'activity', title: 'Thinking' }]);
+  });
+
   it('maps Write→create and Edit→modify file_edit events (not raw tool_use)', () => {
     const { events } = run(readFixture('file_edit.jsonl'));
     expect(events).toEqual([

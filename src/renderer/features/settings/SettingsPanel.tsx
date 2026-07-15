@@ -170,6 +170,9 @@ export function SettingsPanel({
       ),
       harnesses: all.filter((field) => field.keyPath.startsWith('agent.')),
       git: all.filter((field) => field.keyPath.startsWith('git.')),
+      appearance: all.filter((field) =>
+        field.keyPath.startsWith('appearance.'),
+      ),
     };
   }, []);
 
@@ -319,10 +322,25 @@ export function SettingsPanel({
                 </SettingsSection>
               ) : null}
 
+              {activeSection === 'appearance' ? (
+                <SettingsSection
+                  title="Appearance"
+                  testId="settings-section-appearance"
+                >
+                  <SettingRows
+                    fields={rowsBySection.appearance}
+                    effective={effective}
+                    provenance={provenance}
+                    onSet={updateSetting}
+                  />
+                </SettingsSection>
+              ) : null}
+
               {activeSection !== 'general' &&
               activeSection !== 'harnesses' &&
               activeSection !== 'git' &&
-              activeSection !== 'environment' ? (
+              activeSection !== 'environment' &&
+              activeSection !== 'appearance' ? (
                 <SettingsSection
                   title={SECTION_LABELS[activeSection]}
                   testId={`settings-section-${activeSection}`}

@@ -12,13 +12,13 @@
 // SECURITY: git + filesystem on user workspaces is a heightened-scrutiny path
 // (.claude/rules/security.md). Every caller-supplied `path` is confined to the
 // worktree root (traversal / absolute-escape rejected) BEFORE any `git show` /
-// filesystem read; git only ever runs through GitService or argument-array execa.
+// filesystem read; git only ever runs through GitService or the shared gitExeca
+// argument-array helper.
 
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
-import { execa } from 'execa';
 
 import { AppError } from '@shared/errors';
 import type { Attachment } from '@shared/harness';
@@ -36,7 +36,12 @@ import type {
 } from '@shared/review';
 
 import type { DiffCommentsRepo } from '../db/repos/comments';
-import { parseUnifiedHunks, type GitDiff, type GitService } from '../git';
+import {
+  gitExeca,
+  parseUnifiedHunks,
+  type GitDiff,
+  type GitService,
+} from '../git';
 
 // The inline-comment DTOs now live in the shared contract; re-export so callers
 // (register.ts, tests) keep importing them from `../diff` as they did off the stub.
@@ -98,6 +103,26 @@ function countLines(content: string): number {
   if (content === '') return 0;
   const parts = content.split('\n').length;
   return content.endsWith('\n') ? parts - 1 : parts;
+}
+
+/** Build a minimal added-file hunk for content Git cannot diff itself (untracked files). */
+function addedFileHunks(content: string): FileDiff['hunks'] {
+  const lines =
+    content === ''
+      ? []
+      : content
+          .split('\n')
+          .slice(0, content.endsWith('\n') ? -1 : undefined)
+          .map((line) => `+${line}`);
+  return [
+    {
+      oldStart: 0,
+      oldLines: 0,
+      newStart: lines.length > 0 ? 1 : 0,
+      newLines: lines.length,
+      lines,
+    },
+  ];
 }
 
 /**
@@ -174,7 +199,7 @@ export class DiffService {
       // `stripFinalNewline: false` — execa strips a trailing newline by default, which
       // would desync `oldContent` (git show) from `newContent` (fs.readFile, verbatim)
       // and render a phantom "no newline at EOF" diff for any unchanged file tail.
-      const res = await execa('git', ['-C', wt, 'show', `${base}:${relPath}`], {
+      const res = await gitExeca(['-C', wt, 'show', `${base}:${relPath}`], {
         stripFinalNewline: false,
       });
       oldContent = res.stdout;
@@ -194,7 +219,7 @@ export class DiffService {
     // shared pure helper. A failure (e.g. path not in the diff) yields no hunks.
     let patch = '';
     try {
-      const res = await execa('git', ['-C', wt, 'diff', base, '--', relPath]);
+      const res = await gitExeca(['-C', wt, 'diff', base, '--', relPath]);
       patch = res.stdout;
     } catch {
       patch = '';
@@ -313,7 +338,7 @@ export class DiffService {
     args.push('--', ...pathspecs);
     let patch = '';
     try {
-      const res = await execa('git', args);
+      const res = await gitExeca(args);
       patch = res.stdout;
     } catch {
       patch = '';
@@ -323,7 +348,13 @@ export class DiffService {
       path: relPath,
       oldContent,
       newContent,
-      hunks: parseUnifiedHunks(patch),
+      hunks:
+        query.scope.kind === 'uncommitted' &&
+        entry?.change === 'added' &&
+        oldContent === '' &&
+        patch === ''
+          ? addedFileHunks(newContent)
+          : parseUnifiedHunks(patch),
     };
   }
 
@@ -337,7 +368,7 @@ export class DiffService {
     const format = ['%H', '%h', '%s', '%an', '%ct'].join('%x1f');
     let stdout = '';
     try {
-      const res = await execa('git', [
+      const res = await gitExeca([
         '-C',
         wt,
         'log',
@@ -625,7 +656,7 @@ export class DiffService {
     relPath: string,
   ): Promise<string> {
     try {
-      const res = await execa('git', ['-C', wt, 'show', `${ref}:${relPath}`], {
+      const res = await gitExeca(['-C', wt, 'show', `${ref}:${relPath}`], {
         stripFinalNewline: false,
       });
       return res.stdout;
@@ -661,14 +692,18 @@ export class DiffService {
     try {
       return await this.deps.git.mergeBase(wt, 'HEAD', `origin/${baseBranch}`);
     } catch {
-      return await this.deps.git.mergeBase(wt, 'HEAD', baseBranch);
+      try {
+        return await this.deps.git.mergeBase(wt, 'HEAD', baseBranch);
+      } catch {
+        return 'HEAD';
+      }
     }
   }
 
   /** `git rev-parse HEAD`, or `''` on an unborn branch (still a valid cache key). */
   private async headSha(wt: string): Promise<string> {
     try {
-      const res = await execa('git', ['-C', wt, 'rev-parse', 'HEAD']);
+      const res = await gitExeca(['-C', wt, 'rev-parse', 'HEAD']);
       return res.stdout.trim();
     } catch {
       return '';

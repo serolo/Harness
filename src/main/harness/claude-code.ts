@@ -14,7 +14,7 @@
 // and its listeners removed on every terminal path (no zombie `claude` processes).
 
 import { spawn } from 'node:child_process';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
@@ -26,14 +26,16 @@ import type {
   Harness,
   HarnessCapabilities,
   McpServerConfig,
-  PermissionPolicy,
   StartTurnOpts,
   TurnHandle,
 } from '@shared/harness';
 import type { StreamSink } from '@shared/ipc';
 import { AppError } from '@shared/errors';
 import { logger } from '../logging';
+import { childProcessEnv } from '../process/childEnv';
+import { resolveExecutable } from '../process/executable';
 import { createJsonLineSplitter, normalize } from './parser';
+import type { RawPtyHandle, RawPtySpawner } from './raw-terminal';
 
 /**
  * Minimum `claude` version we are confident speaks the stream-JSON shape the parser
@@ -47,6 +49,8 @@ const SESSION_RESOLVE_TIMEOUT_MS = 15_000;
 
 export class ClaudeCodeHarness implements Harness {
   readonly id = 'claude_code' as const;
+
+  constructor(private readonly rawPtySpawner?: RawPtySpawner) {}
 
   capabilities(): HarnessCapabilities {
     return {
@@ -65,7 +69,10 @@ export class ClaudeCodeHarness implements Harness {
    */
   async detect(): Promise<DetectResult> {
     try {
-      const { stdout } = await execa('claude', ['--version']);
+      const { stdout } = await execa(resolveExecutable('claude'), ['--version'], {
+        env: childProcessEnv(),
+        extendEnv: false,
+      });
       const version = parseVersion(stdout);
       if (version && isOlderThan(version, MIN_CLAUDE_VERSION)) {
         logger.warn(
@@ -88,17 +95,37 @@ export class ClaudeCodeHarness implements Harness {
    * begin interrupting immediately. Normalized `AgentEvent`s are pushed to `sink` as
    * they stream; the sink is `end()`ed exactly once on the terminal path.
    */
-  startTurn(
+  async startTurn(
+    opts: StartTurnOpts,
+    sink: StreamSink<AgentEvent>,
+  ): Promise<TurnHandle> {
+    if (this.rawPtySpawner !== undefined) {
+      return this.startPtyTurn(opts, sink);
+    }
+    return this.startChildProcessTurn(opts, sink);
+  }
+
+  private startChildProcessTurn(
     opts: StartTurnOpts,
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
-    const child = spawn('claude', args, {
-      cwd: opts.workspaceDir,
-      env: process.env,
-      // Never a shell — args are passed as an array (command-injection defense).
-      shell: false,
-    });
+    const command = resolveExecutable('claude');
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, args, {
+        cwd: opts.workspaceDir,
+        env: childProcessEnv(),
+        // Never a shell — args are passed as an array (command-injection defense).
+        shell: false,
+        // The CLI is prompt-driven through argv/temp files; stdin is unused, but keep a
+        // valid fd open. Some CLI wrappers spawn helper binaries with stdio inherited;
+        // closing fd 0 can make that inner spawn fail with EBADF.
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+    }
 
     const splitter = createJsonLineSplitter((msg) =>
       logger.warn(`[harness:claude_code] ${msg}`),
@@ -106,6 +133,7 @@ export class ClaudeCodeHarness implements Harness {
 
     let sessionId = opts.sessionId ?? '';
     let terminalEmitted = false;
+    let textEmitted = false;
     let settled = false;
     let ended = false;
 
@@ -136,6 +164,11 @@ export class ClaudeCodeHarness implements Harness {
       /** Feed parsed objects through the normalization table into the sink. */
       function consume(objects: unknown[]): void {
         for (const obj of objects) {
+          const resultText = resultTextFallback(obj);
+          if (!textEmitted && resultText !== undefined) {
+            textEmitted = true;
+            sink.push({ kind: 'text', delta: resultText });
+          }
           for (const result of normalize(obj)) {
             if (!result) continue;
             if (result.type === 'session') {
@@ -148,19 +181,22 @@ export class ClaudeCodeHarness implements Harness {
               ) {
                 terminalEmitted = true;
               }
+              if (result.event.kind === 'text') {
+                textEmitted = true;
+              }
               sink.push(result.event);
             }
           }
         }
       }
 
-      child.stdout.on('data', (buf: Buffer) => {
+      child.stdout!.on('data', (buf: Buffer) => {
         consume(splitter.push(buf.toString('utf8')));
       });
 
       // stderr is diagnostic only — never echo it as content, never log it verbatim
       // (it can carry prompt/tool fragments). Length is enough to spot noise.
-      child.stderr.on('data', (buf: Buffer) => {
+      child.stderr!.on('data', (buf: Buffer) => {
         logger.debug(
           `[harness:claude_code] stderr (${buf.length} bytes) for cwd=${opts.workspaceDir}`,
         );
@@ -169,7 +205,10 @@ export class ClaudeCodeHarness implements Harness {
       child.on('error', (err: Error) => {
         // spawn failure (e.g. `claude` not on PATH) — surface as a terminal error.
         if (!terminalEmitted) {
-          sink.push({ kind: 'error', message: err.message });
+          sink.push({
+            kind: 'error',
+            message: formatSpawnFailure(command, args, opts.workspaceDir, err),
+          });
           terminalEmitted = true;
         }
         resolveHandle();
@@ -197,6 +236,220 @@ export class ClaudeCodeHarness implements Harness {
       });
     });
   }
+
+  private async startPtyTurn(
+    opts: StartTurnOpts,
+    sink: StreamSink<AgentEvent>,
+  ): Promise<TurnHandle> {
+    const args = buildArgs(opts);
+    const command = resolveExecutable('claude');
+    const captureDir = mkdtempSync(join(tmpdir(), 'harness-claude-stream-'));
+    const stdoutPath = join(captureDir, 'stdout');
+    const stderrPath = join(captureDir, 'stderr');
+    let handle: RawPtyHandle;
+    try {
+      handle = await this.rawPtySpawner!.spawn({
+        cwd: opts.workspaceDir,
+        shell: '/bin/zsh',
+        args: [
+          '-f',
+          '-c',
+          '"$0" "$@" > "$HARNESS_AGENT_STDOUT" 2> "$HARNESS_AGENT_STDERR"',
+          command,
+          ...args,
+        ],
+        env: childProcessEnv({
+          HARNESS_AGENT_STDOUT: stdoutPath,
+          HARNESS_AGENT_STDERR: stderrPath,
+        }),
+        // The PTY is only a process-launch transport here. JSON is captured via files
+        // so terminal wrapping cannot corrupt newline-delimited stream-json.
+        cols: 120,
+        rows: 40,
+      });
+    } catch (err) {
+      rmSync(captureDir, { recursive: true, force: true });
+      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+    }
+
+    const splitter = createJsonLineSplitter((msg) =>
+      logger.warn(`[harness:claude_code] ${msg}`),
+    );
+
+    let sessionId = opts.sessionId ?? '';
+    let terminalEmitted = false;
+    let textEmitted = false;
+    let settled = false;
+    let ended = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let poller: ReturnType<typeof setInterval> | undefined;
+    let stdoutOffset = 0;
+
+    return new Promise<TurnHandle>((resolve) => {
+      timer = setTimeout(resolveHandle, SESSION_RESOLVE_TIMEOUT_MS);
+      poller = setInterval(readCapturedStdout, 50);
+
+      const interrupt = async (): Promise<void> => {
+        handle.kill();
+      };
+
+      function resolveHandle(): void {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ sessionId, interrupt });
+      }
+
+      function endStream(): void {
+        if (ended) return;
+        ended = true;
+        if (poller !== undefined) {
+          clearInterval(poller);
+          poller = undefined;
+        }
+        sink.end();
+        rmSync(captureDir, { recursive: true, force: true });
+      }
+
+      function consume(objects: unknown[]): void {
+        for (const obj of objects) {
+          const resultText = resultTextFallback(obj);
+          if (!textEmitted && resultText !== undefined) {
+            textEmitted = true;
+            sink.push({ kind: 'text', delta: resultText });
+          }
+          for (const result of normalize(obj)) {
+            if (!result) continue;
+            if (result.type === 'session') {
+              sessionId = result.sessionId;
+              resolveHandle();
+            } else {
+              if (
+                result.event.kind === 'turn_end' ||
+                result.event.kind === 'error'
+              ) {
+                terminalEmitted = true;
+              }
+              if (result.event.kind === 'text') {
+                textEmitted = true;
+              }
+              sink.push(result.event);
+            }
+          }
+        }
+      }
+
+      function readCapturedStdout(): void {
+        const next = readNewBytes(stdoutPath, stdoutOffset);
+        if (next === null) return;
+        stdoutOffset = next.offset;
+        consume(splitter.push(next.text));
+      }
+
+      handle.onExit(({ exitCode }) => {
+        readCapturedStdout();
+        consume(splitter.flush());
+        const stderrBytes = fileSize(stderrPath);
+        if (stderrBytes > 0) {
+          logger.debug(
+            `[harness:claude_code] stderr (${stderrBytes} bytes) for cwd=${opts.workspaceDir}`,
+          );
+        }
+        if (!terminalEmitted) {
+          if (exitCode !== 0) {
+            sink.push({
+              kind: 'error',
+              message: `claude exited with code ${exitCode}`,
+            });
+          } else {
+            sink.push({ kind: 'turn_end' });
+          }
+          terminalEmitted = true;
+        }
+        resolveHandle();
+        endStream();
+      });
+    });
+  }
+}
+
+function formatSpawnFailure(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  err: unknown,
+): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const code = isErrnoException(err) ? err.code : undefined;
+  const lines = [
+    `Failed to start ${command}: ${message}`,
+    `Command: ${command} ${redactPromptArgs(args).join(' ')}`,
+    `Working directory: ${cwd}`,
+  ];
+  if (code === 'EBADF' || message.includes('EBADF')) {
+    lines.push(
+      'Likely cause: the CLI or one of its wrapper/helper processes tried to inherit a closed file descriptor.',
+      'This is usually an Electron/process stdio issue, not a model response error.',
+    );
+  } else if (code === 'ENOENT') {
+    lines.push(
+      `Likely cause: ${command} was not found on PATH for the Electron main process.`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function redactPromptArgs(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === '-p' && i + 1 < args.length) {
+      out.push(arg, '<prompt omitted>');
+      i += 1;
+    } else {
+      out.push(arg);
+    }
+  }
+  return out;
+}
+
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && 'code' in err;
+}
+
+function resultTextFallback(obj: unknown): string | undefined {
+  if (!isRecord(obj)) return undefined;
+  if (obj.type !== 'result') return undefined;
+  if (obj.is_error === true) return undefined;
+  const subtype = typeof obj.subtype === 'string' ? obj.subtype : undefined;
+  if (subtype?.startsWith('error')) return undefined;
+  const result = obj.result;
+  return typeof result === 'string' && result !== '' ? result : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readNewBytes(
+  path: string,
+  offset: number,
+): { text: string; offset: number } | null {
+  try {
+    const bytes = readFileSync(path);
+    if (bytes.length <= offset) return null;
+    return { text: bytes.subarray(offset).toString('utf8'), offset: bytes.length };
+  } catch {
+    return null;
+  }
+}
+
+function fileSize(path: string): number {
+  try {
+    return readFileSync(path).length;
+  } catch {
+    return 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -219,20 +472,15 @@ export function buildArgs(opts: StartTurnOpts): string[] {
     '--output-format',
     'stream-json',
     '--verbose',
-    // Conductor workspaces are user-authorized local worktrees. Run every turn in
-    // Claude's explicit bypass mode so tool and out-of-workspace reads never pause
-    // the headless stream waiting for an approval UI the CLI cannot service.
-    '--dangerously-skip-permissions',
   ];
 
   if (opts.sessionId) {
     args.push('--resume', opts.sessionId);
   }
 
-  const permissionMode = modeToPermissionMode(opts.mode);
-  if (permissionMode) {
-    args.push('--permission-mode', permissionMode);
-  }
+  // Harness runs Claude headlessly and has no interactive approval bridge. Keep
+  // every app mode non-blocking so turns cannot stall on CLI permission prompts.
+  args.push('--dangerously-skip-permissions');
 
   // Phase 12: optional model override (e.g. `--model sonnet`). A DISCRETE argv element
   // under spawn(shell:false) — never string-interpolated. The value is validated against
@@ -242,39 +490,12 @@ export function buildArgs(opts: StartTurnOpts): string[] {
     args.push('--model', opts.model);
   }
 
-  args.push(...permissionPolicyArgs(opts.permissionPolicy));
-
   const mcpConfigPath = writeMcpConfig(opts.mcpConfig);
   if (mcpConfigPath) {
     args.push('--mcp-config', mcpConfigPath);
   }
 
   return args;
-}
-
-/**
- * Best-effort mapping of the frozen `PermissionPolicy` to CLI flags (Phase 2 is
- * pass-through plumbing — full permission UX is Phase 6, Risk R6). `allowedTools`
- * plus `allow` become `--allowedTools`; `deny` becomes `--disallowedTools`. Lists are
- * joined into a single comma-separated argument. `confirmBeforeRun` has no headless
- * flag yet (it surfaces as `needs_attention` via the supervisor).
- */
-function permissionPolicyArgs(policy: PermissionPolicy): string[] {
-  const out: string[] = [];
-  const allowed = [...(policy.allowedTools ?? []), ...(policy.allow ?? [])];
-  if (allowed.length > 0) {
-    out.push('--allowedTools', allowed.join(','));
-  }
-  if (policy.deny && policy.deny.length > 0) {
-    out.push('--disallowedTools', policy.deny.join(','));
-  }
-  return out;
-}
-
-function modeToPermissionMode(_mode: StartTurnOpts['mode']): string | undefined {
-  // This adapter always launches Claude with --dangerously-skip-permissions for
-  // headless Harness turns, so app modes do not add a second permission-mode flag.
-  return undefined;
 }
 
 /**

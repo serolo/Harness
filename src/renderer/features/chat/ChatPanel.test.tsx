@@ -3,12 +3,13 @@
 // main-process access point — so the real @renderer/ipc funnel + real components run.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 import { ChatPanel } from './ChatPanel';
 import { useChatStore } from '@renderer/stores/chat';
 import type { ChatHistory, HarnessInfo, TurnStreamChunk } from '@shared/ipc';
 import type { SlashCommand } from '@shared/slash';
+import type { FileDiff } from '@shared/review';
 
 interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
@@ -33,13 +34,33 @@ function installApi(opts: {
   history?: ChatHistory;
   stream?: ApiStub['stream'];
   slashCommands?: SlashCommand[];
+  files?: Record<string, string>;
+  fileDiffs?: Record<string, FileDiff>;
 }): ApiStub {
-  const invoke = vi.fn((channel: string) => {
+  const invoke = vi.fn((channel: string, req?: unknown) => {
     if (channel === 'chat:history')
       return Promise.resolve(opts.history ?? { turns: [] });
     if (channel === 'harness:list') return Promise.resolve(HARNESS_LIST);
     if (channel === 'turn:interrupt') return Promise.resolve(undefined);
     if (channel === 'chat:clear') return Promise.resolve(undefined);
+    if (channel === 'workspace:readFile') {
+      const path = (req as { path?: string } | undefined)?.path ?? '';
+      return Promise.resolve({
+        path,
+        content: opts.files?.[path] ?? '',
+      });
+    }
+    if (channel === 'diff:file') {
+      const path = (req as { path?: string } | undefined)?.path ?? '';
+      return Promise.resolve(
+        opts.fileDiffs?.[path] ?? {
+          path,
+          oldContent: opts.files?.[path] ?? '',
+          newContent: opts.files?.[path] ?? '',
+          hunks: [],
+        },
+      );
+    }
     if (channel === 'slash:list')
       return Promise.resolve(
         opts.slashCommands ?? [
@@ -427,6 +448,79 @@ describe('ChatPanel reconstruction', () => {
     expect(response).toHaveClass('text-md');
     expect(screen.queryByTestId('model-activity')).not.toBeInTheDocument();
   });
+
+  it('opens mentioned files in a compact chat tab', async () => {
+    const history: ChatHistory = {
+      turns: [
+        {
+          id: 't-file-link',
+          workspaceId: 'ws1',
+          idx: 0,
+          status: 'completed',
+          sessionId: 'sess-1',
+          mode: 'default',
+          startedAt: 1,
+          endedAt: 2,
+          inputTokens: null,
+          outputTokens: null,
+          events: [
+            {
+              id: 'm1',
+              turnId: 't-file-link',
+              kind: 'text',
+              ts: 1,
+              event: {
+                kind: 'text',
+                delta: 'Updated `src/renderer/features/chat/ChatPanel.tsx`.',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const api = installApi({
+      history,
+      files: {
+        'src/renderer/features/chat/ChatPanel.tsx':
+          'export function ChatPanel() {}',
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open src/renderer/features/chat/ChatPanel.tsx',
+      }),
+    );
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('workspace:readFile', {
+        workspaceId: 'ws1',
+        path: 'src/renderer/features/chat/ChatPanel.tsx',
+      }),
+    );
+    expect(await screen.findByTestId('chat-file-viewer')).toHaveTextContent(
+      'export function ChatPanel() {}',
+    );
+    expect(screen.getByTestId('chat-file-tab')).toHaveTextContent(
+      'ChatPanel.tsx',
+    );
+  });
+
+  it('uses the plus button to start a new chat', async () => {
+    const api = installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('chat-new'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('chat:clear', {
+        workspaceId: 'ws1',
+      }),
+    );
+  });
 });
 
 describe('ChatPanel streaming', () => {
@@ -496,6 +590,8 @@ describe('ChatPanel streaming', () => {
 
     // Busy → Stop button shows; clicking it invokes turn:interrupt.
     const stop = await screen.findByTestId('composer-interrupt');
+    expect(await screen.findByTestId('turn-elapsed')).toHaveTextContent(/\d+\.\ds/);
+    expect(screen.queryByText('streaming…')).not.toBeInTheDocument();
     fireEvent.click(stop);
     await waitFor(() =>
       expect(api.invoke).toHaveBeenCalledWith('turn:interrupt', {
@@ -504,7 +600,43 @@ describe('ChatPanel streaming', () => {
     );
 
     // Clean up the pending stream promise.
-    capturedResolve?.();
+    await act(async () => {
+      capturedResolve?.();
+    });
+  });
+
+  it('renders live model activity before the final answer', async () => {
+    let capturedResolve: (() => void) | undefined;
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (c: TurnStreamChunk) => void,
+      ) => {
+        onChunk({ kind: 'started', turnId: 't1', sessionId: 's' });
+        onChunk({
+          kind: 'event',
+          event: { kind: 'activity', title: 'Thinking' },
+        });
+        return new Promise<void>((resolve) => {
+          capturedResolve = resolve;
+        });
+      },
+    );
+    installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'work' } });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    expect(await screen.findByTestId('activity-chip')).toHaveTextContent(
+      'Thinking',
+    );
+
+    await act(async () => {
+      capturedResolve?.();
+    });
   });
 
   it('shows a pre-start stream error instead of dropping it', async () => {
@@ -563,6 +695,29 @@ describe('ChatPanel streaming', () => {
     expect(input).toHaveValue('');
   });
 
+  it('shows /clear as an app command even when no native skill is present', async () => {
+    installApi({
+      slashCommands: [
+        {
+          name: 'clear',
+          template: 'Clear the current chat transcript and context.',
+          description: 'Clear chat history and context',
+        },
+      ],
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '/cl' } });
+
+    expect(await screen.findByTestId('slash-menu')).toHaveTextContent(
+      'Available commands',
+    );
+    expect(await screen.findByTestId('slash-command-clear')).toHaveTextContent(
+      'Clear chat history and context',
+    );
+  });
+
   it('shows the provider model catalogue instead of harness names', async () => {
     installApi({});
 
@@ -578,6 +733,38 @@ describe('ChatPanel streaming', () => {
     expect(
       screen.getByTestId('composer-model-option-claude-opus-4-8-1m'),
     ).toHaveTextContent('Opus 4.8 1M');
+  });
+
+  it('closes the model catalogue when pressing outside it', async () => {
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+    fireEvent.click(await screen.findByTestId('composer-model'));
+    expect(await screen.findByTestId('composer-model-menu')).toBeInTheDocument();
+
+    fireEvent.pointerDown(document.body);
+    await waitFor(() =>
+      expect(screen.queryByTestId('composer-model-menu')).toBeNull(),
+    );
+  });
+
+  it('keeps native tooltips on composer controls', async () => {
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByTestId('composer-model')).toHaveAttribute(
+      'title',
+      'Select model',
+    );
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'title',
+      'Plan mode',
+    );
+    expect(screen.getByTestId('composer-send')).toHaveAttribute(
+      'title',
+      'Send',
+    );
   });
 
   it('expands slash commands with args before starting a turn', async () => {

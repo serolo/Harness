@@ -40,6 +40,7 @@ export interface TurnHandle {
 
 export type AgentEvent =
   | { kind: 'text'; delta: string }
+  | { kind: 'activity'; title: string; detail?: string }
   | { kind: 'tool_use'; name: string; input: unknown }
   | { kind: 'tool_result'; output: unknown }
   | { kind: 'file_edit'; path: string; op: 'create' | 'modify' | 'delete' }

@@ -15,6 +15,7 @@
 // `better-sqlite3` loads in THIS (main) process only — never the sandboxed renderer.
 
 import { join } from 'node:path';
+import { closeSync, fstatSync, openSync } from 'node:fs';
 
 import {
   app,
@@ -75,6 +76,8 @@ import {
 } from './shortcuts';
 import { initLogging } from './logging';
 
+ensureStandardFileDescriptors();
+
 // --- Constants -------------------------------------------------------------
 
 /** Deep-link scheme (spec §5.8, `harness://workspace/<id>`). Also drives appId/Keychain. */
@@ -117,6 +120,27 @@ let appContext: AppContext | undefined;
  */
 const rendererDevUrl = process.env['ELECTRON_RENDERER_URL'];
 const isDev = rendererDevUrl !== undefined && rendererDevUrl !== '';
+
+/**
+ * macOS GUI launches can leave stdin/stdout/stderr closed. Node's child_process spawn
+ * can then fail before the child starts with EBADF, even when we request pipes for the
+ * child's stdio. Repair the process-level fd table by opening /dev/null into any closed
+ * standard slots. `openSync` returns the lowest available fd, so if fd 0, 1, or 2 is
+ * closed, this fills that exact slot.
+ */
+function ensureStandardFileDescriptors(): void {
+  if (process.platform === 'win32') return;
+  for (let fd = 0; fd <= 2; fd += 1) {
+    try {
+      fstatSync(fd);
+    } catch {
+      const opened = openSync('/dev/null', fd === 0 ? 'r' : 'a');
+      if (opened > 2) {
+        closeSync(opened);
+      }
+    }
+  }
+}
 
 // --- Content-Security-Policy ----------------------------------------------
 
@@ -421,6 +445,12 @@ function createAppContext(): AppContext {
     emit,
   });
 
+  // The shared PTY service; also adapts to raw-terminal harness spawners.
+  const pty = new PtyService(processRegistry);
+  const rawPtySpawner: RawPtySpawner = {
+    spawn: (options) => pty.spawnRaw(options),
+  };
+
   // Register the harness backing the frozen `claude_code` id (D2): the real CLI
   // adapter, or the scripted MockHarness when settings/env select it. `AGENTAPP_E2E`
   // always forces the mock so CI/E2E never depend on an installed `claude`.
@@ -430,14 +460,11 @@ function createAppContext(): AppContext {
     process.env['AGENTAPP_E2E'] === '1';
   const adapter: Harness = useMock
     ? new MockHarness()
-    : new ClaudeCodeHarness();
+    : new ClaudeCodeHarness(rawPtySpawner);
   harness.register(adapter);
   logger.info(
     `[startup] harness registered: ${adapter.id} (${useMock ? 'mock' : 'claude-code'})`,
   );
-
-  // The shared PTY service; also adapts to the raw-terminal harness spawner (Phase 7).
-  const pty = new PtyService(processRegistry);
 
   // Phase 7: register the additional real agent CLIs (Codex, Cursor). Skipped under the
   // mock (E2E/CI never depend on an installed CLI). Registration does NOT spawn — a
@@ -448,10 +475,7 @@ function createAppContext(): AppContext {
   // passed straight in with no adapter glue. Teardown of a raw Cursor turn goes through
   // the supervisor's `quitAll`→`interrupt`→`kill` path, same as the other adapters.
   if (!useMock) {
-    const rawPtySpawner: RawPtySpawner = {
-      spawn: (options) => pty.spawnRaw(options),
-    };
-    harness.register(new CodexHarness());
+    harness.register(new CodexHarness(rawPtySpawner));
     harness.register(new CursorHarness(rawPtySpawner));
     logger.info('[startup] harness registered: codex, cursor (Phase 7)');
   }

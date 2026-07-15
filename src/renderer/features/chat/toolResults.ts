@@ -14,9 +14,49 @@ function stringField(
   return typeof value === 'string' ? value : undefined;
 }
 
+function textContent(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  const record = asRecord(value);
+  const direct = stringField(record, 'text');
+  if (direct !== undefined) return direct;
+  const content = record?.content;
+  if (!Array.isArray(content)) return undefined;
+  return content.map(textContent).filter(Boolean).join('\n') || undefined;
+}
+
+function claudePermissionText(text: string): PermissionCardProps | null {
+  const readMatch = /^Claude requested permissions to read from (.+), but you haven't granted it yet\.$/.exec(
+    text,
+  );
+  if (readMatch) {
+    return {
+      title: 'File access requires approval',
+      description: `The agent needs your approval to read from ${readMatch[1]}.`,
+    };
+  }
+
+  const commandMatch = /^(.+) was blocked\. Claude Code requires approval before reading it\.$/.exec(
+    text,
+  );
+  if (commandMatch) {
+    return {
+      title: 'File access requires approval',
+      description: `The agent needs your approval before it can run ${commandMatch[1]}.`,
+    };
+  }
+
+  return null;
+}
+
 export function permissionFromToolResult(
   output: unknown,
 ): PermissionCardProps | null {
+  const text = textContent(output);
+  if (text !== undefined) {
+    const claudePermission = claudePermissionText(text);
+    if (claudePermission !== null) return claudePermission;
+  }
+
   if (
     typeof output === 'string' &&
     output.includes('requires approval before reading this file')

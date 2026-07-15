@@ -226,6 +226,29 @@ describe('DiffService.getDiff', () => {
     expect(file.newContent).toContain('line2 modified');
   });
 
+  it('returns content and an added-file hunk for an untracked uncommitted file', async () => {
+    const file = await diffService.fileDiffForQuery(
+      {
+        workspaceId: workspaceA.id,
+        targetRef: 'main',
+        scope: { kind: 'uncommitted' },
+      },
+      'untracked.txt',
+    );
+
+    expect(file.oldContent).toBe('');
+    expect(file.newContent).toBe('one\ntwo\nthree\n');
+    expect(file.hunks).toEqual([
+      {
+        oldStart: 0,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 3,
+        lines: ['+one', '+two', '+three'],
+      },
+    ]);
+  });
+
   it('rejects a target ref that is not one of the repository branches', async () => {
     await expect(
       diffService.getDiffForQuery({

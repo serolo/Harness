@@ -8,22 +8,28 @@
 // bundles it); this module is intentionally NOT imported by `RunPanel`, so the run-panel
 // test never pulls xterm/webgl into jsdom.
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
+import type { ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { invoke, subscribeStream } from '@renderer/ipc';
+import { useTheme } from '@renderer/app/providers';
 
-/** Dark theme matching the app shell. Literal values (not `var()`) — xterm paints via
- *  canvas/WebGL, not the DOM, so it can't read CSS custom properties. Mirrors
- *  `tokens/colors.css`: `--surface-well` (terminal well), `--fg-1` (foreground),
- *  `--accent` (cursor). */
-const TERMINAL_THEME = {
-  background: '#07090d',
-  foreground: '#e6e9ef',
-  cursor: '#5b8cff',
-} as const;
+function cssVar(style: CSSStyleDeclaration, name: string, fallback: string): string {
+  return style.getPropertyValue(name).trim() || fallback;
+}
+
+function terminalThemeFromCss(): ITheme {
+  const style = getComputedStyle(document.documentElement);
+  return {
+    background: cssVar(style, '--surface-well', '#07090d'),
+    foreground: cssVar(style, '--fg-1', '#e6e9ef'),
+    cursor: cssVar(style, '--accent', '#5b8cff'),
+    selectionBackground: cssVar(style, '--selection-bg', 'rgba(91, 140, 255, 0.28)'),
+  };
+}
 
 /**
  * Mount an interactive terminal into `containerRef` for one workspace tab. Keystrokes and
@@ -39,6 +45,16 @@ export function useTerminal(
   tabId: string,
   containerRef: React.RefObject<HTMLDivElement | null>,
 ): void {
+  const theme = useTheme();
+  const terminalRef = useRef<Terminal | null>(null);
+
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (term) {
+      term.options.theme = terminalThemeFromCss();
+    }
+  }, [theme.appearance]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -54,8 +70,9 @@ export function useTerminal(
       fontFamily:
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
       cursorBlink: true,
-      theme: { ...TERMINAL_THEME },
+      theme: terminalThemeFromCss(),
     });
+    terminalRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
@@ -135,6 +152,9 @@ export function useTerminal(
       dataSub.dispose();
       resizeSub.dispose();
       term.dispose();
+      if (terminalRef.current === term) {
+        terminalRef.current = null;
+      }
       // Best-effort: also tell main to kill the shell (abort tears down the stream, but
       // `pty:close` is the explicit deregister so a leaked PTY can't survive the window).
       if (ptyId) void invoke('pty:close', { ptyId }).catch(() => {});

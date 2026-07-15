@@ -12,11 +12,13 @@ import {
   Terminal,
   Wrench,
 } from 'lucide-react';
+import { FileReferencePill } from './FileReferencePill';
 
 export interface ToolCardProps {
   name: string;
   payload: unknown;
   result?: unknown;
+  onOpenFile?: (path: string) => void;
 }
 
 type ToolKind =
@@ -257,9 +259,18 @@ export function ToolCard({
   name,
   payload,
   result,
+  onOpenFile,
 }: ToolCardProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const presentation = toolPresentation(name, payload);
+  const previewFilePath =
+    onOpenFile &&
+    (presentation.kind === 'read' ||
+      presentation.kind === 'edit' ||
+      presentation.kind === 'code') &&
+    presentation.previewTitle
+      ? presentation.previewTitle
+      : null;
 
   return (
     <div
@@ -267,25 +278,31 @@ export function ToolCard({
       data-testid="tool-card"
       data-tool-kind={presentation.kind}
     >
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className={`flex min-h-8 w-full min-w-0 items-center gap-2 rounded-2 px-1.5 text-left text-base transition-colors duration-fast ease-out hover:bg-bg-3 ${open ? 'bg-bg-3 text-fg-1' : 'text-fg-2'}`}
-        aria-expanded={open}
+      <div
+        className={`flex min-h-8 w-full min-w-0 items-center gap-2 rounded-2 px-1.5 text-base transition-colors duration-fast ease-out ${open ? 'bg-bg-3 text-fg-1' : 'text-fg-2'}`}
       >
-        <ToolIcon name={name} className="h-4 w-4 shrink-0 text-fg-3" />
-        <span className="max-w-[45%] shrink-0 truncate font-medium text-fg-1">
-          {presentation.label}
-        </span>
-        {presentation.preview && (
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex min-w-0 shrink-0 items-center gap-2 rounded-1 text-left hover:text-fg-1"
+          aria-expanded={open}
+        >
+          <ToolIcon name={name} className="h-4 w-4 shrink-0 text-fg-3" />
+          <span className="max-w-72 shrink-0 truncate font-medium text-fg-1">
+            {presentation.label}
+          </span>
+        </button>
+        {previewFilePath ? (
+          <FileReferencePill path={previewFilePath} onOpenFile={onOpenFile} />
+        ) : presentation.preview ? (
           <code
             className="min-w-0 flex-1 truncate rounded-1 bg-bg-3 px-2 py-0.5 font-mono text-sm text-fg-2"
             title={presentation.previewTitle}
           >
             {presentation.preview}
           </code>
-        )}
-      </button>
+        ) : null}
+      </div>
       {open && (
         <div className="ml-6 mt-2" data-testid="tool-card-detail">
           <DetailBody

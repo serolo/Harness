@@ -6,7 +6,7 @@
 // provenance use), a control kind, and (for selects) the allowed values. Kept as pure
 // data so it is trivially unit-testable and shared by the panel + its tests.
 
-import { COMPLETION_SOUNDS } from '@shared/settings';
+import { APPEARANCE_THEMES, COMPLETION_SOUNDS } from '@shared/settings';
 
 /** The control a settings row renders. */
 export type FieldKind = 'text' | 'select' | 'boolean';
@@ -129,6 +129,22 @@ export const SETTINGS_SECTIONS: readonly SectionDef[] = [
         label: 'Needs attention',
         kind: 'boolean',
         hint: 'Notify when a turn needs attention.',
+      },
+    ],
+  },
+  {
+    title: 'Appearance',
+    fields: [
+      {
+        keyPath: 'appearance.theme',
+        label: 'Theme',
+        kind: 'select',
+        options: APPEARANCE_THEMES,
+        optionLabels: {
+          dark: 'Dark',
+          light: 'Light',
+        },
+        hint: 'Choose the app color theme.',
       },
     ],
   },

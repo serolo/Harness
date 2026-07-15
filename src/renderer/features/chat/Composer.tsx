@@ -1,7 +1,7 @@
 // The chat composer: multiline prompt, mode selector (gated by harness capabilities),
 // a minimal file-attach affordance, and a Send/Interrupt button tied to `isBusy`.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp,
   Check,
@@ -59,6 +59,30 @@ interface ProviderModelGroup {
   harness?: HarnessId;
   options: ProviderModelOption[];
 }
+
+interface ComposerIssue {
+  id: string;
+  label: string;
+}
+
+interface EffortOption {
+  id: string;
+  label: string;
+}
+
+const CLAUDE_EFFORT_OPTIONS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'max', label: 'Max' },
+];
+
+const CODEX_EFFORT_OPTIONS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra High' },
+];
 
 const PROVIDER_MODEL_GROUPS: ProviderModelGroup[] = [
   {
@@ -165,12 +189,23 @@ export function Composer({
   const [slashLoading, setSlashLoading] = useState(false);
   const [slashActive, setSlashActive] = useState(0);
   const [modelOpen, setModelOpen] = useState(false);
+  const [effortOpen, setEffortOpen] = useState(false);
+  const [effort, setEffort] = useState<EffortOption>(
+    CLAUDE_EFFORT_OPTIONS[2],
+  );
+  const [plusOpen, setPlusOpen] = useState(false);
+  const [plusPanel, setPlusPanel] = useState<
+    'root' | 'attachment' | 'issue' | 'workspaces'
+  >('root');
+  const [plusPathDraft, setPlusPathDraft] = useState('');
+  const [issueOptions, setIssueOptions] = useState<ComposerIssue[]>([]);
   const [selectedHarness, setSelectedHarness] = useState<HarnessId | undefined>(
     undefined,
   );
   const [selectedProviderModel, setSelectedProviderModel] = useState<
     string | undefined
   >(undefined);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
 
   // The composer always targets the currently selected workspace (its host
   // <ChatPanel> is rendered with `workspaceId={selectedWorkspaceId}`), so read the
@@ -184,6 +219,7 @@ export function Composer({
       ? undefined
       : s.workspaces.find((w) => w.id === selectedWorkspaceId),
   );
+  const workspaces = useWorkspacesStore((s) => s.workspaces);
   const takePendingPrompt = useComposerStore((s) => s.takePendingPrompt);
   const loadHarnesses = useHarnessStore((s) => s.load);
   const harnessInfoById = useHarnessStore((s) => s.infoById);
@@ -213,6 +249,8 @@ export function Composer({
   }, [selectedWorkspace?.id, selectedWorkspace?.harness]);
 
   const selectedModel = selectedHarness ?? selectedWorkspace?.harness;
+  const effortOptions =
+    selectedModel === 'codex' ? CODEX_EFFORT_OPTIONS : CLAUDE_EFFORT_OPTIONS;
 
   useEffect(() => {
     let alive = true;
@@ -314,10 +352,32 @@ export function Composer({
   }, [activeSlashQuery]);
 
   useEffect(() => {
+    if (!effortOptions.some((option) => option.id === effort.id)) {
+      setEffort(effortOptions[2]);
+    }
+  }, [effort.id, effortOptions]);
+
+  useEffect(() => {
     if (!supportsPlan && mode === 'plan') {
       setMode('default');
     }
   }, [mode, supportsPlan]);
+
+  useEffect(() => {
+    if (!modelOpen) return;
+
+    function handlePointerDown(event: PointerEvent): void {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (modelPickerRef.current?.contains(target)) return;
+      setModelOpen(false);
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [modelOpen]);
 
   function send(): void {
     if (!canSend) return;
@@ -357,6 +417,55 @@ export function Composer({
     setPathDraft('');
   }
 
+  function addPlusPath(): void {
+    const path = plusPathDraft.trim();
+    if (path === '') return;
+    setAttachments((prev) => [...prev, { type: 'file', path }]);
+    setPlusPathDraft('');
+    setPlusOpen(false);
+    setPlusPanel('root');
+  }
+
+  function appendDraft(fragment: string): void {
+    setText((prev) => {
+      const separator = prev.trim().length === 0 ? '' : '\n';
+      return `${prev}${separator}${fragment}`;
+    });
+    setPlusOpen(false);
+    setPlusPanel('root');
+  }
+
+  function openPlusPanel(
+    panel: 'attachment' | 'issue' | 'workspaces',
+  ): void {
+    setPlusPanel(panel);
+    if (panel !== 'issue' || selectedWorkspace?.projectId === undefined) {
+      return;
+    }
+    void invoke('github:listIssues', {
+      projectId: selectedWorkspace.projectId,
+    })
+      .then((issues) => {
+        if (!Array.isArray(issues)) {
+          setIssueOptions([]);
+          return;
+        }
+        setIssueOptions(
+          issues
+            .filter(
+              (issue) =>
+                typeof issue?.number === 'number' &&
+                typeof issue?.title === 'string',
+            )
+            .map((issue) => ({
+              id: `github-${issue.number}`,
+              label: `GitHub issue #${issue.number} - ${issue.title}`,
+            })),
+        );
+      })
+      .catch(() => setIssueOptions([]));
+  }
+
   return (
     <div className="shrink-0 bg-surface-app px-6 pb-5" data-testid="composer">
       <div className="relative mx-auto w-full max-w-[1120px]">
@@ -366,15 +475,15 @@ export function Composer({
             data-testid="slash-menu"
           >
             <div className="border-b border-border-1 px-4 py-2 text-xs font-medium uppercase tracking-wide text-fg-3">
-              Available skills
+              Available commands
             </div>
             {slashLoading ? (
               <div className="px-4 py-3 text-sm text-fg-3">
-                Loading skills...
+                Loading commands...
               </div>
             ) : slashMatches.length === 0 ? (
               <div className="px-4 py-3 text-sm text-fg-3">
-                No matching skills
+                No matching commands
               </div>
             ) : (
               slashMatches.map((command, index) => (
@@ -460,13 +569,14 @@ export function Composer({
             }}
           />
           <div className="flex items-center gap-3 px-4 pb-4">
-            <div className="relative">
+            <div className="relative" ref={modelPickerRef}>
               <button
                 type="button"
                 className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
                 data-testid="composer-model"
                 aria-label="Select model"
                 aria-expanded={modelOpen}
+                title="Select model"
                 onClick={() => setModelOpen((open) => !open)}
               >
                 <Zap className="h-5 w-5 text-fg-3" aria-hidden />
@@ -549,8 +659,44 @@ export function Composer({
                 </div>
               ) : null}
             </div>
-            <Gauge className="h-5 w-5 text-fg-3" aria-hidden />
-            <span className="text-sm font-medium text-fg-3">High</span>
+            <div className="relative">
+              <button
+                type="button"
+                className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+                data-testid="composer-effort"
+                aria-label="Select effort"
+                aria-expanded={effortOpen}
+                title="Select effort"
+                onClick={() => setEffortOpen((open) => !open)}
+              >
+                <Gauge className="h-5 w-5 text-fg-3" aria-hidden />
+                <span>{effort.label}</span>
+              </button>
+              {effortOpen ? (
+                <div
+                  className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-44 rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
+                  data-testid="composer-effort-menu"
+                >
+                  {effortOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="flex w-full items-center justify-between rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                      data-testid={`composer-effort-${option.id}`}
+                      onClick={() => {
+                        setEffort(option);
+                        setEffortOpen(false);
+                      }}
+                    >
+                      <span>{option.label}</span>
+                      {option.id === effort.id ? (
+                        <Check className="h-4 w-4 text-fg-3" aria-hidden />
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               className={`rounded-1 p-1.5 transition-colors duration-fast ease-out ${
@@ -561,6 +707,7 @@ export function Composer({
               data-testid="composer-plan"
               aria-label="Plan mode"
               aria-pressed={mode === 'plan'}
+              title="Plan mode"
               disabled={!supportsPlan}
               onClick={togglePlanMode}
             >
@@ -571,17 +718,121 @@ export function Composer({
                 type="button"
                 className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
                 aria-label="Attach file"
+                title="Attach file"
                 onClick={addPath}
               >
                 <Paperclip className="h-5 w-5" aria-hidden />
               </button>
-              <button
-                type="button"
-                className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-                aria-label="More options"
-              >
-                <Plus className="h-5 w-5" aria-hidden />
-              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+                  data-testid="composer-plus"
+                  aria-label="More options"
+                  aria-expanded={plusOpen}
+                  title="More options"
+                  onClick={() => {
+                    setPlusOpen((open) => !open);
+                    setPlusPanel('root');
+                  }}
+                >
+                  <Plus className="h-5 w-5" aria-hidden />
+                </button>
+                {plusOpen ? (
+                  <div
+                    className="absolute bottom-[calc(100%+10px)] right-0 z-30 w-[300px] rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
+                    data-testid="composer-plus-menu"
+                  >
+                    {plusPanel === 'root' ? (
+                      <div className="grid gap-1">
+                        <button
+                          type="button"
+                          className="rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                          data-testid="composer-plus-attachment"
+                          onClick={() => openPlusPanel('attachment')}
+                        >
+                          Attach file
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                          data-testid="composer-plus-issue"
+                          onClick={() => openPlusPanel('issue')}
+                        >
+                          Link issue
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                          data-testid="composer-plus-workspaces"
+                          onClick={() => openPlusPanel('workspaces')}
+                        >
+                          Link workspace
+                        </button>
+                      </div>
+                    ) : null}
+                    {plusPanel === 'attachment' ? (
+                      <div className="flex gap-2">
+                        <Input
+                          className="min-w-0 flex-1"
+                          value={plusPathDraft}
+                          data-testid="composer-plus-attach-input"
+                          placeholder="Path"
+                          onChange={(e) => setPlusPathDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              addPlusPath();
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="rounded-2 bg-accent px-3 text-sm font-medium text-accent-fg"
+                          data-testid="composer-plus-attach-add"
+                          onClick={addPlusPath}
+                        >
+                          Add
+                        </button>
+                      </div>
+                    ) : null}
+                    {plusPanel === 'issue' ? (
+                      <div className="grid max-h-64 gap-1 overflow-y-auto">
+                        {issueOptions.map((issue) => (
+                          <button
+                            key={issue.id}
+                            type="button"
+                            className="rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                            data-testid={`composer-issue-${issue.id}`}
+                            onClick={() => appendDraft(issue.label)}
+                          >
+                            {issue.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    {plusPanel === 'workspaces' ? (
+                      <div className="grid max-h-64 gap-1 overflow-y-auto">
+                        {workspaces.map((workspace) => (
+                          <button
+                            key={workspace.id}
+                            type="button"
+                            className="rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                            data-testid={`composer-workspace-${workspace.id}`}
+                            onClick={() =>
+                              appendDraft(
+                                `Context: workspace ${workspace.name}`,
+                              )
+                            }
+                          >
+                            {workspace.name}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
               {isBusy ? (
                 <button
                   type="button"
@@ -589,6 +840,7 @@ export function Composer({
                   data-testid="composer-interrupt"
                   onClick={() => void onInterrupt()}
                   aria-label="Stop"
+                  title="Stop"
                 >
                   <span className="h-3 w-3 rounded-[2px] bg-white" />
                 </button>
@@ -600,6 +852,7 @@ export function Composer({
                   disabled={!canSend}
                   onClick={send}
                   aria-label="Send"
+                  title="Send"
                 >
                   <ArrowUp className="h-5 w-5" aria-hidden />
                 </button>

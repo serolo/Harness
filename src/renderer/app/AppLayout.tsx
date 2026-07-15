@@ -1,8 +1,7 @@
 // Three-pane app layout (Phase 0 scaffolding — README §3 renderer tree).
 //
-// Left: sidebar rail (workspace list). Center: the workspace panel — a Chat/Terminal tab
-// switcher (chat from Phase 2, terminal + run scripts from Phase 3). Right: context panel
-// (checks/details later) — still a labeled placeholder.
+// Left: sidebar rail (workspace list). Center: the chat workspace. Right: context/work
+// panel with checks, terminal, and Git changes for the selected workspace.
 //
 // Design system note (Harness Claude Design import, Batch A): a titlebar strip sits above
 // the 3-pane grid — `src/main/index.ts` now sets macOS `titleBarStyle: 'hiddenInset'` +
@@ -25,7 +24,7 @@ import { Sidebar } from '@renderer/features/sidebar/Sidebar';
 import { ChatPanel } from '@renderer/features/chat/ChatPanel';
 import { TerminalPanel } from '@renderer/features/terminal/TerminalPanel';
 import { DiffPanel } from '@renderer/features/diff/DiffPanel';
-import { ChecksPanel } from '@renderer/features/checks/ChecksPanel';
+import { TasksPanel } from '@renderer/features/tasks/TasksPanel';
 import { SettingsPanel } from '@renderer/features/settings/SettingsPanel';
 import { OpenInAppMenu } from '@renderer/features/workspace/OpenInAppMenu';
 import { archiveWorkspaceWithConfirmation } from '@renderer/features/workspace/actions';
@@ -40,24 +39,6 @@ import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useNavStore } from '@renderer/stores/nav';
 import { useUiStore } from '@renderer/stores/ui';
 
-/** Empty-state placeholder used by the right context pane. */
-function PanePlaceholder({ label }: { label: string }): React.JSX.Element {
-  return (
-    <div className="flex h-full items-center justify-center p-6 text-sm text-fg-3">
-      {label}
-    </div>
-  );
-}
-
-/** Which view the center pane shows for the selected workspace. */
-type CenterTab = 'chat' | 'terminal' | 'diff';
-
-const CENTER_TABS: { id: CenterTab; label: string }[] = [
-  { id: 'chat', label: 'Chat' },
-  { id: 'terminal', label: 'Terminal' },
-  { id: 'diff', label: 'Diff' },
-];
-
 // `-webkit-app-region` is a WebKit/Electron-only CSS property with no Tailwind utility —
 // the one sanctioned inline-style use. The installed `csstype` doesn't type it, hence the
 // double assertion rather than a direct `CSSProperties` literal (which would fail the
@@ -68,6 +49,13 @@ const NO_DRAG_STYLE = {
 } as unknown as CSSProperties;
 
 type SidePane = 'left' | 'right';
+type WorkPane = 'tasks' | 'terminal';
+
+interface InspectFileRequest {
+  id: number;
+  path: string;
+  mode: 'edit' | 'diff';
+}
 
 const PANE_LIMITS: Record<SidePane, { min: number; max: number }> = {
   left: { min: 220, max: 480 },
@@ -85,6 +73,18 @@ const PANE_OPEN_STORAGE_KEY: Record<SidePane, string> = {
   left: 'harness.layout.leftPaneOpen',
   right: 'harness.layout.rightPaneOpen',
 };
+const WORK_PANE_LIMITS: Record<WorkPane, { min: number; max: number }> = {
+  tasks: { min: 120, max: 420 },
+  terminal: { min: 120, max: 520 },
+};
+const DEFAULT_WORK_PANE_HEIGHT: Record<WorkPane, number> = {
+  tasks: 224,
+  terminal: 256,
+};
+const WORK_PANE_STORAGE_KEY: Record<WorkPane, string> = {
+  tasks: 'harness.layout.tasksPaneHeight',
+  terminal: 'harness.layout.terminalPaneHeight',
+};
 
 function clampPaneWidth(side: SidePane, width: number): number {
   const { min, max } = PANE_LIMITS[side];
@@ -100,6 +100,18 @@ function readStoredPaneWidth(side: SidePane): number {
 
 function readStoredPaneOpen(side: SidePane): boolean {
   return window.localStorage.getItem(PANE_OPEN_STORAGE_KEY[side]) !== 'false';
+}
+
+function clampWorkPaneHeight(pane: WorkPane, height: number): number {
+  const { min, max } = WORK_PANE_LIMITS[pane];
+  return Math.min(max, Math.max(min, height));
+}
+
+function readStoredWorkPaneHeight(pane: WorkPane): number {
+  const stored = Number(window.localStorage.getItem(WORK_PANE_STORAGE_KEY[pane]));
+  return Number.isFinite(stored) && stored > 0
+    ? clampWorkPaneHeight(pane, stored)
+    : DEFAULT_WORK_PANE_HEIGHT[pane];
 }
 
 interface PaneResizeHandleProps {
@@ -178,13 +190,86 @@ function PaneResizeHandle({
   );
 }
 
+interface WorkPaneResizeHandleProps {
+  pane: WorkPane;
+  height: number;
+  onResize: (height: number) => void;
+}
+
+/** Horizontal divider for resizing stacked work panes in the right panel. */
+function WorkPaneResizeHandle({
+  pane,
+  height,
+  onResize,
+}: WorkPaneResizeHandleProps): React.JSX.Element {
+  const cleanupRef = useRef<(() => void) | null>(null);
+  const { min, max } = WORK_PANE_LIMITS[pane];
+
+  useEffect(() => () => cleanupRef.current?.(), []);
+
+  const startResize = (event: React.MouseEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    cleanupRef.current?.();
+
+    const startY = event.clientY;
+    const startHeight = height;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    const handleMouseMove = (moveEvent: MouseEvent): void => {
+      onResize(clampWorkPaneHeight(pane, startHeight + startY - moveEvent.clientY));
+    };
+    const cleanup = (): void => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', cleanup);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      cleanupRef.current = null;
+    };
+
+    cleanupRef.current = cleanup;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', cleanup);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    const delta = event.key === 'ArrowUp' ? 16 : -16;
+    onResize(clampWorkPaneHeight(pane, height + delta));
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-label={`Resize ${pane} pane`}
+      aria-orientation="horizontal"
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={height}
+      tabIndex={0}
+      className="group relative z-10 h-px shrink-0 cursor-row-resize bg-border-1 outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+      data-testid={`${pane}-resize-handle`}
+      onMouseDown={startResize}
+      onKeyDown={handleKeyDown}
+    >
+      <span
+        className="absolute -bottom-1 -top-1 inset-x-0"
+        aria-hidden="true"
+      />
+    </div>
+  );
+}
+
 /** The top-level adjustable 3-pane shell: [rail | content | context]. */
 export function AppLayout(): React.JSX.Element {
   const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
-  const [centerTab, setCenterTab] = useState<CenterTab>('chat');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [terminalCollapsed, setTerminalCollapsed] = useState(false);
   const [leftPaneOpen, setLeftPaneOpen] = useState(() =>
     readStoredPaneOpen('left'),
   );
@@ -197,6 +282,14 @@ export function AppLayout(): React.JSX.Element {
   const [rightPaneWidth, setRightPaneWidth] = useState(() =>
     readStoredPaneWidth('right'),
   );
+  const [tasksPaneHeight, setTasksPaneHeight] = useState(() =>
+    readStoredWorkPaneHeight('tasks'),
+  );
+  const [terminalPaneHeight, setTerminalPaneHeight] = useState(() =>
+    readStoredWorkPaneHeight('terminal'),
+  );
+  const [inspectFileRequest, setInspectFileRequest] =
+    useState<InspectFileRequest | null>(null);
 
   const navTarget = useNavStore((s) => s.target);
   const navigate = useNavStore((s) => s.navigate);
@@ -228,6 +321,18 @@ export function AppLayout(): React.JSX.Element {
   useEffect(() => {
     window.localStorage.setItem(PANE_STORAGE_KEY.right, String(rightPaneWidth));
   }, [rightPaneWidth]);
+  useEffect(() => {
+    window.localStorage.setItem(
+      WORK_PANE_STORAGE_KEY.tasks,
+      String(tasksPaneHeight),
+    );
+  }, [tasksPaneHeight]);
+  useEffect(() => {
+    window.localStorage.setItem(
+      WORK_PANE_STORAGE_KEY.terminal,
+      String(terminalPaneHeight),
+    );
+  }, [terminalPaneHeight]);
 
   // The shared action registry: the ⌘K palette renders + runs these, and the
   // `menu:action` dispatcher below runs the SAME `byId` entries, so a keyboard
@@ -236,7 +341,9 @@ export function AppLayout(): React.JSX.Element {
   // swallows errors (the Checks pane surfaces PR state — a menu action must not throw).
   const actions = useMemo<CommandActions>(
     () => ({
-      showPane: (pane) => setCenterTab(pane),
+      showPane: (pane) => {
+        if (pane !== 'chat') setRightPaneOpen(true);
+      },
       openSettings: () => setSettingsOpen(true),
       newWorkspace: () => setNewWorkspaceOpen(true),
       openPr: () => {
@@ -266,13 +373,14 @@ export function AppLayout(): React.JSX.Element {
     [navigate],
   );
 
-  // Act on a pending deep-link target: focus the workspace, switch to the requested
-  // pane (`diff` → the Diff tab; `pr` shows in the always-visible checks pane), then
-  // clear it so the same target doesn't re-fire.
+  // Act on a pending deep-link target: focus the workspace and reveal the fixed right
+  // work area for diff/PR targets, then clear it so the same target doesn't re-fire.
   useEffect(() => {
     if (navTarget === null) return;
     selectWorkspace(navTarget.workspaceId);
-    if (navTarget.pane === 'diff') setCenterTab('diff');
+    if (navTarget.pane === 'diff' || navTarget.pane === 'pr') {
+      setRightPaneOpen(true);
+    }
     consumeNav();
   }, [navTarget, selectWorkspace, consumeNav]);
 
@@ -403,7 +511,8 @@ export function AppLayout(): React.JSX.Element {
           </>
         ) : null}
 
-        {/* Center content pane: Chat (Phase 2) / Terminal (Phase 3) tab switcher. */}
+        {/* Center content pane: chat stays central; terminal and Git changes live in
+            the right work area so they remain visible beside the conversation. */}
         <main
           className="flex min-w-0 flex-1 flex-col overflow-hidden bg-surface-app"
           data-testid="center-pane"
@@ -432,47 +541,15 @@ export function AppLayout(): React.JSX.Element {
               {!rightPaneOpen ? rightPaneControls : null}
             </div>
           </header>
-          {/*
-            Visually mirrors `components/ui/Tabs` (bg-bg-4/text-fg-1 active,
-            text-fg-2/hover:bg-bg-3 inactive) but stays hand-rolled: the Tabs primitive
-            emits `aria-selected` with no per-tab `data-testid`, while AppLayout.nav.test.tsx
-            asserts `aria-pressed` on `center-tab-<id>` — preserving that contract took
-            priority over the primitive swap.
-          */}
-          <div
-            className="flex items-center gap-1 border-b border-border-1 px-2 py-1"
-            data-testid="center-tabs"
-          >
-            {CENTER_TABS.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                className={`rounded-2 px-2.5 py-1 text-xs font-medium transition-colors duration-fast ease-out ${
-                  centerTab === tab.id
-                    ? 'bg-bg-4 text-fg-1'
-                    : 'text-fg-2 hover:bg-bg-3'
-                }`}
-                data-testid={`center-tab-${tab.id}`}
-                aria-pressed={centerTab === tab.id}
-                onClick={() => setCenterTab(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
           <div className="min-h-0 flex-1">
-            {centerTab === 'chat' ? (
-              <ChatPanel workspaceId={selectedWorkspaceId} />
-            ) : centerTab === 'terminal' ? (
-              <TerminalPanel workspaceId={selectedWorkspaceId} />
-            ) : (
-              <DiffPanel workspaceId={selectedWorkspaceId} />
-            )}
+            <ChatPanel
+              workspaceId={selectedWorkspaceId}
+              inspectFileRequest={inspectFileRequest}
+            />
           </div>
         </main>
 
-        {/* Right context panel: merge-readiness Checks for the selected workspace
-            (Phase 5). With no workspace selected the Phase-0 placeholder still shows. */}
+        {/* Right work panel: Git changes above a bottom terminal. */}
         {rightPaneOpen ? (
           <>
             <PaneResizeHandle
@@ -492,12 +569,62 @@ export function AppLayout(): React.JSX.Element {
               >
                 {rightPaneControls}
               </header>
-              <div className="min-h-0 flex-1">
-                {selectedWorkspaceId ? (
-                  <ChecksPanel workspaceId={selectedWorkspaceId} />
-                ) : (
-                  <PanePlaceholder label="Context panel" />
-                )}
+              <div
+                className="flex min-h-0 flex-1 flex-col"
+                data-testid="right-work-area"
+                data-terminal-collapsed={terminalCollapsed}
+              >
+                <section
+                  className="min-h-0 flex-1"
+                  data-testid="right-git-pane"
+                >
+                  <DiffPanel
+                    workspaceId={selectedWorkspaceId}
+                    onInspectFile={(path) =>
+                      setInspectFileRequest({
+                        id: Date.now(),
+                        path,
+                        mode: 'diff',
+                      })
+                    }
+                  />
+                </section>
+                <WorkPaneResizeHandle
+                  pane="tasks"
+                  height={tasksPaneHeight}
+                  onResize={setTasksPaneHeight}
+                />
+                <section
+                  className="shrink-0"
+                  style={{ height: tasksPaneHeight }}
+                  data-testid="right-tasks-pane"
+                >
+                  <TasksPanel workspaceId={selectedWorkspaceId} />
+                </section>
+                {!terminalCollapsed ? (
+                  <WorkPaneResizeHandle
+                    pane="terminal"
+                    height={terminalPaneHeight}
+                    onResize={setTerminalPaneHeight}
+                  />
+                ) : null}
+                <section
+                  className={
+                    terminalCollapsed
+                      ? 'shrink-0 border-t border-border-1'
+                      : 'shrink-0'
+                  }
+                  style={terminalCollapsed ? undefined : { height: terminalPaneHeight }}
+                  data-testid="right-terminal-pane"
+                >
+                  <TerminalPanel
+                    workspaceId={selectedWorkspaceId}
+                    collapsed={terminalCollapsed}
+                    onToggleCollapsed={() =>
+                      setTerminalCollapsed((collapsed) => !collapsed)
+                    }
+                  />
+                </section>
               </div>
             </aside>
           </>

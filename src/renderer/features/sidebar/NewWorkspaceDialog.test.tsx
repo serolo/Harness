@@ -44,7 +44,7 @@ const ISSUES: IssueListItem[] = [
   },
 ];
 
-const BRANCHES = ['main', 'origin/main', 'origin/release'];
+const BRANCHES = ['main', 'local-only', 'origin/main', 'origin/release'];
 
 /**
  * Install a stubbed window.api. `invoke` dispatches on channel; `prReject`/`issueReject`
@@ -150,21 +150,28 @@ afterEach(() => {
 });
 
 describe('NewWorkspaceDialog — Branch tab', () => {
-  it('loads fetched branches into the base branch select and creates from the selected branch', async () => {
+  it('shows remote branches without origin/ plus local-only branches and creates from the selected ref', async () => {
     const api = installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('base-branch-select')).toHaveValue('main');
+      expect(screen.getAllByTestId('branch-item').length).toBe(3);
     });
     expect(api.invoke).toHaveBeenCalledWith('project:listBranches', {
       projectId: PROJECT_ID,
     });
+    const labels = screen
+      .getAllByTestId('branch-item')
+      .map((item) => item.textContent ?? '');
+    expect(labels.some((text) => text.includes('origin/'))).toBe(false);
+    expect(labels.some((text) => text.includes('main'))).toBe(true);
+    expect(labels.some((text) => text.includes('release'))).toBe(true);
+    expect(labels.some((text) => text.includes('local-only'))).toBe(true);
 
-    fireEvent.change(screen.getByTestId('base-branch-select'), {
-      target: { value: 'origin/release' },
-    });
-    fireEvent.click(screen.getByText('Create'));
+    const release = screen
+      .getAllByTestId('branch-item')
+      .find((el) => el.getAttribute('data-branch-ref') === 'origin/release');
+    fireEvent.click(release as HTMLElement);
 
     await waitFor(() => {
       expect(api.stream).toHaveBeenCalled();
@@ -181,6 +188,23 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     expect(arg.location).toBe('worktree');
   });
 
+  it('filters branch rows by name', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('branch-item').length).toBe(3);
+    });
+
+    fireEvent.change(screen.getByTestId('source-filter'), {
+      target: { value: 'rel' },
+    });
+
+    expect(screen.getAllByTestId('branch-item')).toHaveLength(1);
+    expect(screen.getByText('release')).toBeInTheDocument();
+    expect(screen.queryByText('main')).not.toBeInTheDocument();
+  });
+
   it('can use the current checkout without showing a harness picker', async () => {
     const api = installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
@@ -190,9 +214,9 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     fireEvent.click(screen.getByTestId('location-project'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('base-branch-select')).toHaveValue('main');
+      expect(screen.getAllByTestId('branch-item').length).toBe(3);
     });
-    fireEvent.click(screen.getByText('Create'));
+    fireEvent.click(screen.getAllByTestId('branch-item')[0]);
 
     await waitFor(() => expect(api.stream).toHaveBeenCalled());
     const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
@@ -212,9 +236,9 @@ describe('NewWorkspaceDialog — Branch tab', () => {
       target: { value: 'feature-search' },
     });
     await waitFor(() => {
-      expect(screen.getByTestId('base-branch-select')).toHaveValue('main');
+      expect(screen.getAllByTestId('branch-item').length).toBe(3);
     });
-    fireEvent.click(screen.getByText('Create'));
+    fireEvent.click(screen.getAllByTestId('branch-item')[0]);
 
     await waitFor(() => expect(api.stream).toHaveBeenCalled());
     const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');

@@ -15,6 +15,72 @@
 import { create } from 'zustand';
 import type { Project, Workspace } from '@shared/models';
 
+const LAST_WORKSPACE_STORAGE_KEY = 'harness:last-workspace-id';
+
+interface WorkspaceSelectionState {
+  workspaces: Workspace[];
+  selectedWorkspaceId: string | null;
+  selectedProjectId: string | null;
+}
+
+function readLastWorkspaceId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(LAST_WORKSPACE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeLastWorkspaceId(workspaceId: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (workspaceId === null) {
+      window.localStorage.removeItem(LAST_WORKSPACE_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(LAST_WORKSPACE_STORAGE_KEY, workspaceId);
+    }
+  } catch {
+    // Selection should still work when storage is unavailable.
+  }
+}
+
+function restoreLastSelection(
+  state: Pick<WorkspaceSelectionState, 'selectedWorkspaceId'>,
+  workspaces: Workspace[],
+): Pick<WorkspaceSelectionState, 'selectedWorkspaceId' | 'selectedProjectId'> | null {
+  if (state.selectedWorkspaceId !== null) return null;
+  const lastWorkspaceId = readLastWorkspaceId();
+  if (lastWorkspaceId === null) return null;
+  const workspace = workspaces.find(
+    (candidate) =>
+      candidate.id === lastWorkspaceId && candidate.status !== 'archived',
+  );
+  if (!workspace) return null;
+  return {
+    selectedWorkspaceId: workspace.id,
+    selectedProjectId: workspace.projectId,
+  };
+}
+
+function nextSelectionAfterArchive(
+  archived: Workspace,
+  workspaces: Workspace[],
+): Pick<WorkspaceSelectionState, 'selectedWorkspaceId' | 'selectedProjectId'> {
+  const next =
+    workspaces.find(
+      (workspace) =>
+        workspace.projectId === archived.projectId &&
+        workspace.status !== 'archived',
+    ) ?? workspaces.find((workspace) => workspace.status !== 'archived');
+
+  writeLastWorkspaceId(next?.id ?? null);
+  return {
+    selectedWorkspaceId: next?.id ?? null,
+    selectedProjectId: next?.projectId ?? archived.projectId,
+  };
+}
+
 /** The reactive slice the sidebar (and later, other features) reads. */
 export interface WorkspacesState {
   /** Registered projects (empty until Phase 1). */
@@ -69,7 +135,11 @@ export const useWorkspacesStore = create<WorkspacesState>((set) => ({
 
   setProjects: (projects) => set({ projects }),
 
-  setWorkspaces: (workspaces) => set({ workspaces }),
+  setWorkspaces: (workspaces) =>
+    set((state) => ({
+      workspaces,
+      ...(restoreLastSelection(state, workspaces) ?? {}),
+    })),
 
   setProjectWorkspaces: (projectId, workspaces) =>
     set((state) => {
@@ -82,13 +152,15 @@ export const useWorkspacesStore = create<WorkspacesState>((set) => ({
       ) {
         return state;
       }
+      const nextWorkspaces = [
+        ...state.workspaces.filter(
+          (workspace) => workspace.projectId !== projectId,
+        ),
+        ...workspaces,
+      ];
       return {
-        workspaces: [
-          ...state.workspaces.filter(
-            (workspace) => workspace.projectId !== projectId,
-          ),
-          ...workspaces,
-        ],
+        workspaces: nextWorkspaces,
+        ...(restoreLastSelection(state, nextWorkspaces) ?? {}),
       };
     }),
 
@@ -96,14 +168,30 @@ export const useWorkspacesStore = create<WorkspacesState>((set) => ({
     set((state) => {
       const idx = state.workspaces.findIndex((w) => w.id === workspace.id);
       if (idx === -1) {
-        return { workspaces: [...state.workspaces, workspace] };
+        const nextWorkspaces = [...state.workspaces, workspace];
+        return {
+          workspaces: nextWorkspaces,
+          ...(restoreLastSelection(state, nextWorkspaces) ?? {}),
+        };
       }
       const next = state.workspaces.slice();
       next[idx] = workspace;
-      return { workspaces: next };
+      return {
+        workspaces: next,
+        ...(restoreLastSelection(state, next) ?? {}),
+      };
     }),
 
-  selectWorkspace: (workspaceId) => set({ selectedWorkspaceId: workspaceId }),
+  selectWorkspace: (workspaceId) => {
+    writeLastWorkspaceId(workspaceId);
+    set((state) => {
+      const workspace = state.workspaces.find((entry) => entry.id === workspaceId);
+      return {
+        selectedWorkspaceId: workspaceId,
+        ...(workspace ? { selectedProjectId: workspace.projectId } : {}),
+      };
+    });
+  },
 
   // --- Phase 1 additions ---
 
@@ -124,12 +212,18 @@ export const useWorkspacesStore = create<WorkspacesState>((set) => ({
     set((state) => {
       const idx = state.workspaces.findIndex((w) => w.id === id);
       if (idx === -1) return state;
+      const archived = state.workspaces[idx];
       const next = state.workspaces.slice();
       next[idx] = {
-        ...next[idx],
+        ...archived,
         status: 'archived',
         worktreePath: worktreePath ?? null,
       };
-      return { workspaces: next };
+      return {
+        workspaces: next,
+        ...(state.selectedWorkspaceId === id
+          ? nextSelectionAfterArchive(archived, next)
+          : {}),
+      };
     }),
 }));

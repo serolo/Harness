@@ -25,6 +25,8 @@ function historyToTurns(history: ChatHistory): RenderedTurn[] {
     status: t.status,
     sessionId: t.sessionId ?? undefined,
     events: t.events.map((e) => e.event),
+    startedAt: t.startedAt,
+    endedAt: t.endedAt ?? undefined,
     usage:
       t.inputTokens != null || t.outputTokens != null
         ? {
@@ -91,12 +93,13 @@ export function useChat(workspaceId: string | null): UseChat {
       harness?: HarnessId,
     ): Promise<void> => {
       if (!workspaceId) return;
-      const pendingTurnId = `pending:${Date.now()}:${Math.random()}`;
+      const startedAt = Date.now();
+      const pendingTurnId = `pending:${startedAt}:${Math.random()}`;
       let started = false;
       startTurn(workspaceId, pendingTurnId, '', {
         kind: 'user_message',
         text: prompt,
-      });
+      }, startedAt);
       setBusy(workspaceId, true);
       try {
         await subscribeStream(

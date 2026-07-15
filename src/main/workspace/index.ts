@@ -17,7 +17,7 @@
 //   - Exactly one code path (`setStatus`) emits `workspace:status`.
 
 import { join, resolve } from 'node:path';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 
 import { AppError } from '@shared/errors';
 import type { CreateWorkspaceReq, Workspace } from '@shared/models';
@@ -49,6 +49,33 @@ function sameFilesystemPath(left: string, right: string): boolean {
     // lexical comparison without requiring either side to exist.
     return resolve(left) === resolve(right);
   }
+}
+
+function branchSlug(name: string): string {
+  return name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 63);
+}
+
+function branchNameForWorkspaceName(
+  currentBranch: string,
+  name: string,
+): string {
+  const slug = branchSlug(name);
+  if (slug === '') {
+    throw new AppError(
+      'invalid_input',
+      'workspace name must contain letters or numbers to rename the branch',
+    );
+  }
+  const slash = currentBranch.lastIndexOf('/');
+  if (slash <= 0) return slug;
+  return `${currentBranch.slice(0, slash)}/${slug}`;
 }
 
 /**
@@ -369,6 +396,7 @@ export class WorkspaceManager {
     id: string,
     patch: {
       name?: string;
+      renameBranch?: boolean;
       status?: Workspace['status'];
       isUnread?: boolean;
       isPinned?: boolean;
@@ -382,13 +410,10 @@ export class WorkspaceManager {
     let name: string | undefined;
     if (patch.name !== undefined) {
       name = patch.name.trim();
-      if (
-        !/^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,79}$/u.test(name) ||
-        name.endsWith('.')
-      ) {
+      if (name.length === 0 || name.length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) {
         throw new AppError(
           'invalid_input',
-          'workspace name must be 1-80 letters, numbers, spaces, dots, hyphens, or underscores',
+          'workspace name must be 1-80 visible characters',
         );
       }
       const siblings = await this.deps.repos.workspaces.listByProject(
@@ -404,6 +429,12 @@ export class WorkspaceManager {
           `workspace name is already in use: ${name}`,
         );
       }
+    }
+    if (
+      patch.renameBranch !== undefined &&
+      typeof patch.renameBranch !== 'boolean'
+    ) {
+      throw new AppError('invalid_input', 'renameBranch must be a boolean');
     }
 
     if (
@@ -422,8 +453,33 @@ export class WorkspaceManager {
       throw new AppError('invalid_input', 'isPinned must be a boolean');
     }
 
+    let branch: string | undefined;
+    if (patch.renameBranch === true && name !== undefined) {
+      branch = branchNameForWorkspaceName(current.branch, name);
+      if (branch !== current.branch) {
+        const project = await this.deps.repos.projects.getById(
+          current.projectId,
+        );
+        if (project === null) {
+          throw new AppError(
+            'not_found',
+            `project not found: ${current.projectId}`,
+          );
+        }
+        if (await this.deps.git.branchExists(project.repoPath, branch)) {
+          throw new AppError('conflict', `branch is already in use: ${branch}`);
+        }
+        await this.deps.git.renameBranch(
+          project.repoPath,
+          current.branch,
+          branch,
+        );
+      }
+    }
+
     await this.deps.repos.workspaces.update(id, {
       ...(name !== undefined ? { name } : {}),
+      ...(branch !== undefined ? { branch } : {}),
       ...(patch.isUnread !== undefined ? { isUnread: patch.isUnread } : {}),
       ...(patch.isPinned !== undefined ? { isPinned: patch.isPinned } : {}),
     });
@@ -449,7 +505,7 @@ export class WorkspaceManager {
       this.deps.settings.get().git.deleteWorktreeOnArchive &&
       (ws.location ?? 'worktree') === 'worktree' &&
       ws.worktreePath !== null;
-    if (ws.worktreePath === null) {
+    if (ws.worktreePath === null || !existsSync(ws.worktreePath)) {
       return {
         hasUncommittedChanges: false,
         changedFileCount: 0,
@@ -492,10 +548,12 @@ export class WorkspaceManager {
     }
 
     const settings = this.deps.settings.get();
-    if (settings.scripts.archive !== undefined && ws.worktreePath !== null) {
+    const worktreeExists =
+      ws.worktreePath !== null && existsSync(ws.worktreePath);
+    if (settings.scripts.archive !== undefined && worktreeExists) {
       try {
         await this.deps.runSetup(settings.scripts.archive, {
-          cwd: ws.worktreePath,
+          cwd: ws.worktreePath!,
           env: settings.env,
         });
       } catch {
@@ -511,7 +569,7 @@ export class WorkspaceManager {
       ws.worktreePath !== null &&
       (ws.location ?? 'worktree') === 'worktree';
 
-    if (deleteWorktree && ws.worktreePath !== null) {
+    if (deleteWorktree && ws.worktreePath !== null && worktreeExists) {
       const project = await this.deps.repos.projects.getById(ws.projectId);
       if (project !== null) {
         await this.deps.git.removeWorktree(

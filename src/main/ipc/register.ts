@@ -20,9 +20,9 @@
 
 import { app, dialog, BrowserWindow, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
-import { basename } from 'node:path';
+import { basename, relative, resolve, sep } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
-import { rm } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { v7 as uuidv7 } from 'uuid';
 import { Octokit } from '@octokit/rest';
 import type {
@@ -36,8 +36,15 @@ import type {
   WorkspaceOpenAppId,
 } from '@shared/ipc';
 import type { StreamSink } from '@shared/ipc';
-import type { AgentEvent, HarnessId, StartTurnOpts } from '@shared/harness';
+import type {
+  AgentEvent,
+  AgentMode,
+  HarnessId,
+  StartTurnOpts,
+} from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
+import { MODEL_PATTERN } from '@shared/tasks';
+import type { TaskOrigin, TaskState } from '@shared/tasks';
 import type { AppContext } from '../context';
 import { toAppError } from '../error';
 import { AppError, encodeAppErrorMessage } from '@shared/errors';
@@ -52,10 +59,13 @@ import {
 import { discoverGitSshKeys } from '../git/sshKeys';
 import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
+import type { DiffQuery, DiffScope } from '@shared/review';
+import type { GitDiff } from '../git';
 import { repoDir } from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
 import { isCompletionSound } from '@shared/settings';
 import { playCompletionSound } from '../harness/notifications';
+import { discoverNativeSlashCommands } from '../slash/native';
 import { resolveDeepLink } from '../deeplink';
 import { buildEnv } from '../process/env';
 import type { PtyChunk } from '../pty';
@@ -64,6 +74,7 @@ import {
   handleStreamCancel,
   STREAM_CANCEL_CHANNEL,
 } from './stream';
+import { emitAll } from './events';
 
 /** Control channel the renderer invokes to begin a scoped stream. */
 const STREAM_START_CHANNEL = 'stream:start';
@@ -91,6 +102,11 @@ const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
     template: 'Create a concise implementation plan for this task.\n\n$ARGS',
     description: 'Create an implementation plan',
   },
+  {
+    name: 'clear',
+    template: 'Clear the current chat transcript and context.',
+    description: 'Clear chat history and context',
+  },
 ];
 
 /**
@@ -101,9 +117,140 @@ const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
  */
 const trackedFocusRefreshIds = new Set<string>();
 
+const AGENT_MODES = new Set<AgentMode>(['default', 'plan', 'auto_accept']);
+const TASK_ORIGINS = new Set<TaskOrigin>(['user', 'limit_resume']);
+const RUNNABLE_TASK_STATES = new Set<TaskState>([
+  'pending',
+  'scheduled',
+  'missed',
+  'error',
+]);
+const CHAT_FILE_PREVIEW_MAX_BYTES = 512 * 1024;
+
 /** Record a workspace id so a later window focus recomputes its checks (Phase 5). */
 function trackForFocusRefresh(workspaceId: string): void {
   trackedFocusRefreshIds.add(workspaceId);
+}
+
+function assertWorkspaceId(workspaceId: unknown): asserts workspaceId is string {
+  if (typeof workspaceId !== 'string' || workspaceId === '') {
+    throw new AppError('invalid_input', 'workspaceId is required');
+  }
+}
+
+function assertWorkspaceFilePath(path: unknown): asserts path is string {
+  if (
+    typeof path !== 'string' ||
+    path.trim() === '' ||
+    path.includes('\0')
+  ) {
+    throw new AppError('invalid_input', 'workspace file path is required');
+  }
+}
+
+function resolveWorkspaceFile(worktreePath: string, filePath: string): string {
+  const root = resolve(worktreePath);
+  const target = resolve(root, filePath);
+  const rel = relative(root, target);
+  if (rel === '' || rel.startsWith('..') || rel.includes(`..${sep}`)) {
+    throw new AppError('invalid_input', 'file path must stay inside workspace');
+  }
+  return target;
+}
+
+function workspaceRelativePath(worktreePath: string, filePath: string): string {
+  return relative(resolve(worktreePath), resolveWorkspaceFile(worktreePath, filePath));
+}
+
+function diffSetFromGitDiff(gitDiff: GitDiff): CommandRes<'diff:get'> {
+  return {
+    baseRef: gitDiff.baseRef,
+    headRef: gitDiff.headRef,
+    files: gitDiff.files.map((f) => ({
+      path: f.path,
+      oldPath: f.oldPath,
+      change: f.change,
+      additions: f.additions,
+      deletions: f.deletions,
+    })),
+  };
+}
+
+function assertDiffScope(scope: unknown): asserts scope is DiffScope {
+  if (typeof scope !== 'object' || scope === null) {
+    throw new AppError('invalid_input', 'scope is required');
+  }
+  const candidate = scope as { kind?: unknown; sha?: unknown };
+  if (candidate.kind === 'all' || candidate.kind === 'uncommitted') return;
+  if (
+    candidate.kind === 'commit' &&
+    typeof candidate.sha === 'string' &&
+    /^[0-9a-f]{40}$/i.test(candidate.sha)
+  ) {
+    return;
+  }
+  throw new AppError('invalid_input', 'scope must be all|uncommitted|commit');
+}
+
+function assertDiffQuery(req: unknown): asserts req is DiffQuery {
+  if (typeof req !== 'object' || req === null) {
+    throw new AppError('invalid_input', 'diff query is required');
+  }
+  const candidate = req as {
+    workspaceId?: unknown;
+    targetRef?: unknown;
+    scope?: unknown;
+  };
+  assertWorkspaceId(candidate.workspaceId);
+  if (typeof candidate.targetRef !== 'string' || candidate.targetRef === '') {
+    throw new AppError('invalid_input', 'targetRef is required');
+  }
+  assertDiffScope(candidate.scope);
+}
+
+function assertTaskId(id: unknown): asserts id is string {
+  if (typeof id !== 'string' || id === '') {
+    throw new AppError('invalid_input', 'task id is required');
+  }
+}
+
+function assertTaskPrompt(prompt: unknown): asserts prompt is string {
+  if (typeof prompt !== 'string' || prompt.trim() === '') {
+    throw new AppError('invalid_input', 'prompt is required');
+  }
+}
+
+function assertTaskMode(mode: unknown): asserts mode is AgentMode {
+  if (!AGENT_MODES.has(mode as AgentMode)) {
+    throw new AppError('invalid_input', 'mode must be default|plan|auto_accept');
+  }
+}
+
+function assertTaskModel(model: unknown): asserts model is string {
+  if (typeof model !== 'string' || !MODEL_PATTERN.test(model)) {
+    throw new AppError('invalid_input', 'invalid model');
+  }
+}
+
+function assertScheduledAt(scheduledAt: unknown): asserts scheduledAt is number {
+  if (
+    typeof scheduledAt !== 'number' ||
+    !Number.isInteger(scheduledAt) ||
+    scheduledAt <= 0
+  ) {
+    throw new AppError(
+      'invalid_input',
+      'scheduledAt must be a positive integer epoch millis',
+    );
+  }
+}
+
+function emitTaskChanged(workspaceId: string): void {
+  emitAll(
+    BrowserWindow.getAllWindows().map((window) => window.webContents),
+    'task:changed',
+    { workspaceId },
+  );
 }
 
 /**
@@ -913,6 +1060,37 @@ export function registerIpc(ctx: AppContext): void {
     return { turns };
   });
 
+  // chat:clear — hide the transcript from future history/resume reconstruction.
+  handle('chat:clear', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    await ctx.recorder.clear(req.workspaceId);
+  });
+
+  // workspace:readFile — read-only preview for chat file tabs. Paths are relative to
+  // the selected checkout and are resolved/capped in main before crossing IPC.
+  handle('workspace:readFile', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    assertWorkspaceFilePath(req.path);
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (workspace === null || workspace.worktreePath === null) {
+      throw new AppError('not_found', 'workspace checkout is unavailable');
+    }
+    const absolutePath = resolveWorkspaceFile(workspace.worktreePath, req.path);
+    const fileStat = await stat(absolutePath);
+    if (!fileStat.isFile()) {
+      throw new AppError('invalid_input', 'path is not a file');
+    }
+    if (fileStat.size > CHAT_FILE_PREVIEW_MAX_BYTES) {
+      throw new AppError('invalid_input', 'file is too large to preview');
+    }
+    return {
+      path: workspaceRelativePath(workspace.worktreePath, req.path),
+      content: await readFile(absolutePath, 'utf8'),
+    };
+  });
+
   // harness:detect — probe a registered harness CLI.
   handle('harness:detect', async (req) => ctx.harness.detect(req.id));
 
@@ -1058,21 +1236,12 @@ export function registerIpc(ctx: AppContext): void {
     const gitDiff = await ctx.diff.getDiff(req.workspaceId);
     // Map the main-only GitDiff → the shared DiffSet (drop the raw patch; Monaco fetches
     // per-file content lazily via diff:file, keeping the list payload small).
-    return {
-      baseRef: gitDiff.baseRef,
-      headRef: gitDiff.headRef,
-      files: gitDiff.files.map((f) => ({
-        path: f.path,
-        oldPath: f.oldPath,
-        change: f.change,
-        additions: f.additions,
-        deletions: f.deletions,
-      })),
-    };
+    return diffSetFromGitDiff(gitDiff);
   });
 
-  // diff:file — per-file old/new content + parsed hunks (path traversal rejected in the
-  // service). `path` must be a non-empty relative path.
+  // diff:file — per-file old/new content + parsed hunks. Chat file previews may pass
+  // absolute tool-reported paths; normalize any in-workspace path before DiffService,
+  // which intentionally accepts only workspace-relative paths.
   handle('diff:file', async (req) => {
     if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
       throw new AppError('invalid_input', 'workspaceId is required');
@@ -1080,7 +1249,46 @@ export function registerIpc(ctx: AppContext): void {
     if (typeof req.path !== 'string' || req.path === '') {
       throw new AppError('invalid_input', 'path is required');
     }
-    return ctx.diff.fileDiff(req.workspaceId, req.path);
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (workspace === null || workspace.worktreePath === null) {
+      throw new AppError('not_found', 'workspace checkout is unavailable');
+    }
+    return ctx.diff.fileDiff(
+      req.workspaceId,
+      workspaceRelativePath(workspace.worktreePath, req.path),
+    );
+  });
+
+  // diff:menu — target-branch and scope metadata for the Git changes panel.
+  handle('diff:menu', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    if (
+      req.targetRef !== undefined &&
+      (typeof req.targetRef !== 'string' || req.targetRef === '')
+    ) {
+      throw new AppError('invalid_input', 'targetRef must be a non-empty string');
+    }
+    return ctx.diff.menu(req.workspaceId, req.targetRef);
+  });
+
+  // diff:query — explicit target/scope comparison used by the Git menu.
+  handle('diff:query', async (req) => {
+    assertDiffQuery(req);
+    return diffSetFromGitDiff(await ctx.diff.getDiffForQuery(req));
+  });
+
+  // diff:fileQuery — per-file contents for the exact target/scope comparison.
+  handle('diff:fileQuery', async (req) => {
+    assertDiffQuery(req);
+    assertWorkspaceFilePath(req.path);
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (workspace === null || workspace.worktreePath === null) {
+      throw new AppError('not_found', 'workspace checkout is unavailable');
+    }
+    return ctx.diff.fileDiffForQuery(
+      req,
+      workspaceRelativePath(workspace.worktreePath, req.path),
+    );
   });
 
   // diff:commits — the commits in base..HEAD for the commit filter.
@@ -1246,6 +1454,96 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'id is required');
     }
     return new TodosRepo(ctx.db).toggle(req.id);
+  });
+
+  // --- Scheduled agent tasks ---
+  // Task prompts eventually become agent input, and model/mode become process args/options,
+  // so validate every field at the IPC boundary before touching persistence or scheduler.
+  handle('task:list', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    return ctx.tasks.list(req.workspaceId);
+  });
+
+  handle('task:create', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    assertTaskPrompt(req.prompt);
+    if (req.mode !== undefined) assertTaskMode(req.mode);
+    if (req.model !== undefined) assertTaskModel(req.model);
+    if (req.scheduledAt !== undefined) assertScheduledAt(req.scheduledAt);
+    if (req.origin !== undefined && !TASK_ORIGINS.has(req.origin)) {
+      throw new AppError('invalid_input', 'origin must be user|limit_resume');
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (!workspace) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    const task = await ctx.tasks.create({
+      workspaceId: req.workspaceId,
+      prompt: req.prompt,
+      model: req.model,
+      mode: req.mode,
+      scheduledAt: req.scheduledAt,
+      origin: req.origin,
+    });
+    emitTaskChanged(task.workspaceId);
+    return task;
+  });
+
+  handle('task:update', async (req) => {
+    assertTaskId(req.id);
+    if (req.prompt !== undefined) assertTaskPrompt(req.prompt);
+    if (req.mode !== undefined && req.mode !== null) assertTaskMode(req.mode);
+    if (req.model !== undefined && req.model !== null) {
+      assertTaskModel(req.model);
+    }
+    if (req.scheduledAt !== undefined && req.scheduledAt !== null) {
+      assertScheduledAt(req.scheduledAt);
+    }
+    const task = await ctx.tasks.update(req.id, {
+      prompt: req.prompt,
+      model: req.model,
+      mode: req.mode,
+      scheduledAt: req.scheduledAt,
+    });
+    emitTaskChanged(task.workspaceId);
+    return task;
+  });
+
+  handle('task:delete', async (req) => {
+    assertTaskId(req.id);
+    const task = await ctx.tasks.get(req.id);
+    await ctx.tasks.delete(req.id);
+    emitTaskChanged(task.workspaceId);
+  });
+
+  handle('task:runNow', async (req) => {
+    assertTaskId(req.id);
+    const task = await ctx.tasks.get(req.id);
+    if (!RUNNABLE_TASK_STATES.has(task.state)) {
+      throw new AppError('conflict', `cannot run a ${task.state} task`, {
+        id: req.id,
+      });
+    }
+    const next = await ctx.scheduler.runNow(req.id);
+    emitTaskChanged(next.workspaceId);
+    return next;
+  });
+
+  handle('task:markDone', async (req) => {
+    assertTaskId(req.id);
+    const task = await ctx.tasks.get(req.id);
+    if (!RUNNABLE_TASK_STATES.has(task.state)) {
+      throw new AppError('conflict', `cannot mark a ${task.state} task done`, {
+        id: req.id,
+      });
+    }
+    const next = await ctx.tasks.setState(req.id, 'done', {
+      errorMessage: null,
+    });
+    emitTaskChanged(next.workspaceId);
+    return next;
   });
 
   // --- Phase 5: GitHub + checks + PR (APPEND-ONLY) ---
@@ -1526,19 +1824,42 @@ export function registerIpc(ctx: AppContext): void {
     playCompletionSound(req.sound);
   });
 
-  // slash:list — the slash-command catalogue built from `agent.prompts` (spec §5.4).
-  // Each named prompt template becomes a `/name` command the composer can expand.
-  handle('slash:list', async () => {
+  // slash:list — configured prompts plus native Claude/Codex commands and skills.
+  // Configured prompts win, then workspace-native entries, then home-native entries,
+  // then the app built-ins.
+  handle('slash:list', async (req) => {
     const prompts = ctx.settings.get().agent.prompts;
     const custom = Object.entries(prompts).map(([name, template]) => ({
       name,
       template,
     }));
-    const customNames = new Set(custom.map((cmd) => cmd.name));
-    return [
-      ...custom,
-      ...DEFAULT_SLASH_COMMANDS.filter((cmd) => !customNames.has(cmd.name)),
-    ];
+    const workspaceId =
+      req !== undefined &&
+      typeof req.workspaceId === 'string' &&
+      req.workspaceId.trim() !== ''
+        ? req.workspaceId
+        : undefined;
+    const harness =
+      req !== undefined &&
+      (req.harness === 'claude_code' ||
+        req.harness === 'codex' ||
+        req.harness === 'cursor')
+        ? req.harness
+        : undefined;
+    const workspace =
+      workspaceId !== undefined ? await ctx.workspaces.get(workspaceId) : null;
+    const native = await discoverNativeSlashCommands({
+      harness,
+      workspaceDir: workspace?.worktreePath ?? null,
+    });
+
+    const commands = [...custom, ...native, ...DEFAULT_SLASH_COMMANDS];
+    const seen = new Set<string>();
+    return commands.filter((command) => {
+      if (seen.has(command.name)) return false;
+      seen.add(command.name);
+      return true;
+    });
   });
 
   // deepLink:resolve — parse an `harness://…` URL into a nav target (null if

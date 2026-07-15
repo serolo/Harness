@@ -33,7 +33,7 @@
 // every terminal path (no zombie `codex` processes).
 
 import { spawn } from 'node:child_process';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
@@ -50,7 +50,10 @@ import type {
 } from '@shared/harness';
 import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
+import { childProcessEnv } from '../process/childEnv';
+import { resolveExecutable } from '../process/executable';
 import { createJsonLineSplitter } from './parser';
+import type { RawPtyHandle, RawPtySpawner } from './raw-terminal';
 import {
   asRecord,
   normalizeInteractionTool,
@@ -69,6 +72,8 @@ const SESSION_RESOLVE_TIMEOUT_MS = 15_000;
 
 export class CodexHarness implements Harness {
   readonly id = 'codex' as const;
+
+  constructor(private readonly rawPtySpawner?: RawPtySpawner) {}
 
   capabilities(): HarnessCapabilities {
     // These reflect the Codex CLI's documented capabilities and are the exact point
@@ -92,7 +97,10 @@ export class CodexHarness implements Harness {
    */
   async detect(): Promise<DetectResult> {
     try {
-      const { stdout } = await execa('codex', ['--version']);
+      const { stdout } = await execa(resolveExecutable('codex'), ['--version'], {
+        env: childProcessEnv(),
+        extendEnv: false,
+      });
       const version = parseVersion(stdout);
       if (version && isOlderThan(version, MIN_CODEX_VERSION)) {
         logger.warn(
@@ -115,17 +123,37 @@ export class CodexHarness implements Harness {
    * begin interrupting immediately. Normalized `AgentEvent`s are pushed to `sink` as
    * they stream; the sink is `end()`ed exactly once on the terminal path.
    */
-  startTurn(
+  async startTurn(
+    opts: StartTurnOpts,
+    sink: StreamSink<AgentEvent>,
+  ): Promise<TurnHandle> {
+    if (this.rawPtySpawner !== undefined) {
+      return this.startPtyTurn(opts, sink);
+    }
+    return this.startChildProcessTurn(opts, sink);
+  }
+
+  private startChildProcessTurn(
     opts: StartTurnOpts,
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
-    const child = spawn('codex', args, {
-      cwd: opts.workspaceDir,
-      env: process.env,
-      // Never a shell — args are passed as an array (command-injection defense).
-      shell: false,
-    });
+    const command = resolveExecutable('codex');
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, args, {
+        cwd: opts.workspaceDir,
+        env: childProcessEnv(),
+        // Never a shell — args are passed as an array (command-injection defense).
+        shell: false,
+        // The CLI is prompt-driven through argv/temp files; stdin is unused, but keep a
+        // valid fd open. The JS Codex wrapper spawns the native binary with stdio
+        // inherited; closing fd 0 makes that inner spawn fail with EBADF.
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+    }
 
     const splitter = createJsonLineSplitter((msg) =>
       logger.warn(`[harness:codex] ${msg}`),
@@ -133,6 +161,7 @@ export class CodexHarness implements Harness {
 
     let sessionId = opts.sessionId ?? '';
     let terminalEmitted = false;
+    let textEmitted = false;
     let settled = false;
     let ended = false;
 
@@ -163,6 +192,11 @@ export class CodexHarness implements Harness {
       /** Feed parsed objects through the Codex normalization into the sink. */
       function consume(objects: unknown[]): void {
         for (const obj of objects) {
+          const fallbackText = finalTextFallback(obj);
+          if (!textEmitted && fallbackText !== undefined) {
+            textEmitted = true;
+            sink.push({ kind: 'text', delta: fallbackText });
+          }
           for (const result of normalizeCodex(obj)) {
             if (result.type === 'session') {
               sessionId = result.sessionId;
@@ -174,19 +208,22 @@ export class CodexHarness implements Harness {
               ) {
                 terminalEmitted = true;
               }
+              if (result.event.kind === 'text') {
+                textEmitted = true;
+              }
               sink.push(result.event);
             }
           }
         }
       }
 
-      child.stdout.on('data', (buf: Buffer) => {
+      child.stdout!.on('data', (buf: Buffer) => {
         consume(splitter.push(buf.toString('utf8')));
       });
 
       // stderr is diagnostic only — never echo it as content, never log it verbatim
       // (it can carry prompt/tool fragments). Length is enough to spot noise.
-      child.stderr.on('data', (buf: Buffer) => {
+      child.stderr!.on('data', (buf: Buffer) => {
         logger.debug(
           `[harness:codex] stderr (${buf.length} bytes) for cwd=${opts.workspaceDir}`,
         );
@@ -195,7 +232,10 @@ export class CodexHarness implements Harness {
       child.on('error', (err: Error) => {
         // spawn failure (e.g. `codex` not on PATH) — surface as a terminal error.
         if (!terminalEmitted) {
-          sink.push({ kind: 'error', message: err.message });
+          sink.push({
+            kind: 'error',
+            message: formatSpawnFailure(command, args, opts.workspaceDir, err),
+          });
           terminalEmitted = true;
         }
         resolveHandle();
@@ -222,6 +262,229 @@ export class CodexHarness implements Harness {
         endStream();
       });
     });
+  }
+
+  private async startPtyTurn(
+    opts: StartTurnOpts,
+    sink: StreamSink<AgentEvent>,
+  ): Promise<TurnHandle> {
+    const args = buildArgs(opts);
+    const command = resolveExecutable('codex');
+    const captureDir = mkdtempSync(join(tmpdir(), 'harness-codex-stream-'));
+    const stdoutPath = join(captureDir, 'stdout');
+    const stderrPath = join(captureDir, 'stderr');
+    let handle: RawPtyHandle;
+    try {
+      handle = await this.rawPtySpawner!.spawn({
+        cwd: opts.workspaceDir,
+        shell: '/bin/zsh',
+        args: [
+          '-f',
+          '-c',
+          '"$0" "$@" > "$HARNESS_AGENT_STDOUT" 2> "$HARNESS_AGENT_STDERR"',
+          command,
+          ...args,
+        ],
+        env: childProcessEnv({
+          HARNESS_AGENT_STDOUT: stdoutPath,
+          HARNESS_AGENT_STDERR: stderrPath,
+        }),
+        cols: 120,
+        rows: 40,
+      });
+    } catch (err) {
+      rmSync(captureDir, { recursive: true, force: true });
+      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+    }
+
+    const splitter = createJsonLineSplitter((msg) =>
+      logger.warn(`[harness:codex] ${msg}`),
+    );
+
+    let sessionId = opts.sessionId ?? '';
+    let terminalEmitted = false;
+    let textEmitted = false;
+    let settled = false;
+    let ended = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let poller: ReturnType<typeof setInterval> | undefined;
+    let stdoutOffset = 0;
+
+    return new Promise<TurnHandle>((resolve) => {
+      timer = setTimeout(resolveHandle, SESSION_RESOLVE_TIMEOUT_MS);
+      poller = setInterval(readCapturedStdout, 50);
+
+      const interrupt = async (): Promise<void> => {
+        handle.kill();
+      };
+
+      function resolveHandle(): void {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ sessionId, interrupt });
+      }
+
+      function endStream(): void {
+        if (ended) return;
+        ended = true;
+        if (poller !== undefined) {
+          clearInterval(poller);
+          poller = undefined;
+        }
+        sink.end();
+        rmSync(captureDir, { recursive: true, force: true });
+      }
+
+      function consume(objects: unknown[]): void {
+        for (const obj of objects) {
+          const fallbackText = finalTextFallback(obj);
+          if (!textEmitted && fallbackText !== undefined) {
+            textEmitted = true;
+            sink.push({ kind: 'text', delta: fallbackText });
+          }
+          for (const result of normalizeCodex(obj)) {
+            if (result.type === 'session') {
+              sessionId = result.sessionId;
+              resolveHandle();
+            } else {
+              if (
+                result.event.kind === 'turn_end' ||
+                result.event.kind === 'error'
+              ) {
+                terminalEmitted = true;
+              }
+              if (result.event.kind === 'text') {
+                textEmitted = true;
+              }
+              sink.push(result.event);
+            }
+          }
+        }
+      }
+
+      function readCapturedStdout(): void {
+        const next = readNewBytes(stdoutPath, stdoutOffset);
+        if (next === null) return;
+        stdoutOffset = next.offset;
+        consume(splitter.push(next.text));
+      }
+
+      handle.onExit(({ exitCode }) => {
+        readCapturedStdout();
+        consume(splitter.flush());
+        const stderrBytes = fileSize(stderrPath);
+        if (stderrBytes > 0) {
+          logger.debug(
+            `[harness:codex] stderr (${stderrBytes} bytes) for cwd=${opts.workspaceDir}`,
+          );
+        }
+        if (!terminalEmitted) {
+          if (exitCode !== 0) {
+            sink.push({
+              kind: 'error',
+              message: `codex exited with code ${exitCode}`,
+            });
+          } else {
+            sink.push({ kind: 'turn_end' });
+          }
+          terminalEmitted = true;
+        }
+        resolveHandle();
+        endStream();
+      });
+    });
+  }
+}
+
+function formatSpawnFailure(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  err: unknown,
+): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const code = isErrnoException(err) ? err.code : undefined;
+  const lines = [
+    `Failed to start ${command}: ${message}`,
+    `Command: ${command} ${redactPromptArgs(args).join(' ')}`,
+    `Working directory: ${cwd}`,
+  ];
+  if (code === 'EBADF' || message.includes('EBADF')) {
+    lines.push(
+      'Likely cause: the CLI or one of its wrapper/helper processes tried to inherit a closed file descriptor.',
+      'This is usually an Electron/process stdio issue, not a model response error.',
+    );
+  } else if (code === 'ENOENT') {
+    lines.push(
+      `Likely cause: ${command} was not found on PATH for the Electron main process.`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function redactPromptArgs(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === '-p' && i + 1 < args.length) {
+      out.push(arg, '<prompt omitted>');
+      i += 1;
+    } else if (arg === '--' && args.length - i - 1 === 2) {
+      out.push(arg, '<session id omitted>', '<prompt omitted>');
+      break;
+    } else if (arg === '--' && args.length - i - 1 === 1) {
+      out.push(arg, '<prompt omitted>');
+      break;
+    } else {
+      out.push(arg);
+    }
+  }
+  return out;
+}
+
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && 'code' in err;
+}
+
+function finalTextFallback(obj: unknown): string | undefined {
+  const record = asRecord(obj);
+  if (!record) return undefined;
+
+  const type = stringField(record, 'type');
+  if (
+    type !== 'turn.completed' &&
+    type !== 'turn_complete' &&
+    type !== 'result'
+  ) {
+    return undefined;
+  }
+
+  for (const key of ['result', 'text', 'message', 'output']) {
+    const value = stringField(record, key);
+    if (value && value !== '') return value;
+  }
+  return undefined;
+}
+
+function readNewBytes(
+  path: string,
+  offset: number,
+): { text: string; offset: number } | null {
+  try {
+    const bytes = readFileSync(path);
+    if (bytes.length <= offset) return null;
+    return { text: bytes.subarray(offset).toString('utf8'), offset: bytes.length };
+  } catch {
+    return null;
+  }
+}
+
+function fileSize(path: string): number {
+  try {
+    return readFileSync(path).length;
+  } catch {
+    return 0;
   }
 }
 
@@ -310,6 +573,9 @@ function normalizeCurrentItem(
       ? [{ type: 'event', event: { kind: 'text', delta: text } }]
       : [];
   }
+  if (type === 'agent_message' && !completed) {
+    return [{ type: 'event', event: { kind: 'activity', title: 'Responding' } }];
+  }
 
   if (type === 'command_execution') {
     if (!completed) {
@@ -342,9 +608,7 @@ function normalizeCurrentItem(
   }
 
   if (type === 'file_change' && completed) {
-    const changes: unknown[] = Array.isArray(item.changes)
-      ? item.changes
-      : [];
+    const changes: unknown[] = Array.isArray(item.changes) ? item.changes : [];
     return changes.flatMap((change) => {
       const record = asRecord(change);
       const path = stringField(record, 'path');
@@ -361,7 +625,34 @@ function normalizeCurrentItem(
     });
   }
 
+  if (!completed && type) {
+    return [
+      {
+        type: 'event',
+        event: {
+          kind: 'activity',
+          title: humanizeItemType(type),
+          detail: currentItemDetail(item),
+        },
+      },
+    ];
+  }
+
   return [];
+}
+
+function humanizeItemType(type: string): string {
+  return type
+    .replace(/[_-]+/g, ' ')
+    .replace(/^\w/, (character) => character.toUpperCase());
+}
+
+function currentItemDetail(item: Record<string, unknown>): string | undefined {
+  for (const key of ['title', 'name', 'path', 'command']) {
+    const value = stringField(item, key);
+    if (value) return value;
+  }
+  return undefined;
 }
 
 /** App-server request shapes, accepted here so interaction rendering stays protocol-ready. */

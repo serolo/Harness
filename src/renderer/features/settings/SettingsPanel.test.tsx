@@ -48,12 +48,16 @@ const EFFECTIVE: EffectiveSettings = {
     onNeedsAttention: true,
     completionSound: 'glass',
   },
+  appearance: {
+    theme: 'dark',
+  },
 };
 
 const PROVENANCE: SettingsProvenance = {
   'git.branchPrefix': 'user',
   'git.mergeStrategy': 'default',
   'agent.mode': 'project-local',
+  'appearance.theme': 'user',
 };
 
 interface Installed {
@@ -217,6 +221,23 @@ describe('SettingsPanel writes', () => {
         sound: 'ping',
       });
     });
+  });
+
+  it('writes the selected appearance theme', async () => {
+    const { api } = installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-appearance'));
+    const theme = await screen.findByTestId('setting-input-appearance.theme');
+    fireEvent.change(theme, { target: { value: 'light' } });
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('settings:set', {
+        layer: 'user',
+        keyPath: 'appearance.theme',
+        value: 'light',
+      }),
+    );
   });
 
   it('commits a text edit on blur (not per keystroke)', async () => {

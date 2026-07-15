@@ -204,8 +204,10 @@ function normalizeAssistant(obj: Record<string, unknown>): NormalizeResult[] {
       if (event) {
         out.push({ type: 'event', event });
       }
+    } else if (blockType === 'thinking' || blockType === 'reasoning') {
+      out.push({ type: 'event', event: { kind: 'activity', title: 'Thinking' } });
     }
-    // Other block types (e.g. thinking) are ignored for forward-compat.
+    // Other block types are ignored for forward-compat.
   }
   return out;
 }

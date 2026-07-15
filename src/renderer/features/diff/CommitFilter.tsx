@@ -1,6 +1,7 @@
 // Git changes overflow menu: target branch, change scope, and latest commit.
 
 import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { Check, ChevronDown, ChevronUp, EllipsisVertical } from 'lucide-react';
 import type { DiffMenuInfo, DiffScope } from '@shared/review';
 import { IconButton } from '@renderer/components/ui';
@@ -31,21 +32,38 @@ export function CommitFilter({
 }: CommitFilterProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [branchesOpen, setBranchesOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
+
+  const positionMenu = (): void => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setMenuStyle({
+      position: 'fixed',
+      top: rect.bottom + 4,
+      right: Math.max(16, window.innerWidth - rect.right),
+    });
+  };
 
   useEffect(() => {
     if (!open) return;
+    positionMenu();
     const onPointerDown = (event: MouseEvent): void => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') setOpen(false);
     };
+    const onReposition = (): void => positionMenu();
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
     };
   }, [open]);
 
@@ -75,6 +93,7 @@ export function CommitFilter({
         aria-expanded={open}
         onClick={() => {
           setBranchesOpen(false);
+          positionMenu();
           setOpen((current) => !current);
         }}
       >
@@ -84,7 +103,8 @@ export function CommitFilter({
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-40 mt-1 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-4 border border-border-1 bg-surface-overlay shadow-4"
+          className="z-[100] w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-4 border border-border-1 bg-surface-overlay shadow-4"
+          style={menuStyle}
           data-testid="commit-filter-menu"
         >
           <button

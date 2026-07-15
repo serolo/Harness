@@ -16,6 +16,7 @@ import { migration0003TurnsEvents } from './0003_turns_events';
 import { migration0005DiffReview } from './0005_diff_review';
 import { migration0006Integrations } from './0006_integrations';
 import { migration0007WorkspacePr } from './0007_workspace_pr';
+import { migration0008ScheduledTasks } from './0008_scheduled_tasks';
 import { migration0008WorkspaceLocation } from './0008_workspace_location';
 import { migration0009WorkspaceMenu } from './0009_workspace_menu';
 
@@ -43,6 +44,7 @@ const migrations: readonly Migration[] = [
   migration0005DiffReview,
   migration0006Integrations,
   migration0007WorkspacePr,
+  migration0008ScheduledTasks,
   migration0008WorkspaceLocation,
   migration0009WorkspaceMenu,
 ];

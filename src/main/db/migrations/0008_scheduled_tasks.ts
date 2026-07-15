@@ -18,6 +18,19 @@
 import type { Database as SqliteDb } from 'better-sqlite3';
 import type { Migration } from './index';
 
+function hasTable(db: SqliteDb, name: string): boolean {
+  const row = db
+    .prepare(
+      "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name=?",
+    )
+    .get(name) as { n: number };
+  return row.n > 0;
+}
+
+function isApplied(db: SqliteDb): boolean {
+  return hasTable(db, 'scheduled_tasks');
+}
+
 /**
  * Create the `scheduled_tasks` table plus two indexes:
  *   - idx_scheduled_tasks_workspace_id — per-workspace list lookups (`task:list`).
@@ -52,5 +65,6 @@ function up(db: SqliteDb): void {
 /** Migration 0008. Registered in the ordered array in ./index.ts. */
 export const migration0008ScheduledTasks: Migration = {
   version: 8,
+  isApplied,
   up,
 };

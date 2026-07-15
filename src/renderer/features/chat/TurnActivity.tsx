@@ -61,6 +61,9 @@ function latestActivity(events: AgentEvent[]): {
       }
       return { title: event.name, detail };
     }
+    if (event.kind === 'activity') {
+      return { title: event.title, detail: event.detail ?? null };
+    }
     if (event.kind === 'file_edit') {
       return { title: 'Editing files', detail: `${event.op} ${event.path}` };
     }

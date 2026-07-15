@@ -8,8 +8,10 @@
 // the primary styling mechanism; keep these values in sync with `tokens/colors.css` by
 // hand at this small size.
 
+import type { AppearanceTheme } from '@shared/settings';
+
 /** Named color tokens for the dark shell chrome (mirrors `tokens/colors.css` `:root`). */
-export const colors = {
+export const darkColors = {
   /** App background (outermost). */
   bg: '#0b0e14',
   /** Slightly raised surface — sidebar rail, panels. */
@@ -30,6 +32,32 @@ export const colors = {
   pending: '#d9a13c',
 } as const;
 
+/** Named color tokens for the light shell chrome (mirrors `tokens/colors.css` `[data-theme='light']`). */
+export const lightColors = {
+  /** App background (outermost). */
+  bg: '#f5f6f8',
+  /** Slightly raised surface — sidebar rail, panels. */
+  surface: '#ffffff',
+  /** Panel border / divider hairline. */
+  border: '#e4e7ed',
+  /** Primary text. */
+  text: '#1b202b',
+  /** Muted / secondary text. */
+  textMuted: '#5d6575',
+  /** Accent (interactive) color. */
+  accent: '#3d6ee8',
+  /** IPC-health OK / status "running". */
+  ok: '#1f9d4d',
+  /** IPC-health error / status "attention". */
+  error: '#d63a44',
+  /** IPC-health pending / status "working". */
+  pending: '#b57d17',
+} as const;
+
+export const colors = darkColors;
+
+type ColorTokens = Record<keyof typeof darkColors, string>;
+
 /** Spacing scale (px). Deliberately small — extend in Phase 6. */
 export const spacing = {
   xs: 4,
@@ -41,9 +69,15 @@ export const spacing = {
 
 /** The full theme object published through React context (see providers.tsx). */
 export interface Theme {
-  colors: typeof colors;
+  colors: ColorTokens;
   spacing: typeof spacing;
+  appearance: AppearanceTheme;
 }
 
-/** The single default theme for Phase 0. */
-export const theme: Theme = { colors, spacing };
+export const themes: Record<AppearanceTheme, Theme> = {
+  dark: { colors: darkColors, spacing, appearance: 'dark' },
+  light: { colors: lightColors, spacing, appearance: 'light' },
+};
+
+/** The default theme. */
+export const theme: Theme = themes.dark;

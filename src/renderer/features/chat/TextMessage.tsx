@@ -4,12 +4,16 @@ import { Markdown } from './markdown';
 
 export interface TextMessageProps {
   delta: string;
+  onOpenFile?: (path: string) => void;
 }
 
-export function TextMessage({ delta }: TextMessageProps): React.JSX.Element {
+export function TextMessage({
+  delta,
+  onOpenFile,
+}: TextMessageProps): React.JSX.Element {
   return (
     <div className="min-w-0 text-fg-1" data-testid="chat-text">
-      <Markdown text={delta} />
+      <Markdown text={delta} onOpenFile={onOpenFile} />
     </div>
   );
 }

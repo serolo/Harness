@@ -12,9 +12,13 @@ import { useDiff } from './useDiff';
 
 export interface DiffPanelProps {
   workspaceId: string | null;
+  onInspectFile?: (path: string) => void;
 }
 
-export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
+export function DiffPanel({
+  workspaceId,
+  onInspectFile,
+}: DiffPanelProps): React.JSX.Element {
   const {
     diffSet,
     selectedPath,
@@ -125,7 +129,13 @@ export function DiffPanel({ workspaceId }: DiffPanelProps): React.JSX.Element {
           <FileTree
             files={files}
             selectedPath={selectedPath}
-            onSelect={selectFile}
+            onSelect={(path) => {
+              if (onInspectFile) {
+                onInspectFile(path);
+                return;
+              }
+              selectFile(path);
+            }}
           />
         </div>
       )}

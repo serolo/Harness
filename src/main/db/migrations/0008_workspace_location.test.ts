@@ -33,7 +33,7 @@ describe('migration 0008 workspace location repair', () => {
     runMigrations(db);
 
     expect(workspaceColumns()).toContain('location');
-    expect(db.pragma('user_version', { simple: true })).toBe(9);
+    expect(db.pragma('user_version', { simple: true })).toBe(10);
     expect(() => runMigrations(db)).not.toThrow();
   });
 

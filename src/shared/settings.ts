@@ -141,6 +141,13 @@ export interface SettingsIssue {
   message: string;
 }
 
+/** Project-scoped settings payload used by the Repo settings screen. */
+export interface ProjectSettingsSnapshot {
+  settings: EffectiveSettings;
+  provenance: SettingsProvenance;
+  issues: SettingsIssue[];
+}
+
 // --- Completion-sound settings (APPEND-ONLY) -------------------------------
 
 /** macOS system tones available for a clean chat-turn completion. */

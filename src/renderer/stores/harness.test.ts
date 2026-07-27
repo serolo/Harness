@@ -52,10 +52,13 @@ interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   stream: ReturnType<typeof vi.fn>;
+  getPathForFile: ReturnType<typeof vi.fn>;
 }
 
 /** Install a `window.api` whose `harness:list` resolves (or rejects, when `fail`). */
-function installApi(opts: { fail?: boolean } = {}): ApiStub {
+function installApi(
+  opts: { fail?: boolean; pickFile?: string | null } = {},
+): ApiStub {
   const invoke = vi.fn((channel: string) => {
     if (channel === 'harness:list') {
       return opts.fail
@@ -74,12 +77,16 @@ function installApi(opts: { fail?: boolean } = {}): ApiStub {
       ]);
     }
     if (channel === 'linear:listIssues') return Promise.resolve([]);
+    if (channel === 'workspace:pickFile') {
+      return Promise.resolve(opts.pickFile ?? '/tmp/ws/src/app.ts');
+    }
     return Promise.resolve(undefined);
   });
   const api: ApiStub = {
     invoke,
     on: vi.fn(() => () => {}),
     stream: vi.fn(() => Promise.resolve()),
+    getPathForFile: vi.fn((file: File) => `/tmp/ws/${file.name}`),
   };
   (window as unknown as { api: ApiStub }).api = api;
   return api;
@@ -160,8 +167,11 @@ describe('useHarnessStore', () => {
 
 describe('Composer plan-mode gate (capability-driven, per selected workspace)', () => {
   /** Render the composer for a workspace on `harness`; returns its plan button. */
-  async function renderComposerFor(harness: HarnessId): Promise<HTMLElement> {
-    installApi();
+  async function renderComposerFor(
+    harness: HarnessId,
+    api: ApiStub = installApi(),
+  ): Promise<HTMLElement> {
+    void api;
     useWorkspacesStore.setState({
       projects: [
         {
@@ -178,11 +188,15 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
       selectedProjectId: 'p1',
     });
     render(
-      React.createElement(Composer, {
-        isBusy: false,
-        onSend: () => {},
-        onInterrupt: () => {},
-      }),
+      React.createElement(
+        'div',
+        { 'data-testid': 'chat-panel' },
+        React.createElement(Composer, {
+          isBusy: false,
+          onSend: () => {},
+          onInterrupt: () => {},
+        }),
+      ),
     );
     return screen.findByTestId('composer-plan');
   }
@@ -263,17 +277,46 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
   });
 
   it('adds file attachments from the plus menu', async () => {
-    await renderComposerFor('claude_code');
+    const api = installApi({ pickFile: '/tmp/ws/src/app.ts' });
+    await renderComposerFor('claude_code', api);
     fireEvent.click(await screen.findByTestId('composer-plus'));
     fireEvent.click(await screen.findByTestId('composer-plus-attachment'));
-    fireEvent.change(await screen.findByTestId('composer-plus-attach-input'), {
-      target: { value: 'src/app.ts' },
-    });
-    fireEvent.click(screen.getByTestId('composer-plus-attach-add'));
 
     expect(await screen.findByTestId('attachment-bar')).toHaveTextContent(
-      'src/app.ts',
+      'app.ts',
     );
+    expect(screen.getByTestId('attachment-bar')).not.toHaveTextContent(
+      '/tmp/ws/src',
+    );
+    expect(api.invoke).toHaveBeenCalledWith('workspace:pickFile', undefined);
+  });
+
+  it('adds multiple dropped files and ignores duplicate paths', async () => {
+    const api = installApi();
+    await renderComposerFor('claude_code', api);
+    const chatPanel = await screen.findByTestId('chat-panel');
+    const first = new File(['one'], 'one.ts');
+    const duplicate = new File(['again'], 'one.ts');
+    const second = new File(['two'], 'two.md');
+    const dataTransfer = {
+      files: [first, duplicate, second],
+      types: ['Files'],
+      dropEffect: 'none',
+    };
+
+    fireEvent.dragOver(chatPanel, { dataTransfer });
+    expect(screen.getByTestId('composer-drop-target')).toHaveTextContent(
+      'Drop files to attach',
+    );
+    fireEvent.drop(chatPanel, { dataTransfer });
+
+    const bar = await screen.findByTestId('attachment-bar');
+    expect(bar).toHaveTextContent('one.ts');
+    expect(bar).toHaveTextContent('two.md');
+    expect(bar).not.toHaveTextContent('/tmp/ws');
+    expect(screen.queryByTestId('composer-drop-target')).not.toBeInTheDocument();
+    expect(api.getPathForFile).toHaveBeenCalledTimes(3);
+    expect(screen.getAllByLabelText('Remove attachment')).toHaveLength(2);
   });
 
   it('links issues from the plus menu into the draft', async () => {

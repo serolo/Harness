@@ -50,16 +50,14 @@ import type {
 import type {
   CompletionSound,
   EffectiveSettings,
+  ProjectSettingsSnapshot,
   SettingsIssue,
   SettingsProvenance,
   WritableSettingLayer,
 } from './settings';
 import type { SlashCommand } from './slash';
-import type {
-  CreateTaskReq,
-  ScheduledTask,
-  UpdateTaskReq,
-} from './tasks';
+import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
+import type { MonthlyUsage } from './billing';
 
 /**
  * Main-side push handle produced by the stream helper `createStream()`
@@ -112,6 +110,15 @@ export type WorkspaceCreateEvent =
   | { kind: 'setupLog'; chunk: string }
   | { kind: 'created'; workspace: Workspace };
 
+/** Progress emitted while archiving a workspace. */
+export type WorkspaceArchiveEvent =
+  | {
+      kind: 'phase';
+      phase: 'script' | 'stopping' | 'worktree' | 'complete';
+      message: string;
+    }
+  | { kind: 'log'; chunk: string };
+
 /**
  * Request→response command map. Handlers live in `src/main/ipc/register.ts`
  * (each delegating to a service on AppContext); the renderer calls a typed
@@ -161,11 +168,18 @@ export interface Commands {
   'chat:history': { req: { workspaceId: string }; res: ChatHistory };
   /** Delete all persisted turns/events for a workspace transcript. */
   'chat:clear': { req: { workspaceId: string }; res: void };
+  /** Global estimated spend aggregated across all non-reverted turns. */
+  'usage:monthly': {
+    req: { month: string; startAt: number; endAt: number };
+    res: MonthlyUsage;
+  };
   /** Read a text file from the workspace checkout for a read-only chat tab preview. */
   'workspace:readFile': {
     req: { workspaceId: string; path: string };
     res: { path: string; content: string };
   };
+  /** Open the OS file picker and return the selected path, or null if cancelled. */
+  'workspace:pickFile': { req: void; res: string | null };
   /** Probe whether a registered harness CLI is installed/authenticated. */
   'harness:detect': { req: { id: HarnessId }; res: DetectResult };
   /** List registered harnesses with capabilities + a detect summary. */
@@ -298,6 +312,16 @@ export interface Commands {
   'settings:set': {
     req: { layer: WritableSettingLayer; keyPath: string; value: unknown };
     res: EffectiveSettings;
+  };
+  /** Load the effective settings for one registered repository. */
+  'settings:getProject': {
+    req: { projectId: string };
+    res: ProjectSettingsSnapshot;
+  };
+  /** Write a repository setting to its committed `.harness/settings.toml`. */
+  'settings:setProject': {
+    req: { projectId: string; keyPath: string; value: unknown };
+    res: ProjectSettingsSnapshot;
   };
   /** The fully-defaulted settings object (a value-shaped schema for the UI to key off). */
   'settings:schema': { req: void; res: EffectiveSettings };
@@ -474,6 +498,11 @@ export interface StreamChannels {
   'project:clone': { arg: { url: string }; chunk: CloneProgress };
   /** Create a workspace, streaming lifecycle/setup-log frames, ending with the Workspace. */
   'workspace:create': { arg: CreateWorkspaceReq; chunk: WorkspaceCreateEvent };
+  /** Archive a workspace while streaming teardown and worktree-removal progress. */
+  'workspace:archiveStream': {
+    arg: { id: string };
+    chunk: WorkspaceArchiveEvent;
+  };
 
   // --- Phase 2: the per-turn agent event stream (APPEND-ONLY) ---
   // One scoped stream per turn: a leading `started` frame carries the turnId +
@@ -529,6 +558,13 @@ export interface TurnStartArg {
   mode?: AgentMode;
   /** Optional per-turn harness override; omitted means use the workspace's harness. */
   harness?: HarnessId;
+  /** Optional provider model id selected for this turn. */
+  model?: string;
+  /**
+   * Resume a specific context session. `null` explicitly starts a fresh context;
+   * omitted preserves the legacy behaviour of resuming the workspace's latest session.
+   */
+  sessionId?: string | null;
 }
 
 /**
@@ -537,7 +573,13 @@ export interface TurnStartArg {
  * `AgentEvent`. The stream is scoped to ONE turn, so `event` frames need no turnId.
  */
 export type TurnStreamChunk =
-  | { kind: 'started'; turnId: string; sessionId: string }
+  | {
+      kind: 'started';
+      turnId: string;
+      sessionId: string;
+      /** Resolved mode, including the settings default when the request omitted it. */
+      mode: AgentMode;
+    }
   | { kind: 'event'; event: AgentEvent };
 
 /** Reconstructable chat for a workspace: turns in order, each carrying its events. */
@@ -576,6 +618,8 @@ export interface WorkspaceOpenApp {
   id: WorkspaceOpenAppId;
   label: string;
   kind: 'finder' | 'terminal' | 'editor' | 'git';
+  /** Native application icon encoded as a data URL when the platform provides one. */
+  icon?: string;
 }
 
 /** Start argument for the `pty:open` stream. `cols`/`rows` seed the initial viewport. */

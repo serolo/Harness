@@ -76,6 +76,12 @@ export interface TurnsTable {
   input_tokens: number | null; // INTEGER — usage at turn end
   output_tokens: number | null; // INTEGER
   reverted_at: number | null; // INTEGER — epoch millis (migration 0005), NULL unless reverted
+  harness: HarnessId | null; // TEXT — provider used for this turn (migration 0010)
+  model: string | null; // TEXT — requested/resolved provider model
+  cached_input_tokens: number | null; // INTEGER — cached portion of input_tokens
+  cache_write_input_tokens: number | null; // INTEGER — prompt-cache writes
+  cost_micros: number | null; // INTEGER — estimated USD micro-dollars
+  pricing_key: string | null; // TEXT — versioned catalogue/rate key
 }
 
 /**

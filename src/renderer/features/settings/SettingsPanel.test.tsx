@@ -78,6 +78,24 @@ function installApi(issues: SettingsIssue[] = []): Installed {
         return Promise.resolve(PROVENANCE);
       case 'settings:getIssues':
         return Promise.resolve(issues);
+      case 'project:list':
+        return Promise.resolve([
+          {
+            id: 'project-1',
+            name: 'Harness',
+            originUrl: '',
+            defaultBranch: 'main',
+            repoPath: '/src/harness',
+            createdAt: 1,
+          },
+        ]);
+      case 'settings:getProject':
+      case 'settings:setProject':
+        return Promise.resolve({
+          settings: EFFECTIVE,
+          provenance: PROVENANCE,
+          issues: [],
+        });
       case 'git:sshKeys':
         return Promise.resolve([
           {
@@ -98,6 +116,23 @@ function installApi(issues: SettingsIssue[] = []): Installed {
         });
       case 'github:connectGhCli':
         return Promise.resolve({ id: 'gh-1', login: 'octo', kind: 'github' });
+      case 'harness:list':
+        return Promise.resolve([
+          {
+            id: 'claude_code',
+            capabilities: {
+              supportsResume: true,
+              supportsMcp: true,
+              supportsPlanMode: true,
+              rawTerminalFallback: true,
+            },
+            detect: {
+              installed: true,
+              authenticated: true,
+              version: '2.1.201',
+            },
+          },
+        ]);
       case 'settings:set':
         return Promise.resolve(EFFECTIVE);
       case 'notifications:previewSound':
@@ -121,6 +156,7 @@ function installApi(issues: SettingsIssue[] = []): Installed {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.clear();
   delete (window as unknown as { api?: unknown }).api;
 });
 
@@ -146,9 +182,87 @@ describe('SettingsPanel rendering', () => {
       mergeRow.querySelector('[data-testid="provenance-badge"]'),
     ).toHaveAttribute('data-layer', 'default');
   });
+
+  it('renders model defaults, review defaults, and chat mode toggles', async () => {
+    installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-models'));
+
+    expect(screen.getByTestId('models-default-model')).toHaveValue('opus');
+    expect(screen.getByTestId('models-review-effort')).toHaveValue('high');
+    fireEvent.change(screen.getByTestId('models-default-model'), {
+      target: { value: 'sonnet' },
+    });
+    expect(window.localStorage.getItem('harness:model-preferences')).toContain(
+      'sonnet',
+    );
+    expect(screen.getByTestId('models-plan-mode')).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    fireEvent.click(screen.getByTestId('models-plan-mode'));
+    expect(screen.getByTestId('models-plan-mode')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
+  it('labels harness settings as Agents and shows detected agent status', async () => {
+    installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-agents'));
+
+    expect(
+      await screen.findByTestId('settings-section-agents'),
+    ).toHaveTextContent('Agents');
+    expect(screen.getByTestId('agent-tab-claude_code')).toHaveTextContent(
+      'Claude Code',
+    );
+    expect(screen.getByTestId('agent-connection-status')).toHaveTextContent(
+      'Connected',
+    );
+    expect(screen.queryByText('Harnesses')).toBeNull();
+  });
 });
 
 describe('SettingsPanel writes', () => {
+  it('lists projects and persists all repository script controls', async () => {
+    const { api } = installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Repo' }));
+    expect(await screen.findByText('/src/harness')).toBeTruthy();
+
+    const setup = await screen.findByTestId('repo-setup-script');
+    fireEvent.change(setup, { target: { value: 'npm install' } });
+    fireEvent.blur(setup);
+
+    fireEvent.change(screen.getByTestId('repo-run-mode'), {
+      target: { value: 'concurrent' },
+    });
+    fireEvent.click(screen.getByTestId('repo-run-add'));
+
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith('settings:setProject', {
+        projectId: 'project-1',
+        keyPath: 'scripts.setup',
+        value: 'npm install',
+      });
+      expect(api.invoke).toHaveBeenCalledWith('settings:setProject', {
+        projectId: 'project-1',
+        keyPath: 'scripts.run_mode',
+        value: 'concurrent',
+      });
+      expect(api.invoke).toHaveBeenCalledWith('settings:setProject', {
+        projectId: 'project-1',
+        keyPath: 'scripts.run',
+        value: [{ name: 'script-1', command: '' }],
+      });
+    });
+  });
+
   it('writes the delete-worktree-on-archive toggle', async () => {
     const { api } = installApi();
     render(<SettingsPanel />);

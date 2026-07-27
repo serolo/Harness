@@ -138,6 +138,8 @@ export class HarnessSupervisor {
     const turnId = await this.deps.recorder.beginTurn(workspaceId, {
       sessionId: opts.sessionId,
       mode: opts.mode,
+      harness: harnessId,
+      model: opts.model,
     });
 
     const live: LiveTurn = {

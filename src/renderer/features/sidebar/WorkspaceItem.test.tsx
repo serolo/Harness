@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createQueryClient } from '@renderer/app/providers';
 import type { Workspace } from '@shared/models';
+import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
+import { useWorkspaceArchiveStore } from '@renderer/stores/workspaceArchive';
 import { WorkspaceItem } from './WorkspaceItem';
 
 const WORKSPACE: Workspace = {
@@ -37,6 +39,11 @@ function renderItem(): void {
   );
 }
 
+beforeEach(() => {
+  useWorkspaceCreationStore.setState({ current: null });
+  useWorkspaceArchiveStore.setState({ current: null });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   delete (window as unknown as { api?: unknown }).api;
@@ -59,6 +66,26 @@ function installWorkspaceUpdateApi(): ReturnType<typeof vi.fn> {
 }
 
 describe('WorkspaceItem context menu', () => {
+  it('shows background lifecycle progress on the matching workspace row', () => {
+    useWorkspaceArchiveStore.setState({
+      current: {
+        workspaceId: WORKSPACE.id,
+        workspaceName: WORKSPACE.name,
+        phase: 'Stopping processes…',
+        lines: [],
+        status: 'running',
+        error: null,
+      },
+    });
+
+    renderItem();
+
+    expect(screen.getByTestId('workspace-operation-progress')).toHaveTextContent(
+      'archiving',
+    );
+    expect(screen.queryByTestId('archive-btn')).not.toBeInTheDocument();
+  });
+
   it('opens on right click and persists unread, pin, and status actions', async () => {
     const invoke = installWorkspaceUpdateApi();
     renderItem();
@@ -168,7 +195,7 @@ describe('WorkspaceItem archive safety', () => {
     (window as unknown as { api: unknown }).api = {
       invoke,
       on: vi.fn(),
-      stream: vi.fn(),
+      stream: vi.fn(() => Promise.resolve()),
     };
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderItem();
@@ -180,7 +207,15 @@ describe('WorkspaceItem archive safety', () => {
       '2 uncommitted files will be permanently deleted',
     );
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('workspace:archive', { id: 'ws-1' }),
+      expect(
+        (window as unknown as { api: { stream: ReturnType<typeof vi.fn> } }).api
+          .stream,
+      ).toHaveBeenCalledWith(
+        'workspace:archiveStream',
+        { id: 'ws-1' },
+        expect.any(Function),
+        expect.any(Object),
+      ),
     );
   });
 
@@ -199,7 +234,7 @@ describe('WorkspaceItem archive safety', () => {
     (window as unknown as { api: unknown }).api = {
       invoke,
       on: vi.fn(),
-      stream: vi.fn(),
+      stream: vi.fn(() => Promise.resolve()),
     };
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderItem();

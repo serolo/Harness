@@ -2,10 +2,13 @@
 
 import type { Usage } from '@shared/harness';
 import type { TurnStatus } from '@shared/models';
+import { formatUsdMicros } from '@shared/billing';
 
 export interface TurnDividerProps {
   status: TurnStatus;
   usage?: Usage;
+  model?: string;
+  costMicros?: number;
 }
 
 const STATUS_LABEL: Record<TurnStatus, string> = {
@@ -25,6 +28,8 @@ const STATUS_CLASS: Record<TurnStatus, string> = {
 export function TurnDivider({
   status,
   usage,
+  model,
+  costMicros,
 }: TurnDividerProps): React.JSX.Element {
   const tokens =
     usage && (usage.inputTokens != null || usage.outputTokens != null)
@@ -40,6 +45,14 @@ export function TurnDivider({
       <span className="h-px flex-1 bg-border-1" />
       <span className={STATUS_CLASS[status]}>{STATUS_LABEL[status]}</span>
       {tokens && <span className="text-fg-3">· {tokens}</span>}
+      {model ? (
+        <span className="normal-case tracking-normal text-fg-3">· {model}</span>
+      ) : null}
+      {costMicros !== undefined ? (
+        <span className="normal-case tracking-normal text-fg-3">
+          · est. {formatUsdMicros(costMicros)}
+        </span>
+      ) : null}
       <span className="h-px flex-1 bg-border-1" />
     </div>
   );

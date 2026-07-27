@@ -78,6 +78,11 @@ import { initLogging } from './logging';
 
 ensureStandardFileDescriptors();
 
+// Keep Electron's internal application name and process title aligned with the
+// branded development runtime created by scripts/dev.mjs.
+process.title = 'Harness';
+app.setName('Harness');
+
 // --- Constants -------------------------------------------------------------
 
 /** Deep-link scheme (spec §5.8, `harness://workspace/<id>`). Also drives appId/Keychain. */
@@ -291,6 +296,10 @@ function createAppContext(): AppContext {
     naming,
     ports,
     settings,
+    settingsForProject: (projectPath) => {
+      const scoped = new SettingsService();
+      return scoped.loadResult({ projectDir: projectPath }).settings;
+    },
     runSetup,
     stopWorkspaceProcesses,
     emit,
@@ -746,6 +755,12 @@ if (!gotSingleInstanceLock) {
   });
 
   void app.whenReady().then(() => {
+    // electron-builder embeds the production icon during packaging, but Electron's
+    // development binary otherwise keeps its default Dock icon.
+    if (process.platform === 'darwin' && !app.isPackaged) {
+      app.dock?.setIcon(join(app.getAppPath(), 'build', 'icon.png'));
+    }
+
     // Order matters: CSP + IPC must be in place BEFORE the window loads content that
     // will call `app:ping` / DB IPC on mount.
     installCsp();

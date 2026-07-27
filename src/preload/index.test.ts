@@ -23,12 +23,16 @@ const electron = vi.hoisted(() => {
       }),
       send: vi.fn(),
     },
+    webUtils: {
+      getPathForFile: vi.fn(() => '/tmp/dropped.txt'),
+    },
   };
 });
 
 vi.mock('electron', () => ({
   contextBridge: electron.contextBridge,
   ipcRenderer: electron.ipcRenderer,
+  webUtils: electron.webUtils,
 }));
 
 import './index';
@@ -41,6 +45,7 @@ interface ExposedApi {
     opts: { id: string },
   ): Promise<void>;
   cancelStream(id: string): void;
+  getPathForFile(file: File): string;
 }
 
 const STREAM_ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -54,6 +59,14 @@ beforeEach(() => {
 });
 
 describe('preload stream startup', () => {
+  it('exposes native path resolution for dropped files', () => {
+    const file = new File(['hello'], 'dropped.txt');
+    const api = electron.exposed.api as ExposedApi;
+
+    expect(api.getPathForFile(file)).toBe('/tmp/dropped.txt');
+    expect(electron.webUtils.getPathForFile).toHaveBeenCalledWith(file);
+  });
+
   it('attaches the data listener before a fast producer can emit', async () => {
     electron.ipcRenderer.invoke.mockImplementation(
       (_channel: string, payload: unknown) => {

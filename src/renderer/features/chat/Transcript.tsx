@@ -19,12 +19,14 @@ import { permissionFromToolResult } from './toolResults';
 import { ModelActivity } from './ModelActivity';
 import { StreamingElapsed } from './StreamingElapsed';
 import { ActivityChip } from './ActivityChip';
+import { PlanApproval } from './PlanApproval';
 
 export interface TranscriptProps {
   turns: RenderedTurn[];
   /** The workspace this transcript belongs to; threads into the limit-resume offer. */
   workspaceId?: string | null;
   onOpenFile?: (path: string) => void;
+  onApprovePlan?: () => void;
 }
 
 function transcriptScrollKey(turns: RenderedTurn[]): string {
@@ -81,9 +83,13 @@ function renderEvent(
         />
       );
     case 'text':
-      return <TextMessage key={key} delta={event.delta} onOpenFile={onOpenFile} />;
+      return (
+        <TextMessage key={key} delta={event.delta} onOpenFile={onOpenFile} />
+      );
     case 'activity':
-      return <ActivityChip key={key} title={event.title} detail={event.detail} />;
+      return (
+        <ActivityChip key={key} title={event.title} detail={event.detail} />
+      );
     case 'tool_use':
       return (
         <ToolCard
@@ -296,6 +302,7 @@ export function Transcript({
   turns,
   workspaceId,
   onOpenFile,
+  onApprovePlan,
 }: TranscriptProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
@@ -331,7 +338,7 @@ export function Transcript({
       data-testid="transcript"
     >
       <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8">
-        {turns.map((turn) => (
+        {turns.map((turn, index) => (
           <div
             key={turn.turnId}
             className="space-y-4"
@@ -341,10 +348,24 @@ export function Transcript({
             <div className="space-y-3">
               {renderEvents(turn.events, turn.turnId, workspaceId, onOpenFile)}
             </div>
+            {index === turns.length - 1 &&
+            turn.mode === 'plan' &&
+            turn.status === 'completed' &&
+            turn.events.some(
+              (event) => event.kind === 'text' && event.delta.trim() !== '',
+            ) &&
+            onApprovePlan ? (
+              <PlanApproval onApprove={onApprovePlan} />
+            ) : null}
             {turn.status === 'streaming' ? (
               <StreamingElapsed startedAt={turn.startedAt} />
             ) : (
-              <TurnDivider status={turn.status} usage={turn.usage} />
+              <TurnDivider
+                status={turn.status}
+                usage={turn.usage}
+                model={turn.model}
+                costMicros={turn.costMicros}
+              />
             )}
           </div>
         ))}

@@ -21,9 +21,11 @@ import { existsSync, realpathSync } from 'node:fs';
 
 import { AppError } from '@shared/errors';
 import type { CreateWorkspaceReq, Workspace } from '@shared/models';
+import type { EffectiveSettings } from '@shared/settings';
 import type {
   EventChannel,
   EventPayload,
+  WorkspaceArchiveEvent,
   WorkspaceArchivePreview,
 } from '@shared/ipc';
 
@@ -101,6 +103,8 @@ export interface WorkspaceManagerDeps {
   };
   /** Read-only merged settings accessor. */
   settings: SettingsService;
+  /** Resolve user + repository layers for lifecycle operations. */
+  settingsForProject?: (repoPath: string) => EffectiveSettings;
   /** Runs the setup command in the worktree, streaming combined output. */
   runSetup: (
     command: string,
@@ -214,7 +218,9 @@ export class WorkspaceManager {
       (location === 'project' && !existingNames.includes('current')
         ? 'current'
         : this.deps.naming.allocate(existingNames));
-    const settings = this.deps.settings.get();
+    const settings =
+      this.deps.settingsForProject?.(project.repoPath) ??
+      this.deps.settings.get();
     const baseRef = req.baseBranch ?? project.defaultBranch;
     let branch = req.branch ?? `${settings.git.branchPrefix}/${name}`;
     let worktreePath = join(worktreesDir(project.id), name);
@@ -501,8 +507,14 @@ export class WorkspaceManager {
       throw new AppError('not_found', `workspace not found: ${id}`);
     }
 
+    const project = await this.deps.repos.projects.getById(ws.projectId);
+    const settings =
+      project === null
+        ? this.deps.settings.get()
+        : (this.deps.settingsForProject?.(project.repoPath) ??
+          this.deps.settings.get());
     const willDeleteWorktree =
-      this.deps.settings.get().git.deleteWorktreeOnArchive &&
+      settings.git.deleteWorktreeOnArchive &&
       (ws.location ?? 'worktree') === 'worktree' &&
       ws.worktreePath !== null;
     if (ws.worktreePath === null || !existsSync(ws.worktreePath)) {
@@ -541,27 +553,49 @@ export class WorkspaceManager {
    * distinct lifecycle transition. The force-remove happens ONLY after the stop
    * hook so no process is holding the worktree open (phase doc §8).
    */
-  async archive(id: string): Promise<void> {
+  async archive(
+    id: string,
+    onProgress?: (event: WorkspaceArchiveEvent) => void,
+  ): Promise<void> {
     const ws = await this.deps.repos.workspaces.getById(id);
     if (ws === null) {
       throw new AppError('not_found', `workspace not found: ${id}`);
     }
 
-    const settings = this.deps.settings.get();
+    const project = await this.deps.repos.projects.getById(ws.projectId);
+    const settings =
+      project === null
+        ? this.deps.settings.get()
+        : (this.deps.settingsForProject?.(project.repoPath) ??
+          this.deps.settings.get());
     const worktreeExists =
       ws.worktreePath !== null && existsSync(ws.worktreePath);
     if (settings.scripts.archive !== undefined && worktreeExists) {
+      onProgress?.({
+        kind: 'phase',
+        phase: 'script',
+        message: 'Running archive script…',
+      });
       try {
-        await this.deps.runSetup(settings.scripts.archive, {
-          cwd: ws.worktreePath!,
-          env: settings.env,
-        });
+        await this.deps.runSetup(
+          settings.scripts.archive,
+          {
+            cwd: ws.worktreePath!,
+            env: settings.env,
+          },
+          (chunk) => onProgress?.({ kind: 'log', chunk }),
+        );
       } catch {
         /* teardown best-effort */
       }
     }
 
     // INTEGRATION(phase-3): stop long-running processes BEFORE the force-remove.
+    onProgress?.({
+      kind: 'phase',
+      phase: 'stopping',
+      message: 'Stopping workspace processes…',
+    });
     await this.deps.stopWorkspaceProcesses(id);
 
     const deleteWorktree =
@@ -570,6 +604,11 @@ export class WorkspaceManager {
       (ws.location ?? 'worktree') === 'worktree';
 
     if (deleteWorktree && ws.worktreePath !== null && worktreeExists) {
+      onProgress?.({
+        kind: 'phase',
+        phase: 'worktree',
+        message: 'Removing managed worktree…',
+      });
       const project = await this.deps.repos.projects.getById(ws.projectId);
       if (project !== null) {
         await this.deps.git.removeWorktree(
@@ -592,6 +631,11 @@ export class WorkspaceManager {
     this.deps.emit('workspace:archived', {
       workspaceId: id,
       worktreePath: archivedWorktreePath,
+    });
+    onProgress?.({
+      kind: 'phase',
+      phase: 'complete',
+      message: 'Workspace archived',
     });
   }
 

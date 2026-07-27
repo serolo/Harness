@@ -9,7 +9,7 @@
 
 import { v7 as uuidv7 } from 'uuid';
 import type { TurnRecord, TurnStatus } from '@shared/models';
-import type { AgentMode } from '@shared/harness';
+import type { AgentMode, HarnessId } from '@shared/harness';
 import type { AppDatabase } from '../index';
 import type { TurnsTable } from '../schema';
 
@@ -23,6 +23,8 @@ export interface CreateTurnInput {
   status: TurnStatus;
   sessionId?: string | null;
   mode?: AgentMode | null;
+  harness?: HarnessId | null;
+  model?: string | null;
   startedAt?: number;
 }
 
@@ -34,6 +36,10 @@ export interface SetTurnStatusPatch {
   endedAt?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  cachedInputTokens?: number | null;
+  cacheWriteInputTokens?: number | null;
+  costMicros?: number | null;
+  pricingKey?: string | null;
 }
 
 /**
@@ -53,6 +59,11 @@ function rowToTurn(row: TurnsTable): TurnRecord {
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     events: [],
+    harness: row.harness,
+    model: row.model,
+    cachedInputTokens: row.cached_input_tokens,
+    costMicros: row.cost_micros,
+    pricingKey: row.pricing_key,
   };
 }
 
@@ -76,6 +87,12 @@ export class TurnsRepo {
       input_tokens: null,
       output_tokens: null,
       reverted_at: null,
+      harness: input.harness ?? null,
+      model: input.model ?? null,
+      cached_input_tokens: null,
+      cache_write_input_tokens: null,
+      cost_micros: null,
+      pricing_key: null,
     };
 
     await this.db.insertInto('turns').values(row).execute();
@@ -115,6 +132,12 @@ export class TurnsRepo {
     if (patch.inputTokens !== undefined) set.input_tokens = patch.inputTokens;
     if (patch.outputTokens !== undefined)
       set.output_tokens = patch.outputTokens;
+    if (patch.cachedInputTokens !== undefined)
+      set.cached_input_tokens = patch.cachedInputTokens;
+    if (patch.cacheWriteInputTokens !== undefined)
+      set.cache_write_input_tokens = patch.cacheWriteInputTokens;
+    if (patch.costMicros !== undefined) set.cost_micros = patch.costMicros;
+    if (patch.pricingKey !== undefined) set.pricing_key = patch.pricingKey;
 
     await this.db
       .updateTable('turns')

@@ -97,10 +97,14 @@ export class CodexHarness implements Harness {
    */
   async detect(): Promise<DetectResult> {
     try {
-      const { stdout } = await execa(resolveExecutable('codex'), ['--version'], {
-        env: childProcessEnv(),
-        extendEnv: false,
-      });
+      const { stdout } = await execa(
+        resolveExecutable('codex'),
+        ['--version'],
+        {
+          env: childProcessEnv(),
+          extendEnv: false,
+        },
+      );
       const version = parseVersion(stdout);
       if (version && isOlderThan(version, MIN_CODEX_VERSION)) {
         logger.warn(
@@ -152,7 +156,9 @@ export class CodexHarness implements Harness {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
-      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+      throw new Error(
+        formatSpawnFailure(command, args, opts.workspaceDir, err),
+      );
     }
 
     const splitter = createJsonLineSplitter((msg) =>
@@ -294,7 +300,9 @@ export class CodexHarness implements Harness {
       });
     } catch (err) {
       rmSync(captureDir, { recursive: true, force: true });
-      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+      throw new Error(
+        formatSpawnFailure(command, args, opts.workspaceDir, err),
+      );
     }
 
     const splitter = createJsonLineSplitter((msg) =>
@@ -474,7 +482,10 @@ function readNewBytes(
   try {
     const bytes = readFileSync(path);
     if (bytes.length <= offset) return null;
-    return { text: bytes.subarray(offset).toString('utf8'), offset: bytes.length };
+    return {
+      text: bytes.subarray(offset).toString('utf8'),
+      offset: bytes.length,
+    };
   } catch {
     return null;
   }
@@ -574,7 +585,9 @@ function normalizeCurrentItem(
       : [];
   }
   if (type === 'agent_message' && !completed) {
-    return [{ type: 'event', event: { kind: 'activity', title: 'Responding' } }];
+    return [
+      { type: 'event', event: { kind: 'activity', title: 'Responding' } },
+    ];
   }
 
   if (type === 'command_execution') {
@@ -917,20 +930,26 @@ function asNumber(v: unknown): number | undefined {
 }
 
 /** Map Codex `usage` (snake_case) to the frozen `Usage` (camelCase), or undefined. */
-function extractUsage(
-  raw: unknown,
-): { inputTokens?: number; outputTokens?: number } | undefined {
+function extractUsage(raw: unknown):
+  | {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+    }
+  | undefined {
   if (!isRecord(raw)) {
     return undefined;
   }
   const inputTokens = asNumber(raw.input_tokens);
   const outputTokens = asNumber(raw.output_tokens);
+  const cachedInputTokens = asNumber(raw.cached_input_tokens);
   if (inputTokens === undefined && outputTokens === undefined) {
     return undefined;
   }
   return {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
   };
 }
 

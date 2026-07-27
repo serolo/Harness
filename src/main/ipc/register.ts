@@ -18,9 +18,9 @@
 // (`encodeAppErrorMessage`); the preload decodes it back with `decodeAppErrorMessage`.
 // (Streams differ: they use `webContents.send`, which clones intact — see stream.ts.)
 
-import { app, dialog, BrowserWindow, ipcMain } from 'electron';
+import { app, dialog, BrowserWindow, ipcMain, nativeImage } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
-import { basename, relative, resolve, sep } from 'node:path';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
 import { readFile, rm, stat } from 'node:fs/promises';
 import { v7 as uuidv7 } from 'uuid';
@@ -51,6 +51,7 @@ import { AppError, encodeAppErrorMessage } from '@shared/errors';
 import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
 import { TodosRepo } from '../db/repos/todos';
+import { UsageRepo } from '../db/repos/usage';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
 import {
   githubCliAuthStatus,
@@ -63,6 +64,7 @@ import type { DiffQuery, DiffScope } from '@shared/review';
 import type { GitDiff } from '../git';
 import { repoDir } from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
+import { SettingsService } from '../settings';
 import { isCompletionSound } from '@shared/settings';
 import { playCompletionSound } from '../harness/notifications';
 import { discoverNativeSlashCommands } from '../slash/native';
@@ -132,18 +134,29 @@ function trackForFocusRefresh(workspaceId: string): void {
   trackedFocusRefreshIds.add(workspaceId);
 }
 
-function assertWorkspaceId(workspaceId: unknown): asserts workspaceId is string {
+function assertWorkspaceId(
+  workspaceId: unknown,
+): asserts workspaceId is string {
   if (typeof workspaceId !== 'string' || workspaceId === '') {
     throw new AppError('invalid_input', 'workspaceId is required');
   }
 }
 
+async function settingsForProject(
+  ctx: AppContext,
+  projectId: string,
+): Promise<ReturnType<SettingsService['get']>> {
+  const project = await new ProjectsRepo(ctx.db).getById(projectId);
+  if (project === null) {
+    throw new AppError('not_found', 'project not found', { projectId });
+  }
+  const settings = new SettingsService();
+  settings.loadResult({ projectDir: project.repoPath });
+  return settings.get();
+}
+
 function assertWorkspaceFilePath(path: unknown): asserts path is string {
-  if (
-    typeof path !== 'string' ||
-    path.trim() === '' ||
-    path.includes('\0')
-  ) {
+  if (typeof path !== 'string' || path.trim() === '' || path.includes('\0')) {
     throw new AppError('invalid_input', 'workspace file path is required');
   }
 }
@@ -159,7 +172,10 @@ function resolveWorkspaceFile(worktreePath: string, filePath: string): string {
 }
 
 function workspaceRelativePath(worktreePath: string, filePath: string): string {
-  return relative(resolve(worktreePath), resolveWorkspaceFile(worktreePath, filePath));
+  return relative(
+    resolve(worktreePath),
+    resolveWorkspaceFile(worktreePath, filePath),
+  );
 }
 
 function diffSetFromGitDiff(gitDiff: GitDiff): CommandRes<'diff:get'> {
@@ -222,7 +238,10 @@ function assertTaskPrompt(prompt: unknown): asserts prompt is string {
 
 function assertTaskMode(mode: unknown): asserts mode is AgentMode {
   if (!AGENT_MODES.has(mode as AgentMode)) {
-    throw new AppError('invalid_input', 'mode must be default|plan|auto_accept');
+    throw new AppError(
+      'invalid_input',
+      'mode must be default|plan|auto_accept',
+    );
   }
 }
 
@@ -232,7 +251,9 @@ function assertTaskModel(model: unknown): asserts model is string {
   }
 }
 
-function assertScheduledAt(scheduledAt: unknown): asserts scheduledAt is number {
+function assertScheduledAt(
+  scheduledAt: unknown,
+): asserts scheduledAt is number {
   if (
     typeof scheduledAt !== 'number' ||
     !Number.isInteger(scheduledAt) ||
@@ -355,16 +376,50 @@ async function githubRepoForProject(
 }
 
 /**
- * Resolve the GitHub API client according to local Settings semantics. If the GitHub
- * CLI is authenticated, use that token first; otherwise fall back to the encrypted
- * integration row. The token stays in main either way.
+ * Resolve the GitHub API client according to local Settings semantics. Prefer the
+ * explicitly connected Harness account, then fall back to `gh` when the saved token is
+ * absent or can no longer be decrypted. The token stays in main either way.
  */
 async function githubClientForSettings(ctx: AppContext): Promise<Octokit> {
+  // Prefer the account explicitly connected in Harness. A machine can have `gh`
+  // authenticated as a different user that cannot see this (often private) repo;
+  // GitHub deliberately reports that case as 404.
+  try {
+    return await ctx.integrations.github();
+  } catch (err) {
+    if (
+      !(err instanceof AppError) ||
+      err.code !== 'integration' ||
+      !/(?:no GitHub account connected|saved GitHub credential is unavailable)/i.test(
+        err.message,
+      )
+    ) {
+      throw err;
+    }
+  }
+
   const cli = await githubCliAuthStatus();
   if (cli.authenticated) {
     return new Octokit({ auth: await githubCliToken() });
   }
-  return ctx.integrations.github();
+  throw new AppError('integration', 'no GitHub account connected');
+}
+
+function clarifyGithubRepoError(
+  error: unknown,
+  repo: { owner: string; name: string },
+): never {
+  if (
+    error instanceof AppError &&
+    error.code === 'integration' &&
+    /\b404\b/.test(error.message)
+  ) {
+    throw new AppError(
+      'integration',
+      `GitHub could not access ${repo.owner}/${repo.name}. Check that the connected account can view the repository and has Pull requests read permission.`,
+    );
+  }
+  throw error;
 }
 
 /**
@@ -397,50 +452,87 @@ function openInIde(
 
 interface WorkspaceAppConfig extends WorkspaceOpenApp {
   application: string;
+  bundlePaths: readonly string[];
 }
 
 /** Fixed application names keep the renderer from choosing a binary or command. */
 const WORKSPACE_OPEN_APPS: readonly WorkspaceAppConfig[] = [
-  { id: 'finder', label: 'Finder', kind: 'finder', application: 'Finder' },
+  {
+    id: 'finder',
+    label: 'Finder',
+    kind: 'finder',
+    application: 'Finder',
+    bundlePaths: ['/System/Library/CoreServices/Finder.app'],
+  },
   {
     id: 'terminal',
     label: 'Terminal',
     kind: 'terminal',
     application: 'Terminal',
+    bundlePaths: ['/System/Applications/Utilities/Terminal.app'],
   },
   {
     id: 'iterm',
     label: 'iTerm',
     kind: 'terminal',
     application: 'iTerm',
+    bundlePaths: ['/Applications/iTerm.app'],
   },
-  { id: 'warp', label: 'Warp', kind: 'terminal', application: 'Warp' },
+  {
+    id: 'warp',
+    label: 'Warp',
+    kind: 'terminal',
+    application: 'Warp',
+    bundlePaths: ['/Applications/Warp.app'],
+  },
   {
     id: 'vscode',
     label: 'Visual Studio Code',
     kind: 'editor',
     application: 'Visual Studio Code',
+    bundlePaths: ['/Applications/Visual Studio Code.app'],
   },
-  { id: 'cursor', label: 'Cursor', kind: 'editor', application: 'Cursor' },
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    kind: 'editor',
+    application: 'Cursor',
+    bundlePaths: ['/Applications/Cursor.app'],
+  },
   {
     id: 'sublime',
     label: 'Sublime Text',
     kind: 'editor',
     application: 'Sublime Text',
+    bundlePaths: ['/Applications/Sublime Text.app'],
   },
-  { id: 'xcode', label: 'Xcode', kind: 'editor', application: 'Xcode' },
+  {
+    id: 'xcode',
+    label: 'Xcode',
+    kind: 'editor',
+    application: 'Xcode',
+    bundlePaths: ['/Applications/Xcode.app'],
+  },
   {
     id: 'webstorm',
     label: 'WebStorm',
     kind: 'editor',
     application: 'WebStorm',
+    bundlePaths: ['/Applications/WebStorm.app'],
   },
-  { id: 'fork', label: 'Fork', kind: 'git', application: 'Fork' },
+  {
+    id: 'fork',
+    label: 'Fork',
+    kind: 'git',
+    application: 'Fork',
+    bundlePaths: ['/Applications/Fork.app'],
+  },
   {
     id: 'devin',
     label: 'Devin Desktop',
     kind: 'editor',
     application: 'Devin',
+    bundlePaths: ['/Applications/Devin.app'],
   },
 ] as const;
 
@@ -453,19 +545,80 @@ function runMacOpen(args: readonly string[]): Promise<number> {
   });
 }
 
+function readProcessOutput(
+  command: string,
+  args: readonly string[],
+): Promise<string | null> {
+  return new Promise((resolvePath) => {
+    const child = spawnChild(command, [...args], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let output = '';
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      output += chunk;
+    });
+    child.once('error', () => resolvePath(null));
+    child.once('close', (code) => {
+      const appPath = output.trim();
+      resolvePath(code === 0 && appPath ? appPath : null);
+    });
+  });
+}
+
+async function nativeApplicationIcon(
+  bundlePaths: readonly string[],
+): Promise<string | undefined> {
+  for (const bundlePath of bundlePaths) {
+    try {
+      if (!(await stat(bundlePath)).isDirectory()) continue;
+      const iconName = await readProcessOutput('/usr/bin/plutil', [
+        '-extract',
+        'CFBundleIconFile',
+        'raw',
+        join(bundlePath, 'Contents', 'Info.plist'),
+      ]);
+      if (!iconName) continue;
+      const iconFile = iconName.endsWith('.icns')
+        ? iconName
+        : `${iconName}.icns`;
+      const icon = nativeImage.createFromPath(
+        join(bundlePath, 'Contents', 'Resources', iconFile),
+      );
+      if (!icon.isEmpty()) return icon.toDataURL();
+    } catch {
+      // A missing/unreadable icon should not hide an otherwise installed app.
+    }
+  }
+  return undefined;
+}
+
 async function listInstalledWorkspaceApps(): Promise<WorkspaceOpenApp[]> {
   if (process.platform !== 'darwin') return [];
-  const availability = await Promise.all(
+  const installedApps = await Promise.all(
     WORKSPACE_OPEN_APPS.map(async (candidate) => {
       try {
-        return (await runMacOpen(['-Ra', candidate.application])) === 0;
+        if ((await runMacOpen(['-Ra', candidate.application])) !== 0) {
+          return null;
+        }
+        const icon = await nativeApplicationIcon(candidate.bundlePaths);
+        return {
+          id: candidate.id,
+          label: candidate.label,
+          kind: candidate.kind,
+          icon,
+        };
       } catch {
-        return false;
+        return {
+          id: candidate.id,
+          label: candidate.label,
+          kind: candidate.kind,
+        };
       }
     }),
   );
-  return WORKSPACE_OPEN_APPS.filter((_, index) => availability[index]).map(
-    ({ id, label, kind }) => ({ id, label, kind }),
+  return installedApps.filter(
+    (candidate): candidate is WorkspaceOpenApp => candidate !== null,
   );
 }
 
@@ -558,6 +711,11 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
   'workspace:create': (arg, ctx, sink) => {
     void (async () => {
       try {
+        sink.push({
+          kind: 'phase',
+          phase: 'fetching',
+          message: 'Preparing repository and worktree…',
+        });
         await ctx.workspaces.create(
           arg,
           (chunk) => sink.push({ kind: 'setupLog', chunk }),
@@ -566,6 +724,20 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         sink.end();
       } catch (e) {
         sink.error(toAppError(e));
+      }
+    })();
+  },
+
+  'workspace:archiveStream': (arg, ctx, sink) => {
+    void (async () => {
+      try {
+        if (typeof arg.id !== 'string' || arg.id === '') {
+          throw new AppError('invalid_input', 'workspace id is required');
+        }
+        await ctx.workspaces.archive(arg.id, (event) => sink.push(event));
+        sink.end();
+      } catch (error) {
+        sink.error(toAppError(error));
       }
     })();
   },
@@ -589,6 +761,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         const attachments = Array.isArray(arg.attachments)
           ? arg.attachments
           : [];
+        if (arg.model !== undefined) assertTaskModel(arg.model);
 
         const workspace = await ctx.workspaces.get(arg.workspaceId);
         if (!workspace) {
@@ -617,9 +790,17 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           });
         }
 
-        const settings = ctx.settings.get();
-        const sessionId =
-          harnessOverride === undefined || harnessOverride === workspace.harness
+        const settings = await settingsForProject(ctx, workspace.projectId);
+        const hasExplicitSession = Object.prototype.hasOwnProperty.call(
+          arg,
+          'sessionId',
+        );
+        const sessionId = hasExplicitSession
+          ? typeof arg.sessionId === 'string' && arg.sessionId !== ''
+            ? arg.sessionId
+            : undefined
+          : harnessOverride === undefined ||
+              harnessOverride === workspace.harness
             ? await ctx.recorder.latestSessionId(arg.workspaceId)
             : undefined;
         const opts: StartTurnOpts = {
@@ -630,6 +811,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           mode: arg.mode ?? settings.agent.mode,
           mcpConfig: settings.mcp,
           permissionPolicy: settings.agent.permissionPolicy,
+          model: arg.model,
         };
 
         // Buffer events until the `started` frame is sent (started-first guarantee).
@@ -651,7 +833,12 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           harnessOverride,
         );
         const turnId = ctx.harness.getActiveTurnId(arg.workspaceId) ?? '';
-        sink.push({ kind: 'started', turnId, sessionId: handle.sessionId });
+        sink.push({
+          kind: 'started',
+          turnId,
+          sessionId: handle.sessionId,
+          mode: opts.mode ?? 'default',
+        });
         started = true;
         for (const event of buffered) {
           sink.push({ kind: 'event', event });
@@ -690,7 +877,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           );
         }
 
-        const settings = ctx.settings.get();
+        const settings = await settingsForProject(ctx, workspace.projectId);
         const env = buildEnv({
           port: workspace.port ?? 0,
           worktreePath: workspace.worktreePath,
@@ -761,7 +948,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           );
         }
 
-        const settings = ctx.settings.get();
+        const settings = await settingsForProject(ctx, workspace.projectId);
         const script = settings.scripts.run.find(
           (s) => s.name === arg.scriptName,
         );
@@ -1068,6 +1255,22 @@ export function registerIpc(ctx: AppContext): void {
     await ctx.recorder.clear(req.workspaceId);
   });
 
+  handle('usage:monthly', async (req) => {
+    if (
+      typeof req.month !== 'string' ||
+      !/^\d{4}-\d{2}$/.test(req.month) ||
+      typeof req.startAt !== 'number' ||
+      !Number.isFinite(req.startAt) ||
+      typeof req.endAt !== 'number' ||
+      !Number.isFinite(req.endAt) ||
+      req.startAt >= req.endAt ||
+      req.endAt - req.startAt > 32 * 24 * 60 * 60 * 1000
+    ) {
+      throw new AppError('invalid_input', 'invalid usage month range');
+    }
+    return new UsageRepo(ctx.db).monthly(req.month, req.startAt, req.endAt);
+  });
+
   // workspace:readFile — read-only preview for chat file tabs. Paths are relative to
   // the selected checkout and are resolved/capped in main before crossing IPC.
   handle('workspace:readFile', async (req) => {
@@ -1089,6 +1292,16 @@ export function registerIpc(ctx: AppContext): void {
       path: workspaceRelativePath(workspace.worktreePath, req.path),
       content: await readFile(absolutePath, 'utf8'),
     };
+  });
+
+  // workspace:pickFile — open the OS file picker for chat attachments.
+  handle('workspace:pickFile', async () => {
+    const win = BrowserWindow.getFocusedWindow();
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openFile'] })
+      : await dialog.showOpenDialog({ properties: ['openFile'] });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
   });
 
   // harness:detect — probe a registered harness CLI.
@@ -1155,7 +1368,13 @@ export function registerIpc(ctx: AppContext): void {
     if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
-    const settings = ctx.settings.get();
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (workspace === null) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    const settings = await settingsForProject(ctx, workspace.projectId);
     const running = ctx.process.listRunning(req.workspaceId);
     return settings.scripts.run.map((s) => {
       const live = running.find((r) => r.scriptName === s.name);
@@ -1266,7 +1485,10 @@ export function registerIpc(ctx: AppContext): void {
       req.targetRef !== undefined &&
       (typeof req.targetRef !== 'string' || req.targetRef === '')
     ) {
-      throw new AppError('invalid_input', 'targetRef must be a non-empty string');
+      throw new AppError(
+        'invalid_input',
+        'targetRef must be a non-empty string',
+      );
     }
     return ctx.diff.menu(req.workspaceId, req.targetRef);
   });
@@ -1737,11 +1959,13 @@ export function registerIpc(ctx: AppContext): void {
       });
     }
     const octokit = await githubClientForSettings(ctx);
-    const client = new GithubClient(
-      octokit,
-      await githubRepoForProject(ctx, project),
-    );
-    return client.listPrs();
+    const repo = await githubRepoForProject(ctx, project);
+    const client = new GithubClient(octokit, repo);
+    try {
+      return await client.listPrs();
+    } catch (error) {
+      return clarifyGithubRepoError(error, repo);
+    }
   });
 
   // github:listIssues — a project's open issues (PRs excluded by the client). Same
@@ -1757,11 +1981,13 @@ export function registerIpc(ctx: AppContext): void {
       });
     }
     const octokit = await githubClientForSettings(ctx);
-    const client = new GithubClient(
-      octokit,
-      await githubRepoForProject(ctx, project),
-    );
-    return client.listIssues();
+    const repo = await githubRepoForProject(ctx, project);
+    const client = new GithubClient(octokit, repo);
+    try {
+      return await client.listIssues();
+    } catch (error) {
+      return clarifyGithubRepoError(error, repo);
+    }
   });
 
   // review:resolveThread — mark a single GitHub review thread resolved (spec §5.6).
@@ -1813,6 +2039,48 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'keyPath is required');
     }
     return ctx.settings.set(req.layer, req.keyPath, req.value);
+  });
+
+  const projectSettings = async (
+    projectId: unknown,
+  ): Promise<{
+    project: NonNullable<Awaited<ReturnType<ProjectsRepo['getById']>>>;
+    service: SettingsService;
+  }> => {
+    if (typeof projectId !== 'string' || projectId === '') {
+      throw new AppError('invalid_input', 'projectId is required');
+    }
+    const project = await new ProjectsRepo(ctx.db).getById(projectId);
+    if (project === null) {
+      throw new AppError('not_found', 'project not found', { projectId });
+    }
+    const service = new SettingsService();
+    service.loadResult({ projectDir: project.repoPath });
+    return { project, service };
+  };
+
+  handle('settings:getProject', async (req) => {
+    const { project, service } = await projectSettings(req.projectId);
+    const result = service.loadResult({ projectDir: project.repoPath });
+    return {
+      settings: result.settings,
+      provenance: result.provenance,
+      issues: result.issues,
+    };
+  });
+
+  handle('settings:setProject', async (req) => {
+    if (typeof req.keyPath !== 'string' || req.keyPath === '') {
+      throw new AppError('invalid_input', 'keyPath is required');
+    }
+    const { project, service } = await projectSettings(req.projectId);
+    service.set('project-shared', req.keyPath, req.value);
+    const result = service.loadResult({ projectDir: project.repoPath });
+    return {
+      settings: result.settings,
+      provenance: result.provenance,
+      issues: result.issues,
+    };
   });
 
   // Sound names are narrowed to the shared allowlist before the privileged main

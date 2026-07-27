@@ -326,7 +326,12 @@ describe('DiffPanel comments', () => {
         _arg: unknown,
         onChunk: (c: TurnStreamChunk) => void,
       ) => {
-        onChunk({ kind: 'started', turnId: 't1', sessionId: 'sess-1' });
+        onChunk({
+          kind: 'started',
+          turnId: 't1',
+          sessionId: 'sess-1',
+          mode: 'default',
+        });
         onChunk({ kind: 'event', event: { kind: 'turn_end', usage: {} } });
         return Promise.resolve();
       },

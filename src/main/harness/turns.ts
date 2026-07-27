@@ -20,7 +20,8 @@
 //   dropped — it is flushed by `endTurn` (including the interrupt/error path, so no
 //   `streaming` turn row is ever left dangling).
 
-import type { AgentEvent, AgentMode, Usage } from '@shared/harness';
+import type { AgentEvent, AgentMode, HarnessId, Usage } from '@shared/harness';
+import { calculateTurnBilling } from '@shared/billing';
 import type { TurnRecord, TurnStatus } from '@shared/models';
 import type { TurnsRepo } from '../db/repos/turns';
 import type { EventsRepo } from '../db/repos/events';
@@ -42,6 +43,8 @@ const DEFAULT_TEXT_FLUSH_THRESHOLD = 512;
 /** Per-turn mutable state: the only thing this class keeps in memory. */
 interface TurnState {
   pendingText: string;
+  harness: HarnessId | null;
+  model: string | null;
 }
 
 /**
@@ -68,7 +71,12 @@ export class TurnRecorder {
    */
   async beginTurn(
     workspaceId: string,
-    meta: { sessionId?: string; mode?: AgentMode } = {},
+    meta: {
+      sessionId?: string;
+      mode?: AgentMode;
+      harness?: HarnessId;
+      model?: string;
+    } = {},
   ): Promise<string> {
     const idx = await this.turns.nextIdx(workspaceId);
     const turn = await this.turns.create({
@@ -77,8 +85,14 @@ export class TurnRecorder {
       status: 'streaming',
       sessionId: meta.sessionId ?? null,
       mode: meta.mode ?? null,
+      harness: meta.harness ?? null,
+      model: meta.model ?? null,
     });
-    this.state.set(turn.id, { pendingText: '' });
+    this.state.set(turn.id, {
+      pendingText: '',
+      harness: meta.harness ?? null,
+      model: meta.model ?? null,
+    });
     return turn.id;
   }
 
@@ -122,11 +136,19 @@ export class TurnRecorder {
   ): Promise<void> {
     const st = this.stateFor(turnId);
     await this.flushText(turnId, st);
+    const billing =
+      st.harness === null
+        ? null
+        : calculateTurnBilling(st.harness, st.model ?? undefined, usage);
     this.state.delete(turnId);
     await this.turns.setStatus(turnId, status, {
       endedAt: Date.now(),
       inputTokens: usage?.inputTokens ?? null,
       outputTokens: usage?.outputTokens ?? null,
+      cachedInputTokens: usage?.cachedInputTokens ?? null,
+      cacheWriteInputTokens: usage?.cacheWriteInputTokens ?? null,
+      costMicros: billing?.costMicros ?? null,
+      pricingKey: billing?.pricingKey ?? null,
     });
   }
 
@@ -180,7 +202,7 @@ export class TurnRecorder {
   private stateFor(turnId: string): TurnState {
     let st = this.state.get(turnId);
     if (!st) {
-      st = { pendingText: '' };
+      st = { pendingText: '', harness: null, model: null };
       this.state.set(turnId, st);
     }
     return st;

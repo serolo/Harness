@@ -10,7 +10,7 @@
 // dependency-free at runtime — it imports only the pure, dependency-free type/value
 // contracts from `@shared/*` (which the bundler inlines), never a Node/native module.
 
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import type { Api, StreamFrameWire, Unsubscribe } from './api';
 import type {
@@ -202,7 +202,12 @@ function cancelStream(id: string): void {
   activeStreamCancels.get(id)?.();
 }
 
-const api: Api = { invoke, on, stream, cancelStream };
+/** Resolve a renderer File to its native path without exposing Electron to the page. */
+function getPathForFile(file: File): string {
+  return webUtils.getPathForFile(file);
+}
+
+const api: Api = { invoke, on, stream, cancelStream, getPathForFile };
 
 // The single, frozen bridge. Nothing else is exposed to the renderer.
 contextBridge.exposeInMainWorld('api', api);

@@ -1,5 +1,6 @@
 import type { Workspace } from '@shared/models';
 import { invoke } from '@renderer/ipc';
+import { archiveWorkspaceInBackground } from '@renderer/stores/workspaceArchive';
 
 /** Archive with the same dirty-worktree warning from every UI entry point. */
 export async function archiveWorkspaceWithConfirmation(
@@ -26,7 +27,7 @@ export async function archiveWorkspaceWithConfirmation(
   );
   if (!confirmed) return false;
 
-  await invoke('workspace:archive', { id: workspace.id });
+  archiveWorkspaceInBackground(workspace);
   return true;
 }
 

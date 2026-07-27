@@ -486,7 +486,14 @@ export class GithubClient {
         // map a small explicit field set, so narrow to our structural response view.
         const res = (await this.octokit.request(
           route,
-          params,
+          {
+            ...params,
+            // Every REST route in this per-repository client uses these placeholders.
+            // Keeping them here makes it impossible for an endpoint method to forget
+            // them and accidentally request `/repos///…`.
+            owner: this.owner,
+            repo: this.repo,
+          },
         )) as unknown as OctokitResponseLike<T>;
         this.updateRateFromHeaders(res.headers);
         return res;

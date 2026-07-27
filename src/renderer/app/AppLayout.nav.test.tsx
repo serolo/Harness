@@ -272,9 +272,12 @@ describe('AppLayout menu:action dispatch (Track H1)', () => {
     });
 
     await waitFor(() =>
-      expect(api.invoke).toHaveBeenCalledWith('workspace:archive', {
-        id: 'w1',
-      }),
+      expect(api.stream).toHaveBeenCalledWith(
+        'workspace:archiveStream',
+        { id: 'w1' },
+        expect.any(Function),
+        expect.any(Object),
+      ),
     );
   });
 });

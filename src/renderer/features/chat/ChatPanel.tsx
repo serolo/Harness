@@ -2,19 +2,22 @@
 // (history + streaming) to the Transcript + Composer. Renders an empty state when no
 // workspace is selected.
 
-import { useCallback, useEffect, useState } from 'react';
-import { Copy, FileText, History, Plus, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Copy, FileText, History, Pencil, Plus, X } from 'lucide-react';
 import { invoke } from '@renderer/ipc';
 import type { FileDiff } from '@shared/review';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { useChat } from './useChat';
 import { FileReferencePill } from './FileReferencePill';
+import { WorkspaceCreationTerminal } from './WorkspaceCreationTerminal';
+import { WorkspaceArchiveTerminal } from './WorkspaceArchiveTerminal';
 
 export interface ChatPanelProps {
   workspaceId: string | null;
   inspectFileRequest?: {
     id: number;
+    workspaceId: string;
     path: string;
     mode?: 'edit' | 'diff';
   } | null;
@@ -31,6 +34,14 @@ interface FileTab {
   diffError: string | null;
   loadingDiff: boolean;
   diffStatus: 'unknown' | 'loading' | 'available' | 'none' | 'error';
+}
+
+interface ChatContext {
+  id: string;
+  label: string;
+  turnIds: string[];
+  /** `null` means this window must begin a fresh agent session. */
+  initialSessionId?: string | null;
 }
 
 type ActiveTab = 'chat' | string;
@@ -172,7 +183,10 @@ function FileViewer({
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-hidden" data-testid="chat-file-viewer">
+    <div
+      className="min-h-0 flex-1 overflow-hidden"
+      data-testid="chat-file-viewer"
+    >
       <div className="flex h-full min-h-0 flex-col bg-surface-app">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-1 px-5 py-3">
           <div className="min-w-0">
@@ -278,12 +292,35 @@ export function ChatPanel({
 }: ChatPanelProps): React.JSX.Element {
   const { turns, isBusy, sendTurn, interrupt, clear } = useChat(workspaceId);
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
+  const [chatContexts, setChatContexts] = useState<ChatContext[]>([
+    { id: 'chat', label: 'Untitled', turnIds: [] },
+  ]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat');
+  const [editingContextId, setEditingContextId] = useState<string | null>(null);
+  const [contextNameDraft, setContextNameDraft] = useState('');
+  const handledInspectRequests = useRef(new Set<number>());
 
   useEffect(() => {
     setFileTabs([]);
+    setChatContexts([{ id: 'chat', label: 'Untitled', turnIds: [] }]);
     setActiveTab('chat');
+    setEditingContextId(null);
   }, [workspaceId]);
+
+  useEffect(() => {
+    setChatContexts((contexts) => {
+      const owned = new Set(contexts.flatMap((context) => context.turnIds));
+      const unowned = turns
+        .map((turn) => turn.turnId)
+        .filter((turnId) => !owned.has(turnId));
+      if (unowned.length === 0) return contexts;
+      return contexts.map((context) =>
+        context.id === activeTab
+          ? { ...context, turnIds: [...context.turnIds, ...unowned] }
+          : context,
+      );
+    });
+  }, [activeTab, turns]);
 
   const fetchFileDiff = useCallback(
     (id: string, path: string): void => {
@@ -291,7 +328,11 @@ export function ChatPanel({
       setFileTabs((tabs) =>
         tabs.map((tab) =>
           tab.id === id && tab.diffStatus === 'unknown'
-            ? { ...tab, diffStatus: 'loading', loadingDiff: tab.mode === 'diff' }
+            ? {
+                ...tab,
+                diffStatus: 'loading',
+                loadingDiff: tab.mode === 'diff',
+              }
             : tab,
         ),
       );
@@ -314,7 +355,8 @@ export function ChatPanel({
           );
         })
         .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           setFileTabs((tabs) =>
             tabs.map((tab) =>
               tab.id === id
@@ -388,7 +430,8 @@ export function ChatPanel({
           );
         })
         .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           setFileTabs((tabs) =>
             tabs.map((tab) =>
               tab.id === id
@@ -403,9 +446,16 @@ export function ChatPanel({
   );
 
   useEffect(() => {
-    if (!inspectFileRequest) return;
+    if (
+      !inspectFileRequest ||
+      inspectFileRequest.workspaceId !== workspaceId ||
+      handledInspectRequests.current.has(inspectFileRequest.id)
+    ) {
+      return;
+    }
+    handledInspectRequests.current.add(inspectFileRequest.id);
     openFile(inspectFileRequest.path, inspectFileRequest.mode ?? 'edit');
-  }, [inspectFileRequest, openFile]);
+  }, [inspectFileRequest, openFile, workspaceId]);
 
   const closeFileTab = (id: string): void => {
     setFileTabs((tabs) => tabs.filter((tab) => tab.id !== id));
@@ -435,19 +485,75 @@ export function ChatPanel({
   };
 
   const startNewChat = (): void => {
-    setActiveTab('chat');
-    void clear();
+    const id = `chat:${Date.now()}:${chatContexts.length}`;
+    setChatContexts((contexts) => [
+      ...contexts,
+      {
+        id,
+        label: 'Untitled',
+        turnIds: [],
+        initialSessionId: null,
+      },
+    ]);
+    setActiveTab(id);
+  };
+
+  const closeChatContext = (id: string): void => {
+    if (isBusy) return;
+    const closingIndex = chatContexts.findIndex((context) => context.id === id);
+    if (closingIndex < 0) return;
+    if (chatContexts.length === 1) {
+      const replacement: ChatContext = {
+        id: `chat:${Date.now()}:replacement`,
+        label: 'Untitled',
+        turnIds: [],
+        initialSessionId: null,
+      };
+      setChatContexts([replacement]);
+      setActiveTab(replacement.id);
+      return;
+    }
+    const remaining = chatContexts.filter((context) => context.id !== id);
+    setChatContexts(remaining);
+    setActiveTab((current) => {
+      if (current !== id) return current;
+      return (
+        remaining[Math.min(closingIndex, remaining.length - 1)]?.id ?? 'chat'
+      );
+    });
+  };
+
+  const beginRenameContext = (context: ChatContext): void => {
+    setEditingContextId(context.id);
+    setContextNameDraft(context.label);
+  };
+
+  const finishRenameContext = (): void => {
+    if (editingContextId === null) return;
+    const label = contextNameDraft.trim() || 'Untitled';
+    setChatContexts((contexts) =>
+      contexts.map((context) =>
+        context.id === editingContextId ? { ...context, label } : context,
+      ),
+    );
+    setEditingContextId(null);
   };
 
   const activeFile = fileTabs.find((tab) => tab.id === activeTab) ?? null;
+  const activeContext =
+    chatContexts.find((context) => context.id === activeTab) ?? chatContexts[0];
+  const activeTurnIds = new Set(activeContext?.turnIds ?? []);
+  const contextTurns = turns.filter((turn) => activeTurnIds.has(turn.turnId));
+  const contextSessionId =
+    contextTurns.at(-1)?.sessionId ?? activeContext?.initialSessionId;
 
   if (!workspaceId) {
     return (
       <div
-        className="flex h-full items-center justify-center p-6 text-base text-fg-3"
+        className="flex h-full flex-col items-stretch justify-center p-6 text-base text-fg-3"
         data-testid="chat-empty"
       >
-        Select a workspace to begin.
+        <span className="text-center">Select a workspace to begin.</span>
       </div>
     );
   }
@@ -459,19 +565,63 @@ export function ChatPanel({
     >
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-1 bg-surface-panel px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          <button
-            type="button"
-            className={`flex h-7 shrink-0 items-center border-b-2 px-2 text-xs font-medium transition-colors ${
-              activeTab === 'chat'
-                ? 'border-accent text-fg-1'
-                : 'border-transparent text-fg-3 hover:text-fg-1'
-            }`}
-            data-testid="chat-tab"
-            aria-selected={activeTab === 'chat'}
-            onClick={() => setActiveTab('chat')}
-          >
-            Claude
-          </button>
+          {chatContexts.map((context, index) => (
+            <div
+              key={context.id}
+              className={`group flex h-7 shrink-0 items-center border-b-2 pl-2 text-xs font-medium transition-colors ${
+                activeTab === context.id
+                  ? 'border-accent text-fg-1'
+                  : 'border-transparent text-fg-3 hover:text-fg-1'
+              }`}
+              data-testid={index === 0 ? 'chat-tab' : 'chat-context-tab'}
+              role="tab"
+              aria-selected={activeTab === context.id}
+            >
+              {editingContextId === context.id ? (
+                <input
+                  autoFocus
+                  value={contextNameDraft}
+                  aria-label="Chat context name"
+                  data-testid="chat-context-name-input"
+                  className="h-6 w-28 rounded-1 border border-border-2 bg-surface-well px-1.5 text-xs text-fg-1 outline-none focus:border-accent"
+                  onChange={(event) => setContextNameDraft(event.target.value)}
+                  onBlur={finishRenameContext}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') finishRenameContext();
+                    if (event.key === 'Escape') setEditingContextId(null);
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="h-full max-w-32 truncate"
+                  title={`${context.label} — double-click to rename`}
+                  onClick={() => setActiveTab(context.id)}
+                  onDoubleClick={() => beginRenameContext(context)}
+                >
+                  {context.label}
+                </button>
+              )}
+              <button
+                type="button"
+                className="ml-1 rounded-1 p-1 text-fg-3 opacity-0 transition-opacity hover:bg-bg-3 hover:text-fg-1 focus:opacity-100 group-hover:opacity-100"
+                aria-label={`Rename ${context.label}`}
+                onClick={() => beginRenameContext(context)}
+              >
+                <Pencil className="h-3 w-3" aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="ml-1 rounded-1 p-1 text-fg-3 opacity-0 transition-opacity hover:bg-bg-3 hover:text-fg-1 focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed"
+                aria-label={`Close ${context.label}`}
+                data-testid={`chat-context-close-${index}`}
+                disabled={isBusy}
+                onClick={() => closeChatContext(context.id)}
+              >
+                <X className="h-3 w-3" aria-hidden />
+              </button>
+            </div>
+          ))}
           {fileTabs.map((tab) => (
             <div
               key={tab.id}
@@ -529,15 +679,35 @@ export function ChatPanel({
       ) : (
         <>
           <Transcript
-            turns={turns}
+            turns={contextTurns}
             workspaceId={workspaceId}
             onOpenFile={openFile}
+            onApprovePlan={() =>
+              sendTurn(
+                'The plan is approved. Start implementing it now.',
+                [],
+                'default',
+                undefined,
+                contextSessionId,
+              )
+            }
           />
+          <WorkspaceCreationTerminal workspaceId={workspaceId} />
+          <WorkspaceArchiveTerminal workspaceId={workspaceId} />
           <Composer
             isBusy={isBusy}
             workspaceId={workspaceId}
-            onSend={(prompt, attachments, mode, harness) =>
-              sendTurn(prompt, attachments, mode, harness)
+            contextId={activeContext?.id}
+            turns={contextTurns}
+            onSend={(prompt, attachments, mode, harness, model) =>
+              sendTurn(
+                prompt,
+                attachments,
+                mode,
+                harness,
+                contextSessionId,
+                model,
+              )
             }
             onInterrupt={interrupt}
             onClear={clear}

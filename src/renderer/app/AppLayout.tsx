@@ -18,6 +18,7 @@ import {
   PanelRight,
   Search,
   Settings as SettingsIcon,
+  CircleDollarSign,
 } from 'lucide-react';
 import { invoke, onEvent } from '@renderer/ipc';
 import { Sidebar } from '@renderer/features/sidebar/Sidebar';
@@ -26,10 +27,10 @@ import { TerminalPanel } from '@renderer/features/terminal/TerminalPanel';
 import { DiffPanel } from '@renderer/features/diff/DiffPanel';
 import { TasksPanel } from '@renderer/features/tasks/TasksPanel';
 import { SettingsPanel } from '@renderer/features/settings/SettingsPanel';
+import { UsagePanel } from '@renderer/features/usage/UsagePanel';
 import { OpenInAppMenu } from '@renderer/features/workspace/OpenInAppMenu';
 import { archiveWorkspaceWithConfirmation } from '@renderer/features/workspace/actions';
 import { CommandPalette } from '@renderer/features/palette/CommandPalette';
-import { OnboardingWizard } from '@renderer/features/onboarding/OnboardingWizard';
 import { Dialog, IconButton, Kbd } from '@renderer/components/ui';
 import {
   useCommands,
@@ -53,6 +54,7 @@ type WorkPane = 'tasks' | 'terminal';
 
 interface InspectFileRequest {
   id: number;
+  workspaceId: string;
   path: string;
   mode: 'edit' | 'diff';
 }
@@ -77,13 +79,9 @@ const WORK_PANE_LIMITS: Record<WorkPane, { min: number; max: number }> = {
   tasks: { min: 120, max: 420 },
   terminal: { min: 120, max: 520 },
 };
-const DEFAULT_WORK_PANE_HEIGHT: Record<WorkPane, number> = {
+const WORK_PANE_RESIZE_FALLBACK_HEIGHT: Record<WorkPane, number> = {
   tasks: 224,
-  terminal: 256,
-};
-const WORK_PANE_STORAGE_KEY: Record<WorkPane, string> = {
-  tasks: 'harness.layout.tasksPaneHeight',
-  terminal: 'harness.layout.terminalPaneHeight',
+  terminal: 224,
 };
 
 function clampPaneWidth(side: SidePane, width: number): number {
@@ -105,13 +103,6 @@ function readStoredPaneOpen(side: SidePane): boolean {
 function clampWorkPaneHeight(pane: WorkPane, height: number): number {
   const { min, max } = WORK_PANE_LIMITS[pane];
   return Math.min(max, Math.max(min, height));
-}
-
-function readStoredWorkPaneHeight(pane: WorkPane): number {
-  const stored = Number(window.localStorage.getItem(WORK_PANE_STORAGE_KEY[pane]));
-  return Number.isFinite(stored) && stored > 0
-    ? clampWorkPaneHeight(pane, stored)
-    : DEFAULT_WORK_PANE_HEIGHT[pane];
 }
 
 interface PaneResizeHandleProps {
@@ -192,7 +183,7 @@ function PaneResizeHandle({
 
 interface WorkPaneResizeHandleProps {
   pane: WorkPane;
-  height: number;
+  height: number | null;
   onResize: (height: number) => void;
 }
 
@@ -207,17 +198,29 @@ function WorkPaneResizeHandle({
 
   useEffect(() => () => cleanupRef.current?.(), []);
 
+  const currentHeight = (): number => {
+    if (height !== null) return height;
+    const measuredHeight = document
+      .querySelector<HTMLElement>(`[data-testid="right-${pane}-pane"]`)
+      ?.getBoundingClientRect().height;
+    return measuredHeight && measuredHeight > 0
+      ? measuredHeight
+      : WORK_PANE_RESIZE_FALLBACK_HEIGHT[pane];
+  };
+
   const startResize = (event: React.MouseEvent<HTMLDivElement>): void => {
     event.preventDefault();
     cleanupRef.current?.();
 
     const startY = event.clientY;
-    const startHeight = height;
+    const startHeight = currentHeight();
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
 
     const handleMouseMove = (moveEvent: MouseEvent): void => {
-      onResize(clampWorkPaneHeight(pane, startHeight + startY - moveEvent.clientY));
+      onResize(
+        clampWorkPaneHeight(pane, startHeight + startY - moveEvent.clientY),
+      );
     };
     const cleanup = (): void => {
       window.removeEventListener('mousemove', handleMouseMove);
@@ -238,7 +241,7 @@ function WorkPaneResizeHandle({
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
     event.preventDefault();
     const delta = event.key === 'ArrowUp' ? 16 : -16;
-    onResize(clampWorkPaneHeight(pane, height + delta));
+    onResize(clampWorkPaneHeight(pane, currentHeight() + delta));
   };
 
   return (
@@ -248,7 +251,7 @@ function WorkPaneResizeHandle({
       aria-orientation="horizontal"
       aria-valuemin={min}
       aria-valuemax={max}
-      aria-valuenow={height}
+      aria-valuenow={height ?? WORK_PANE_RESIZE_FALLBACK_HEIGHT[pane]}
       tabIndex={0}
       className="group relative z-10 h-px shrink-0 cursor-row-resize bg-border-1 outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
       data-testid={`${pane}-resize-handle`}
@@ -269,6 +272,7 @@ export function AppLayout(): React.JSX.Element {
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [terminalCollapsed, setTerminalCollapsed] = useState(false);
   const [leftPaneOpen, setLeftPaneOpen] = useState(() =>
     readStoredPaneOpen('left'),
@@ -282,11 +286,9 @@ export function AppLayout(): React.JSX.Element {
   const [rightPaneWidth, setRightPaneWidth] = useState(() =>
     readStoredPaneWidth('right'),
   );
-  const [tasksPaneHeight, setTasksPaneHeight] = useState(() =>
-    readStoredWorkPaneHeight('tasks'),
-  );
-  const [terminalPaneHeight, setTerminalPaneHeight] = useState(() =>
-    readStoredWorkPaneHeight('terminal'),
+  const [tasksPaneHeight, setTasksPaneHeight] = useState<number | null>(null);
+  const [terminalPaneHeight, setTerminalPaneHeight] = useState<number | null>(
+    null,
   );
   const [inspectFileRequest, setInspectFileRequest] =
     useState<InspectFileRequest | null>(null);
@@ -321,19 +323,6 @@ export function AppLayout(): React.JSX.Element {
   useEffect(() => {
     window.localStorage.setItem(PANE_STORAGE_KEY.right, String(rightPaneWidth));
   }, [rightPaneWidth]);
-  useEffect(() => {
-    window.localStorage.setItem(
-      WORK_PANE_STORAGE_KEY.tasks,
-      String(tasksPaneHeight),
-    );
-  }, [tasksPaneHeight]);
-  useEffect(() => {
-    window.localStorage.setItem(
-      WORK_PANE_STORAGE_KEY.terminal,
-      String(terminalPaneHeight),
-    );
-  }, [terminalPaneHeight]);
-
   // The shared action registry: the ⌘K palette renders + runs these, and the
   // `menu:action` dispatcher below runs the SAME `byId` entries, so a keyboard
   // accelerator and a palette entry can never diverge. `openPr` publishes/opens the PR
@@ -492,7 +481,15 @@ export function AppLayout(): React.JSX.Element {
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <Sidebar />
               </div>
-              <footer className="flex items-center justify-end border-t border-border-1 p-3">
+              <footer className="flex items-center justify-end gap-1 border-t border-border-1 p-3">
+                <IconButton
+                  label="Open usage"
+                  size="sm"
+                  data-testid="open-usage"
+                  onClick={() => setUsageOpen(true)}
+                >
+                  <CircleDollarSign className="h-4 w-4" aria-hidden="true" />
+                </IconButton>
                 <IconButton
                   label="Open settings"
                   size="sm"
@@ -575,18 +572,20 @@ export function AppLayout(): React.JSX.Element {
                 data-terminal-collapsed={terminalCollapsed}
               >
                 <section
-                  className="min-h-0 flex-1"
+                  className="min-h-0 flex-1 basis-0"
                   data-testid="right-git-pane"
                 >
                   <DiffPanel
                     workspaceId={selectedWorkspaceId}
-                    onInspectFile={(path) =>
+                    onInspectFile={(path) => {
+                      if (!selectedWorkspaceId) return;
                       setInspectFileRequest({
                         id: Date.now(),
+                        workspaceId: selectedWorkspaceId,
                         path,
                         mode: 'diff',
-                      })
-                    }
+                      });
+                    }}
                   />
                 </section>
                 <WorkPaneResizeHandle
@@ -595,8 +594,16 @@ export function AppLayout(): React.JSX.Element {
                   onResize={setTasksPaneHeight}
                 />
                 <section
-                  className="shrink-0"
-                  style={{ height: tasksPaneHeight }}
+                  className={
+                    tasksPaneHeight === null
+                      ? 'min-h-0 flex-1 basis-0'
+                      : 'shrink-0'
+                  }
+                  style={
+                    tasksPaneHeight === null
+                      ? undefined
+                      : { height: tasksPaneHeight }
+                  }
                   data-testid="right-tasks-pane"
                 >
                   <TasksPanel workspaceId={selectedWorkspaceId} />
@@ -612,9 +619,15 @@ export function AppLayout(): React.JSX.Element {
                   className={
                     terminalCollapsed
                       ? 'shrink-0 border-t border-border-1'
-                      : 'shrink-0'
+                      : terminalPaneHeight === null
+                        ? 'min-h-0 flex-1 basis-0'
+                        : 'shrink-0'
                   }
-                  style={terminalCollapsed ? undefined : { height: terminalPaneHeight }}
+                  style={
+                    terminalCollapsed || terminalPaneHeight === null
+                      ? undefined
+                      : { height: terminalPaneHeight }
+                  }
                   data-testid="right-terminal-pane"
                 >
                   <TerminalPanel
@@ -643,13 +656,18 @@ export function AppLayout(): React.JSX.Element {
           <SettingsPanel onClose={() => setSettingsOpen(false)} />
         </Dialog>
       ) : null}
+      {usageOpen ? (
+        <Dialog
+          data-testid="usage-overlay"
+          onClose={() => setUsageOpen(false)}
+          width={960}
+        >
+          <UsagePanel onClose={() => setUsageOpen(false)} />
+        </Dialog>
+      ) : null}
 
       {/* ⌘K command palette (Phase 6, Track H2) — renders only when open (ui store). */}
       <CommandPalette actions={actions} />
-
-      {/* First-run onboarding + unsandboxed-exec disclosure (Phase 6, Track H3). Renders
-          only until acknowledged; hidden when onboarding state is unavailable. */}
-      <OnboardingWizard />
     </div>
   );
 }

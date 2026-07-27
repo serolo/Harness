@@ -137,9 +137,15 @@ describe('AppLayout structure', () => {
       </Providers>,
     );
 
-    expect(screen.getByTestId('right-tasks-pane')).toHaveStyle({
-      height: '224px',
-    });
+    expect(screen.getByTestId('right-git-pane')).toHaveClass('flex-1', 'basis-0');
+    expect(screen.getByTestId('right-tasks-pane')).toHaveClass(
+      'flex-1',
+      'basis-0',
+    );
+    expect(screen.getByTestId('right-terminal-pane')).toHaveClass(
+      'flex-1',
+      'basis-0',
+    );
     fireEvent.keyDown(screen.getByTestId('tasks-resize-handle'), {
       key: 'ArrowUp',
     });
@@ -155,14 +161,11 @@ describe('AppLayout structure', () => {
       height: '280px',
     });
 
-    expect(screen.getByTestId('right-terminal-pane')).toHaveStyle({
-      height: '256px',
-    });
     fireEvent.keyDown(screen.getByTestId('terminal-resize-handle'), {
       key: 'ArrowDown',
     });
     expect(screen.getByTestId('right-terminal-pane')).toHaveStyle({
-      height: '240px',
+      height: '208px',
     });
   });
 });

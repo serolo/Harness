@@ -8,35 +8,41 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   Bot,
-  ChevronDown,
   CheckCircle2,
   ExternalLink,
-  FlaskConical,
   GitBranch,
+  FolderGit2,
   KeyRound,
   Laptop,
   Palette,
   RefreshCw,
   Settings2,
-  Shield,
   TerminalSquare,
-  UserCircle,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 import type { GithubAccount, GithubCliAuthStatus } from '@shared/github';
+import type { HarnessId } from '@shared/harness';
+import type { HarnessInfo } from '@shared/ipc';
+import type { Project } from '@shared/models';
 import {
   isCompletionSound,
+  type ProjectSettingsSnapshot,
   type SettingLayer,
   type SettingsIssue,
 } from '@shared/settings';
 import type { GitSshKey } from '@shared/git';
-import { Button, Input } from '@renderer/components/ui';
+import { Button, Input, Switch } from '@renderer/components/ui';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useSettings } from './useSettings';
 import { SETTINGS_SECTIONS, getAtPath } from './fields';
 import { SettingRow } from './SettingRow';
 import { RunScriptEditor } from './RunScriptEditor';
+import { RepoScriptsEditor } from './RepoScriptsEditor';
+import {
+  readModelPreferences,
+  writeModelPreferences,
+} from './modelPreferences';
 
 export interface SettingsPanelProps {
   /** Close affordance for the overlay host (a header button). */
@@ -57,6 +63,15 @@ export function SettingsPanel({
   const [githubAuthError, setGithubAuthError] = useState<string | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [githubPat, setGithubPat] = useState('');
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    null,
+  );
+  const [repoSettings, setRepoSettings] =
+    useState<ProjectSettingsSnapshot | null>(null);
+  const [repoLoading, setRepoLoading] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
+  const [agents, setAgents] = useState<HarnessInfo[]>([]);
 
   const updateSetting = (keyPath: string, value: unknown): void => {
     void set(keyPath, value)
@@ -99,6 +114,88 @@ export function SettingsPanel({
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void invoke('harness:list', undefined)
+      .then((nextAgents) => {
+        if (active) setAgents(nextAgents);
+      })
+      .catch(() => {
+        // Detection failures are represented as unavailable agents in the UI.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (scope !== 'repo') return;
+    let active = true;
+    setRepoLoading(true);
+    void invoke('project:list', undefined)
+      .then((nextProjects) => {
+        if (!active) return;
+        setProjects(nextProjects);
+        setSelectedProjectId((current) =>
+          current && nextProjects.some((project) => project.id === current)
+            ? current
+            : (nextProjects[0]?.id ?? null),
+        );
+        setRepoError(null);
+      })
+      .catch((err: unknown) => {
+        if (active)
+          setRepoError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (active) setRepoLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [scope]);
+
+  useEffect(() => {
+    if (scope !== 'repo' || selectedProjectId === null) {
+      setRepoSettings(null);
+      return;
+    }
+    let active = true;
+    setRepoLoading(true);
+    setRepoSettings(null);
+    void invoke('settings:getProject', { projectId: selectedProjectId })
+      .then((snapshot) => {
+        if (active) {
+          setRepoSettings(snapshot);
+          setRepoError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (active)
+          setRepoError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (active) setRepoLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [scope, selectedProjectId]);
+
+  const updateRepoSetting = (keyPath: string, value: unknown): void => {
+    if (selectedProjectId === null) return;
+    setRepoError(null);
+    void invoke('settings:setProject', {
+      projectId: selectedProjectId,
+      keyPath,
+      value,
+    })
+      .then(setRepoSettings)
+      .catch((err: unknown) =>
+        setRepoError(err instanceof Error ? err.message : String(err)),
+      );
+  };
 
   const refreshGithubAuth = async (): Promise<void> => {
     setGithubBusy(true);
@@ -168,7 +265,7 @@ export function SettingsPanel({
       general: all.filter((field) =>
         field.keyPath.startsWith('notifications.'),
       ),
-      harnesses: all.filter((field) => field.keyPath.startsWith('agent.')),
+      agents: all.filter((field) => field.keyPath.startsWith('agent.')),
       git: all.filter((field) => field.keyPath.startsWith('git.')),
       appearance: all.filter((field) =>
         field.keyPath.startsWith('appearance.'),
@@ -181,7 +278,7 @@ export function SettingsPanel({
       className="flex h-[min(86vh,900px)] min-h-0 flex-col bg-surface-overlay text-fg-1"
       data-testid="settings-panel"
     >
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-border-1 px-5">
+      <div className="flex h-14 shrink-0 items-center border-b border-border-1 px-5">
         <div className="flex items-center gap-5">
           {onClose ? (
             <button
@@ -209,14 +306,6 @@ export function SettingsPanel({
             </ScopeTab>
           </div>
         </div>
-        <button
-          type="button"
-          className="flex h-9 items-center gap-2 rounded-2 border border-border-2 px-3 text-sm font-semibold text-fg-1 hover:bg-bg-3"
-        >
-          <Settings2 className="h-4 w-4" aria-hidden />
-          <span className="font-mono">Open settings.toml</span>
-          <ChevronDown className="h-4 w-4" aria-hidden />
-        </button>
       </div>
 
       {error ? (
@@ -232,15 +321,32 @@ export function SettingsPanel({
 
       <div className="grid min-h-0 flex-1 grid-cols-[260px_1fr]">
         <aside className="min-h-0 overflow-y-auto border-r border-border-1 bg-surface-panel px-2 py-3">
-          <SettingsNav
-            active={activeSection}
-            onSelect={setActiveSection}
-            scope={scope}
-          />
+          {scope === 'user' ? (
+            <SettingsNav
+              active={activeSection}
+              onSelect={setActiveSection}
+              scope={scope}
+            />
+          ) : (
+            <ProjectSettingsNav
+              projects={projects}
+              selectedProjectId={selectedProjectId}
+              onSelect={setSelectedProjectId}
+            />
+          )}
         </aside>
 
         <main className="min-h-0 overflow-y-auto">
-          {loading && effective === null ? (
+          {scope === 'repo' ? (
+            <RepoSettingsContent
+              projects={projects}
+              selectedProjectId={selectedProjectId}
+              snapshot={repoSettings}
+              loading={repoLoading}
+              error={repoError}
+              onSet={updateRepoSetting}
+            />
+          ) : loading && effective === null ? (
             <div
               className="flex h-full items-center justify-center p-6 text-sm text-fg-3"
               data-testid="settings-loading"
@@ -270,18 +376,17 @@ export function SettingsPanel({
                 </SettingsSection>
               ) : null}
 
-              {activeSection === 'harnesses' ? (
-                <SettingsSection
-                  title="Harnesses"
-                  testId="settings-section-harnesses"
-                >
+              {activeSection === 'models' ? <ModelsSettings /> : null}
+
+              {activeSection === 'agents' ? (
+                <AgentsSettings agents={agents}>
                   <SettingRows
-                    fields={rowsBySection.harnesses}
+                    fields={rowsBySection.agents}
                     effective={effective}
                     provenance={provenance}
                     onSet={updateSetting}
                   />
-                </SettingsSection>
+                </AgentsSettings>
               ) : null}
 
               {activeSection === 'git' ? (
@@ -337,7 +442,8 @@ export function SettingsPanel({
               ) : null}
 
               {activeSection !== 'general' &&
-              activeSection !== 'harnesses' &&
+              activeSection !== 'models' &&
+              activeSection !== 'agents' &&
               activeSection !== 'git' &&
               activeSection !== 'environment' &&
               activeSection !== 'appearance' ? (
@@ -386,26 +492,15 @@ function isMissingIpcHandler(err: unknown): boolean {
 }
 
 type SettingsSectionId =
-  | 'general'
-  | 'account'
-  | 'models'
-  | 'harnesses'
-  | 'environment'
-  | 'git'
-  | 'appearance'
-  | 'experimental'
-  | 'advanced';
+  'general' | 'models' | 'agents' | 'environment' | 'git' | 'appearance';
 
 const SECTION_LABELS: Record<SettingsSectionId, string> = {
   general: 'General',
-  account: 'Account',
   models: 'Models',
-  harnesses: 'Harnesses',
+  agents: 'Agents',
   environment: 'Environment',
   git: 'Git',
   appearance: 'Appearance',
-  experimental: 'Experimental',
-  advanced: 'Advanced',
 };
 
 const PRIMARY_NAV: Array<{
@@ -413,20 +508,11 @@ const PRIMARY_NAV: Array<{
   icon: LucideIcon;
 }> = [
   { id: 'general', icon: Settings2 },
-  { id: 'account', icon: UserCircle },
   { id: 'models', icon: Bot },
-  { id: 'harnesses', icon: TerminalSquare },
+  { id: 'agents', icon: TerminalSquare },
   { id: 'environment', icon: Laptop },
   { id: 'git', icon: GitBranch },
   { id: 'appearance', icon: Palette },
-];
-
-const SECONDARY_NAV: Array<{
-  id: SettingsSectionId;
-  icon: LucideIcon;
-}> = [
-  { id: 'experimental', icon: FlaskConical },
-  { id: 'advanced', icon: Shield },
 ];
 
 function ScopeTab({
@@ -462,33 +548,130 @@ function SettingsNav({
   scope: 'user' | 'repo';
 }): React.JSX.Element {
   return (
-    <nav className="space-y-6">
-      <div className="space-y-1">
-        {PRIMARY_NAV.map((item) => (
-          <NavButton
-            key={item.id}
-            item={item}
-            active={active === item.id}
-            onClick={() => onSelect(item.id)}
-          />
-        ))}
+    <nav className="space-y-1">
+      {PRIMARY_NAV.map((item) => (
+        <NavButton
+          key={item.id}
+          item={item}
+          active={active === item.id}
+          onClick={() => onSelect(item.id)}
+        />
+      ))}
+    </nav>
+  );
+}
+
+function ProjectSettingsNav({
+  projects,
+  selectedProjectId,
+  onSelect,
+}: {
+  projects: Project[];
+  selectedProjectId: string | null;
+  onSelect: (projectId: string) => void;
+}): React.JSX.Element {
+  return (
+    <nav data-testid="repo-project-list">
+      <div className="px-3 pb-2 text-xs font-medium uppercase tracking-caps text-fg-3">
+        Projects
       </div>
-      <div>
-        <div className="px-2 pb-2 text-xs font-medium uppercase tracking-caps text-fg-3">
-          More
-        </div>
-        <div className="space-y-1">
-          {SECONDARY_NAV.map((item) => (
-            <NavButton
-              key={item.id}
-              item={item}
-              active={active === item.id}
-              onClick={() => onSelect(item.id)}
-            />
-          ))}
-        </div>
+      <div className="space-y-1">
+        {projects.map((project) => (
+          <button
+            key={project.id}
+            type="button"
+            data-testid={`repo-project-${project.id}`}
+            onClick={() => onSelect(project.id)}
+            className={`flex w-full items-center gap-3 rounded-2 px-3 py-2.5 text-left ${
+              selectedProjectId === project.id
+                ? 'bg-bg-4 text-fg-1'
+                : 'text-fg-2 hover:bg-bg-3 hover:text-fg-1'
+            }`}
+          >
+            <FolderGit2 className="h-4 w-4 shrink-0" aria-hidden />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium">
+                {project.name}
+              </span>
+              <span className="block truncate text-2xs text-fg-3">
+                {project.repoPath}
+              </span>
+            </span>
+          </button>
+        ))}
+        {projects.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-fg-3">No projects added yet.</p>
+        ) : null}
       </div>
     </nav>
+  );
+}
+
+function RepoSettingsContent({
+  projects,
+  selectedProjectId,
+  snapshot,
+  loading,
+  error,
+  onSet,
+}: {
+  projects: Project[];
+  selectedProjectId: string | null;
+  snapshot: ProjectSettingsSnapshot | null;
+  loading: boolean;
+  error: string | null;
+  onSet: (keyPath: string, value: unknown) => void;
+}): React.JSX.Element {
+  const project = projects.find((item) => item.id === selectedProjectId);
+
+  if (loading && snapshot === null) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-fg-3">
+        Loading repository settings…
+      </div>
+    );
+  }
+  if (project === undefined) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-sm text-fg-3">
+        Add a project to configure its workspace scripts.
+      </div>
+    );
+  }
+  if (snapshot === null) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-sm text-danger">
+        {error ?? 'Repository settings could not be loaded.'}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="mx-auto w-full max-w-[980px] px-10 py-10"
+      data-testid="repo-settings-content"
+    >
+      <div className="mb-9">
+        <h1 className="font-display text-xl font-semibold text-fg-1">
+          {project.name}
+        </h1>
+        <p className="mt-1 truncate font-mono text-xs text-fg-3">
+          {project.repoPath}/.harness/settings.toml
+        </p>
+      </div>
+      {error ? (
+        <div className="mb-5 rounded-2 border border-danger bg-danger-muted px-3 py-2 text-xs text-danger">
+          {error}
+        </div>
+      ) : null}
+      <SettingsIssuesBanner issues={snapshot.issues} />
+      <RepoScriptsEditor scripts={snapshot.settings.scripts} onSet={onSet} />
+      <p className="mt-8 text-xs text-fg-3">
+        These settings are saved in{' '}
+        <span className="font-mono text-fg-2">.harness/settings.toml</span> so
+        they can be shared with the team.
+      </p>
+    </div>
   );
 }
 
@@ -514,6 +697,303 @@ function NavButton({
       <Icon className="h-4 w-4" aria-hidden />
       {SECTION_LABELS[item.id]}
     </button>
+  );
+}
+
+const MODEL_OPTIONS = [
+  ['opus', 'Opus (latest)'],
+  ['sonnet', 'Sonnet (latest)'],
+  ['haiku', 'Haiku (latest)'],
+] as const;
+
+const EFFORT_OPTIONS = [
+  ['low', 'Effort low'],
+  ['medium', 'Effort medium'],
+  ['high', 'Effort high'],
+  ['max', 'Effort max'],
+] as const;
+
+function ModelsSettings(): React.JSX.Element {
+  const [preferences, setPreferences] = useState(readModelPreferences);
+  const updatePreference = (
+    key: keyof typeof preferences,
+    value: string | boolean,
+  ): void => {
+    setPreferences((current) => {
+      const next = { ...current, [key]: value };
+      writeModelPreferences(next);
+      return next;
+    });
+  };
+
+  return (
+    <section data-testid="settings-section-models">
+      <h1 className="mb-10 font-display text-3xl font-semibold text-fg-1">
+        Models
+      </h1>
+      <div className="divide-y divide-border-1">
+        <ModelPreferenceRow
+          title="Default model"
+          description="Model for new chats"
+          model={preferences.defaultModel}
+          effort={preferences.defaultEffort}
+          onModelChange={(value) => updatePreference('defaultModel', value)}
+          onEffortChange={(value) => updatePreference('defaultEffort', value)}
+          testId="default"
+        />
+        <ModelPreferenceRow
+          title="Review model"
+          description="Model for code reviews"
+          model={preferences.reviewModel}
+          effort={preferences.reviewEffort}
+          onModelChange={(value) => updatePreference('reviewModel', value)}
+          onEffortChange={(value) => updatePreference('reviewEffort', value)}
+          testId="review"
+        />
+        <SettingsToggleRow
+          title="Default to plan mode"
+          description="Start new chats in plan mode"
+          checked={preferences.planMode}
+          onCheckedChange={(value) => updatePreference('planMode', value)}
+          testId="models-plan-mode"
+        />
+        <SettingsToggleRow
+          title="Default to fast mode"
+          description="Start new chats in fast mode"
+          checked={preferences.fastMode}
+          onCheckedChange={(value) => updatePreference('fastMode', value)}
+          testId="models-fast-mode"
+        />
+      </div>
+    </section>
+  );
+}
+
+function ModelPreferenceRow({
+  title,
+  description,
+  model,
+  effort,
+  onModelChange,
+  onEffortChange,
+  testId,
+}: {
+  title: string;
+  description: string;
+  model: string;
+  effort: string;
+  onModelChange: (value: string) => void;
+  onEffortChange: (value: string) => void;
+  testId: string;
+}): React.JSX.Element {
+  return (
+    <div className="grid min-h-32 grid-cols-[minmax(240px,1fr)_minmax(420px,0.9fr)] items-center gap-10 border-l-2 border-accent pl-4">
+      <div>
+        <h2 className="text-base font-semibold text-fg-1">{title}</h2>
+        <p className="mt-2 text-base text-fg-3">{description}</p>
+      </div>
+      <div className="grid grid-cols-2 overflow-hidden rounded-2 border border-border-2 bg-surface-well">
+        <select
+          value={model}
+          onChange={(event) => onModelChange(event.target.value)}
+          data-testid={`models-${testId}-model`}
+          aria-label={`${title} model`}
+          className="h-12 min-w-0 border-r border-border-2 bg-transparent px-4 text-base text-fg-1 outline-none"
+        >
+          {MODEL_OPTIONS.map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={effort}
+          onChange={(event) => onEffortChange(event.target.value)}
+          data-testid={`models-${testId}-effort`}
+          aria-label={`${title} effort`}
+          className="h-12 min-w-0 bg-transparent px-4 text-base text-fg-1 outline-none"
+        >
+          {EFFORT_OPTIONS.map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function SettingsToggleRow({
+  title,
+  description,
+  checked,
+  onCheckedChange,
+  testId,
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  testId: string;
+}): React.JSX.Element {
+  return (
+    <div className="flex min-h-28 items-center justify-between gap-8 py-5">
+      <div>
+        <h2 className="text-base font-semibold text-fg-1">{title}</h2>
+        <p className="mt-2 text-base text-fg-3">{description}</p>
+      </div>
+      <Switch
+        checked={checked}
+        onChange={onCheckedChange}
+        data-testid={testId}
+        aria-label={title}
+      />
+    </div>
+  );
+}
+
+const AGENT_TABS: Array<{ id: HarnessId | 'opencode'; label: string }> = [
+  { id: 'claude_code', label: 'Claude Code' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'opencode', label: 'OpenCode' },
+];
+
+function AgentsSettings({
+  agents,
+  children,
+}: {
+  agents: HarnessInfo[];
+  children: React.ReactNode;
+}): React.JSX.Element {
+  const [selected, setSelected] =
+    useState<(typeof AGENT_TABS)[number]['id']>('claude_code');
+  const [browserEnabled, setBrowserEnabled] = useState(false);
+  const info = agents.find((agent) => agent.id === selected);
+  const connected = info?.detect.authenticated ?? false;
+  const installed = info?.detect.installed ?? false;
+
+  return (
+    <section data-testid="settings-section-agents">
+      <h1 className="mb-8 font-display text-3xl font-semibold text-fg-1">
+        Agents
+      </h1>
+      <div className="mb-7 flex gap-7 border-b border-border-1">
+        {AGENT_TABS.map((agent) => (
+          <button
+            key={agent.id}
+            type="button"
+            data-testid={`agent-tab-${agent.id}`}
+            onClick={() => setSelected(agent.id)}
+            className={`border-b-2 px-1 pb-3 text-sm font-semibold ${
+              selected === agent.id
+                ? 'border-accent text-fg-1'
+                : 'border-transparent text-fg-3 hover:text-fg-1'
+            }`}
+          >
+            {agent.label}
+            {agent.id === 'opencode' ? (
+              <span className="ml-2 rounded bg-bg-4 px-1.5 py-0.5 text-2xs uppercase text-fg-2">
+                New
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      <div className="border-l-2 border-accent pl-4">
+        <h2 className="mb-4 text-base font-semibold text-fg-1">
+          Authentication
+        </h2>
+        <div className="grid grid-cols-2 gap-3">
+          <AgentAuthCard
+            title="CLI"
+            selected={installed}
+            detail={installed ? 'Detected on this machine' : 'Not detected'}
+          />
+          <AgentAuthCard
+            title="API key"
+            selected={connected}
+            detail={connected ? 'Authenticated' : 'Not configured'}
+          />
+        </div>
+      </div>
+
+      <div className="mt-6 flex items-center justify-between">
+        <span
+          className={`rounded-lg border px-2 py-1 text-xs font-medium ${
+            connected
+              ? 'border-success text-success'
+              : 'border-border-2 text-fg-3'
+          }`}
+          data-testid="agent-connection-status"
+        >
+          {connected ? 'Connected' : installed ? 'Installed' : 'Not connected'}
+        </span>
+        <span className="text-sm text-fg-2">
+          Version {info?.detect.version ?? '—'}
+        </span>
+      </div>
+
+      {selected === 'claude_code' ? (
+        <div className="mt-7 divide-y divide-border-1 border-y border-border-1">
+          <SettingsToggleRow
+            title="Use Claude Code with Chrome"
+            description="Allow Claude Code to control your Chrome browser."
+            checked={browserEnabled}
+            onCheckedChange={setBrowserEnabled}
+            testId="agent-browser-enabled"
+          />
+          <div className="py-6">
+            <h2 className="text-base font-semibold text-fg-1">
+              Claude Code executable
+            </h2>
+            <p className="mt-2 text-sm text-fg-3">
+              Harness uses the bundled executable unless a system installation
+              is detected.
+            </p>
+            <div className="mt-4 rounded-2 border border-border-2 bg-surface-well px-4 py-3 font-mono text-sm text-fg-2">
+              {installed
+                ? 'System Claude Code detected'
+                : 'Bundled Claude Code'}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-8">
+        <h2 className="mb-2 text-sm font-semibold text-fg-2">Agent defaults</h2>
+        <div className="divide-y divide-border-1">{children}</div>
+      </div>
+    </section>
+  );
+}
+
+function AgentAuthCard({
+  title,
+  selected,
+  detail,
+}: {
+  title: string;
+  selected: boolean;
+  detail: string;
+}): React.JSX.Element {
+  return (
+    <div
+      className={`relative flex min-h-28 flex-col items-center justify-center rounded-2 border ${
+        selected
+          ? 'border-border-2 bg-bg-4 text-fg-1'
+          : 'border-border-1 bg-surface-well text-fg-2'
+      }`}
+    >
+      {selected ? (
+        <CheckCircle2 className="absolute right-3 top-3 h-4 w-4" aria-hidden />
+      ) : null}
+      <KeyRound className="mb-2 h-5 w-5" aria-hidden />
+      <span className="text-sm font-semibold">{title}</span>
+      <span className="mt-1 text-xs text-fg-3">{detail}</span>
+    </div>
   );
 }
 
@@ -824,10 +1304,7 @@ function EmptySection({
 }: {
   section: SettingsSectionId;
 }): React.JSX.Element {
-  const copy =
-    section === 'advanced'
-      ? 'Advanced settings will appear here as they are added.'
-      : `${SECTION_LABELS[section]} settings are not available yet.`;
+  const copy = `${SECTION_LABELS[section]} settings are not available yet.`;
   return (
     <div className="rounded-2 border border-border-1 bg-surface-well px-4 py-5 text-sm text-fg-3">
       {copy}

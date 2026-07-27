@@ -5,9 +5,11 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
 
 import { OnboardingWizard } from './OnboardingWizard';
 import type { OnboardingState } from '@shared/ipc';
+import { createQueryClient } from '@renderer/app/providers';
 
 const ACK_KEY = 'harness.onboarding.acknowledged';
 
@@ -16,6 +18,14 @@ function installApi(state: OnboardingState | undefined): {
 } {
   const invoke = vi.fn((channel: string) => {
     if (channel === 'onboarding:state') return Promise.resolve(state);
+    if (channel === 'settings:getEffective') {
+      return Promise.resolve({
+        appearance: { theme: 'dark' },
+        notifications: { completionSound: 'none' },
+      });
+    }
+    if (channel === 'settings:getProvenance') return Promise.resolve({});
+    if (channel === 'settings:getIssues') return Promise.resolve([]);
     return Promise.resolve(undefined);
   });
   (window as unknown as { api: unknown }).api = {
@@ -24,6 +34,14 @@ function installApi(state: OnboardingState | undefined): {
     stream: vi.fn(() => Promise.resolve()),
   };
   return { invoke };
+}
+
+function renderWizard(): ReturnType<typeof render> {
+  return render(
+    <QueryClientProvider client={createQueryClient()}>
+      <OnboardingWizard />
+    </QueryClientProvider>,
+  );
 }
 
 const INCOMPLETE: OnboardingState = {
@@ -42,7 +60,7 @@ afterEach(() => {
 describe('OnboardingWizard', () => {
   it('renders nothing when onboarding state is unavailable', async () => {
     const { invoke } = installApi(undefined);
-    render(<OnboardingWizard />);
+    renderWizard();
     // Flush the fetch (it resolves undefined) — the wizard must still never appear.
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('onboarding:state', undefined),
@@ -55,26 +73,30 @@ describe('OnboardingWizard', () => {
   it('does not fetch or show once already acknowledged', () => {
     window.localStorage.setItem(ACK_KEY, '1');
     const { invoke } = installApi(INCOMPLETE);
-    render(<OnboardingWizard />);
+    renderWizard();
     expect(screen.queryByTestId('onboarding-wizard')).toBeNull();
     expect(invoke).not.toHaveBeenCalled();
   });
 
   it('shows setup steps + the unsandboxed-exec disclosure', async () => {
     installApi(INCOMPLETE);
-    render(<OnboardingWizard />);
+    renderWizard();
 
     await screen.findByTestId('onboarding-wizard');
 
-    // A ready step and a to-do step reflect the state.
+    // Onboarding only presents the GitHub and agent setup steps.
     expect(screen.getByTestId('onboarding-step-harness')).toHaveAttribute(
       'data-done',
       'true',
     );
-    expect(screen.getByTestId('onboarding-step-project')).toHaveAttribute(
+    expect(screen.getByTestId('onboarding-step-github')).toHaveAttribute(
       'data-done',
       'false',
     );
+    expect(screen.queryByTestId('onboarding-step-project')).toBeNull();
+    expect(screen.queryByText('Linear')).toBeNull();
+    expect(screen.queryByText('Theme')).toBeNull();
+    expect(screen.getByText('Completion sound')).toBeInTheDocument();
 
     // The disclosure is present and names the key security facts.
     const disclosure = screen.getByTestId('onboarding-disclosure');
@@ -84,7 +106,7 @@ describe('OnboardingWizard', () => {
 
   it('gates "Get started" on the acknowledgement, then persists + hides', async () => {
     installApi(INCOMPLETE);
-    render(<OnboardingWizard />);
+    renderWizard();
 
     const button = (await screen.findByTestId(
       'onboarding-continue',

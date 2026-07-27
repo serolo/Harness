@@ -28,4 +28,23 @@ describe('resolveExecutable', () => {
       'definitely-not-installed-harness-tool',
     );
   });
+
+  it('finds user-local executables when a packaged macOS app has a minimal PATH', () => {
+    if (process.platform !== 'darwin') return;
+
+    const command = `harness-user-local-${process.pid}`;
+    const bin = join(process.env.HOME!, '.local', 'bin', command);
+    const previousPath = process.env.PATH;
+    try {
+      writeFileSync(bin, '#!/bin/sh\nexit 0\n');
+      chmodSync(bin, 0o755);
+      process.env.PATH = '/usr/bin:/bin';
+
+      expect(resolveExecutable(command)).toBe(bin);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(bin, { force: true });
+    }
+  });
 });

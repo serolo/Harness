@@ -148,4 +148,8 @@ export interface Todo {
 export interface Usage {
   inputTokens?: number;
   outputTokens?: number;
+  /** Input tokens served from a provider cache; included in inputTokens when reported. */
+  cachedInputTokens?: number;
+  /** Input tokens written to a provider prompt cache. */
+  cacheWriteInputTokens?: number;
 }

@@ -1,15 +1,25 @@
 // The chat composer: multiline prompt, mode selector (gated by harness capabilities),
 // a minimal file-attach affordance, and a Send/Interrupt button tied to `isBusy`.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type DragEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowUp,
+  BookOpenText,
   Check,
   Gauge,
+  Info,
   Map,
-  Paperclip,
   Plus,
   Star,
+  X,
   Zap,
 } from 'lucide-react';
 import type { AgentMode, Attachment, HarnessId } from '@shared/harness';
@@ -23,21 +33,35 @@ import { invoke } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useHarnessStore } from '@renderer/stores/harness';
 import { useComposerStore } from '@renderer/stores/composer';
-import { Input, Textarea } from '@renderer/components/ui';
+import type { RenderedTurn } from '@renderer/stores/chat';
+import { Textarea } from '@renderer/components/ui';
 import { AttachmentBar } from './AttachmentBar';
+import { readModelPreferences } from '../settings/modelPreferences';
 
 export interface ComposerProps {
   isBusy: boolean;
   workspaceId?: string | null;
+  contextId?: string;
+  turns?: RenderedTurn[];
   disabled?: boolean;
   onSend: (
     prompt: string,
     attachments: Attachment[],
     mode: AgentMode,
     harness?: HarnessId,
+    model?: string,
   ) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
   onClear?: () => void | Promise<void>;
+}
+
+interface ContextStats {
+  capacity: number;
+  used: number;
+  input: number;
+  output: number;
+  messageCount: number;
+  toolCount: number;
 }
 
 const MODEL_LABELS: Record<HarnessId, string> = {
@@ -49,8 +73,10 @@ const MODEL_LABELS: Record<HarnessId, string> = {
 interface ProviderModelOption {
   id: string;
   label: string;
+  model?: string;
   harness?: HarnessId;
   favorite?: boolean;
+  isNew?: boolean;
 }
 
 interface ProviderModelGroup {
@@ -90,35 +116,63 @@ const PROVIDER_MODEL_GROUPS: ProviderModelGroup[] = [
     label: 'Claude Code',
     harness: 'claude_code',
     options: [
-      { id: 'claude-fable-5', label: 'Fable 5', harness: 'claude_code' },
+      {
+        id: 'claude-fable-5',
+        label: 'Fable 5',
+        model: 'fable',
+        harness: 'claude_code',
+        favorite: true,
+      },
+      {
+        id: 'claude-opus-5',
+        label: 'Opus 5',
+        model: 'opus',
+        harness: 'claude_code',
+        isNew: true,
+      },
       {
         id: 'claude-opus-4-8-1m',
         label: 'Opus 4.8 1M',
+        model: 'opus',
         harness: 'claude_code',
         favorite: true,
       },
       {
         id: 'claude-opus-4-7-1m',
         label: 'Opus 4.7 1M',
+        model: 'opus',
         harness: 'claude_code',
       },
       {
         id: 'claude-opus-4-6-1m',
         label: 'Opus 4.6 1M',
+        model: 'opus',
         harness: 'claude_code',
       },
       {
         id: 'claude-sonnet-5-1m',
         label: 'Sonnet 5 1M',
+        model: 'sonnet',
         harness: 'claude_code',
       },
       {
         id: 'claude-sonnet-4-6-1m',
         label: 'Sonnet 4.6 1M',
+        model: 'sonnet',
         harness: 'claude_code',
       },
-      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', harness: 'claude_code' },
-      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', harness: 'claude_code' },
+      {
+        id: 'claude-sonnet-4-6',
+        label: 'Sonnet 4.6',
+        model: 'sonnet',
+        harness: 'claude_code',
+      },
+      {
+        id: 'claude-haiku-4-5',
+        label: 'Haiku 4.5',
+        model: 'haiku',
+        harness: 'claude_code',
+      },
     ],
   },
   {
@@ -128,6 +182,7 @@ const PROVIDER_MODEL_GROUPS: ProviderModelGroup[] = [
     options: [
       { id: 'codex-gpt-5-6-sol', label: 'GPT-5.6 Sol', harness: 'codex' },
       { id: 'codex-gpt-5-6-terra', label: 'GPT-5.6 Terra', harness: 'codex' },
+      { id: 'codex-gpt-5-6-luna', label: 'GPT-5.6 Luna', harness: 'codex' },
       { id: 'codex-gpt-5-5', label: 'GPT-5.5', harness: 'codex' },
       { id: 'codex-gpt-5-4', label: 'GPT-5.4', harness: 'codex' },
     ],
@@ -161,6 +216,12 @@ function defaultModelIdForHarness(
     ?.options[0]?.id;
 }
 
+const OPENCODE_SETUP_KEY = 'harness:opencode-configured';
+
+function isOpenCodeConfigured(): boolean {
+  return window.localStorage.getItem(OPENCODE_SETUP_KEY) === 'true';
+}
+
 function slashQuery(input: string): string | null {
   const match = /^\/([A-Za-z0-9_-]*)$/.exec(input);
   return match?.[1] ?? null;
@@ -173,9 +234,221 @@ function commandDescription(command: SlashCommand): string {
   return command.template.split('\n').find((line) => line.trim() !== '') ?? '';
 }
 
+function modelContextCapacity(label: string): number {
+  const million = /\b(\d+(?:\.\d+)?)\s*M\b/i.exec(label);
+  if (million) return Math.round(Number(million[1]) * 1_000_000);
+  const thousand = /\b(\d+(?:\.\d+)?)\s*K\b/i.exec(label);
+  if (thousand) return Math.round(Number(thousand[1]) * 1_000);
+  return 200_000;
+}
+
+function compactNumber(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
+function percent(value: number, capacity: number): string {
+  if (capacity <= 0) return '0.0%';
+  return `${((value / capacity) * 100).toFixed(1)}%`;
+}
+
+function estimatedTokens(value: unknown): number {
+  let text: string;
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  return Math.max(0, Math.ceil(text.length / 4));
+}
+
+function contextStats(
+  turns: readonly RenderedTurn[] | undefined,
+  modelLabel: string,
+): ContextStats {
+  const capacity = modelContextCapacity(modelLabel);
+  const source = turns ?? [];
+  let input = 0;
+  let output = 0;
+  let messageCount = 0;
+  let toolCount = 0;
+
+  for (const turn of source) {
+    let estimatedInput = 0;
+    let estimatedOutput = 0;
+    for (const event of turn.events) {
+      if (event.kind === 'user_message' || event.kind === 'text') {
+        messageCount += 1;
+      }
+      if (event.kind === 'user_message') {
+        estimatedInput += estimatedTokens(event.text);
+      }
+      if (event.kind === 'text') {
+        estimatedOutput += estimatedTokens(event.delta);
+      }
+      if (event.kind === 'tool_use' || event.kind === 'tool_result') {
+        toolCount += 1;
+      }
+      if (event.kind === 'tool_use') {
+        estimatedOutput += estimatedTokens(event.input);
+      }
+      if (event.kind === 'tool_result') {
+        estimatedInput += estimatedTokens(event.output);
+      }
+    }
+    input += turn.usage?.inputTokens ?? estimatedInput;
+    output += turn.usage?.outputTokens ?? estimatedOutput;
+  }
+
+  return {
+    capacity,
+    used: Math.min(input + output, capacity),
+    input,
+    output,
+    messageCount,
+    toolCount,
+  };
+}
+
+function ContextIndicator({
+  stats,
+}: {
+  stats: ContextStats;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const indicatorRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [popoverPosition, setPopoverPosition] = useState({
+    bottom: 0,
+    left: 0,
+  });
+  const usedPct = stats.capacity === 0 ? 0 : stats.used / stats.capacity;
+  const free = Math.max(stats.capacity - stats.used, 0);
+  const breakdown = [
+    { label: 'Free space', value: free },
+    { label: 'Input tokens', value: stats.input },
+    { label: 'Output tokens', value: stats.output },
+    { label: 'Messages', value: stats.messageCount },
+    { label: 'Tool events', value: stats.toolCount },
+  ];
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event: PointerEvent): void {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (indicatorRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+
+    function positionPopover(): void {
+      const rect = indicatorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const margin = 16;
+      const width = 320;
+      setPopoverPosition({
+        bottom: window.innerHeight - rect.top + 10,
+        left: Math.max(
+          margin,
+          Math.min(rect.left, window.innerWidth - width - margin),
+        ),
+      });
+    }
+
+    positionPopover();
+    window.addEventListener('resize', positionPopover);
+    window.addEventListener('scroll', positionPopover, true);
+    return () => {
+      window.removeEventListener('resize', positionPopover);
+      window.removeEventListener('scroll', positionPopover, true);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={indicatorRef}>
+      <button
+        type="button"
+        className={`flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium transition-colors duration-fast ease-out ${
+          open ? 'bg-bg-3 text-fg-1' : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
+        }`}
+        data-testid="composer-context"
+        aria-label="Context usage"
+        aria-expanded={open}
+        title="Context usage"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <BookOpenText className="h-5 w-5" aria-hidden />
+        <span className="hidden tabular-nums sm:inline">
+          {compactNumber(stats.used)}
+        </span>
+        <span
+          className="h-1.5 w-12 overflow-hidden rounded-full bg-bg-4"
+          aria-hidden
+        >
+          <span
+            className="block h-full rounded-full bg-fg-2"
+            style={{ width: `${Math.max(4, Math.min(100, usedPct * 100))}%` }}
+          />
+        </span>
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              className="fixed z-[1000] w-[320px] rounded-4 border border-border-1 bg-surface-panel p-4 shadow-4"
+              style={popoverPosition}
+              data-testid="composer-context-popover"
+            >
+              <div className="flex items-center justify-between gap-4">
+                <div className="text-lg font-semibold text-fg-1">Context</div>
+                <div className="font-mono text-base text-fg-3">
+                  {compactNumber(stats.used)}/{compactNumber(stats.capacity)}
+                </div>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-bg-4">
+                <div
+                  className="h-full rounded-full bg-fg-1"
+                  style={{ width: `${Math.min(100, usedPct * 100)}%` }}
+                />
+              </div>
+              <div className="mt-4 border-t border-border-1 pt-3">
+                {breakdown.map((row) => (
+                  <div
+                    key={row.label}
+                    className="flex items-center justify-between py-1 text-sm"
+                  >
+                    <span className="text-fg-3">{row.label}</span>
+                    <span className="font-mono text-fg-3">
+                      {percent(row.value, stats.capacity)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
 export function Composer({
   isBusy,
   workspaceId,
+  contextId,
+  turns,
   disabled,
   onSend,
   onInterrupt,
@@ -184,20 +457,18 @@ export function Composer({
   const [text, setText] = useState('');
   const [mode, setMode] = useState<AgentMode>('default');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [pathDraft, setPathDraft] = useState('');
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const [slashLoading, setSlashLoading] = useState(false);
   const [slashActive, setSlashActive] = useState(0);
   const [modelOpen, setModelOpen] = useState(false);
+  const [modelSwitchNotice, setModelSwitchNotice] = useState(false);
   const [effortOpen, setEffortOpen] = useState(false);
-  const [effort, setEffort] = useState<EffortOption>(
-    CLAUDE_EFFORT_OPTIONS[2],
-  );
+  const [effort, setEffort] = useState<EffortOption>(CLAUDE_EFFORT_OPTIONS[2]);
   const [plusOpen, setPlusOpen] = useState(false);
-  const [plusPanel, setPlusPanel] = useState<
-    'root' | 'attachment' | 'issue' | 'workspaces'
-  >('root');
-  const [plusPathDraft, setPlusPathDraft] = useState('');
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [plusPanel, setPlusPanel] = useState<'root' | 'issue' | 'workspaces'>(
+    'root',
+  );
   const [issueOptions, setIssueOptions] = useState<ComposerIssue[]>([]);
   const [selectedHarness, setSelectedHarness] = useState<HarnessId | undefined>(
     undefined,
@@ -206,6 +477,10 @@ export function Composer({
     string | undefined
   >(undefined);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const effortPickerRef = useRef<HTMLDivElement>(null);
+  const plusPickerRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const dragDepthRef = useRef(0);
 
   // The composer always targets the currently selected workspace (its host
   // <ChatPanel> is rendered with `workspaceId={selectedWorkspaceId}`), so read the
@@ -242,11 +517,40 @@ export function Composer({
   }, [loadHarnesses]);
 
   useEffect(() => {
-    setSelectedHarness(selectedWorkspace?.harness);
-    setSelectedProviderModel(
-      defaultModelIdForHarness(selectedWorkspace?.harness),
+    setModelSwitchNotice(false);
+  }, [contextId, selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!modelSwitchNotice) return;
+    const timeout = window.setTimeout(
+      () => setModelSwitchNotice(false),
+      5_000,
     );
-  }, [selectedWorkspace?.id, selectedWorkspace?.harness]);
+    return () => window.clearTimeout(timeout);
+  }, [modelSwitchNotice]);
+
+  useEffect(() => {
+    const preferences = readModelPreferences();
+    const preferred = PROVIDER_MODEL_GROUPS.flatMap(
+      (group) => group.options,
+    ).find(
+      (option) =>
+        (option.id === preferences.defaultModel ||
+          option.model === preferences.defaultModel) &&
+        (selectedWorkspace?.harness === undefined ||
+          option.harness === selectedWorkspace.harness),
+    );
+    const harness = preferred?.harness ?? selectedWorkspace?.harness;
+    setSelectedHarness(harness);
+    setSelectedProviderModel(
+      preferred?.id ?? defaultModelIdForHarness(selectedWorkspace?.harness),
+    );
+    const preferredEffort = (
+      harness === 'codex' ? CODEX_EFFORT_OPTIONS : CLAUDE_EFFORT_OPTIONS
+    ).find((option) => option.id === preferences.defaultEffort);
+    if (preferredEffort) setEffort(preferredEffort);
+    setMode(preferences.planMode ? 'plan' : 'default');
+  }, [contextId, selectedWorkspace?.id, selectedWorkspace?.harness]);
 
   const selectedModel = selectedHarness ?? selectedWorkspace?.harness;
   const effortOptions =
@@ -309,9 +613,10 @@ export function Composer({
   );
   const modelGroups = PROVIDER_MODEL_GROUPS.filter(
     (group) =>
-      group.harness === undefined ||
-      availableHarnessIds.has(group.harness) ||
-      group.harness === selectedModel,
+      (group.id !== 'opencode' || isOpenCodeConfigured()) &&
+      (group.harness === undefined ||
+        availableHarnessIds.has(group.harness) ||
+        group.harness === selectedModel),
   ).concat(
     harnessOptions
       .filter((info) => !modeledHarnessIds.has(info.id))
@@ -334,6 +639,10 @@ export function Composer({
   const selectedModelLabel =
     selectedProviderModelOption?.label ??
     (selectedModel ? MODEL_LABELS[selectedModel] : 'Default');
+  const context = useMemo(
+    () => contextStats(turns, selectedModelLabel),
+    [turns, selectedModelLabel],
+  );
   const supportsPlan =
     selectedHarnessInfo?.capabilities.supportsPlanMode ?? true;
   const canSend = !isBusy && !disabled && text.trim().length > 0;
@@ -379,6 +688,39 @@ export function Composer({
     };
   }, [modelOpen]);
 
+  useEffect(() => {
+    if (!effortOpen) return;
+
+    function handlePointerDown(event: PointerEvent): void {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (effortPickerRef.current?.contains(target)) return;
+      setEffortOpen(false);
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [effortOpen]);
+
+  useEffect(() => {
+    if (!plusOpen) return;
+
+    function handlePointerDown(event: PointerEvent): void {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (plusPickerRef.current?.contains(target)) return;
+      setPlusOpen(false);
+      setPlusPanel('root');
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [plusOpen]);
+
   function send(): void {
     if (!canSend) return;
     const parsedSlash = parseSlash(text.trim());
@@ -396,7 +738,13 @@ export function Composer({
       parsedSlash !== null && command !== undefined
         ? expandSlashTemplate(command.template, parsedSlash.args)
         : text;
-    void onSend(prompt, attachments, mode, selectedHarness);
+    void onSend(
+      prompt,
+      attachments,
+      mode,
+      selectedHarness,
+      selectedProviderModelOption?.model ?? selectedProviderModel,
+    );
     setText('');
     setAttachments([]);
   }
@@ -410,22 +758,6 @@ export function Composer({
     setText(`/${command.name} `);
   }
 
-  function addPath(): void {
-    const path = pathDraft.trim();
-    if (path === '') return;
-    setAttachments((prev) => [...prev, { type: 'file', path }]);
-    setPathDraft('');
-  }
-
-  function addPlusPath(): void {
-    const path = plusPathDraft.trim();
-    if (path === '') return;
-    setAttachments((prev) => [...prev, { type: 'file', path }]);
-    setPlusPathDraft('');
-    setPlusOpen(false);
-    setPlusPanel('root');
-  }
-
   function appendDraft(fragment: string): void {
     setText((prev) => {
       const separator = prev.trim().length === 0 ? '' : '\n';
@@ -435,9 +767,130 @@ export function Composer({
     setPlusPanel('root');
   }
 
-  function openPlusPanel(
-    panel: 'attachment' | 'issue' | 'workspaces',
-  ): void {
+  function attachFile(): void {
+    void invoke('workspace:pickFile', undefined)
+      .then((path) => {
+        if (typeof path === 'string' && path.trim() !== '') {
+          addFileAttachments([path]);
+        }
+      })
+      .catch(() => {
+        /* picker cancellation/failure leaves attachments unchanged */
+      })
+      .finally(() => {
+        setPlusOpen(false);
+        setPlusPanel('root');
+      });
+  }
+
+  function addFileAttachments(paths: readonly string[]): void {
+    setAttachments((prev) => {
+      const existingPaths = new Set(
+        prev.flatMap((attachment) =>
+          attachment.type === 'file' ? [attachment.path] : [],
+        ),
+      );
+      const additions: Attachment[] = [];
+      for (const path of paths) {
+        if (path.trim() === '' || existingPaths.has(path)) continue;
+        existingPaths.add(path);
+        additions.push({ type: 'file', path });
+      }
+      return additions.length === 0 ? prev : [...prev, ...additions];
+    });
+  }
+
+  function hasDraggedFiles(event: DragEvent<HTMLElement>): boolean {
+    return Array.from(event.dataTransfer.types).includes('Files');
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLDivElement>): void {
+    if (disabled || !hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDraggingFiles(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>): void {
+    if (disabled || !hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>): void {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFiles(false);
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>): void {
+    if (disabled || !hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDraggingFiles(false);
+    addFileAttachments(
+      Array.from(event.dataTransfer.files).flatMap((file) => {
+        try {
+          return [window.api.getPathForFile(file)];
+        } catch {
+          return [];
+        }
+      }),
+    );
+  }
+
+  // The composer owns staged attachments, but users naturally drop onto the transcript
+  // as well. Capture file drags from the containing chat panel and feed them through the
+  // same attachment updater used by the picker and the local drop target.
+  useEffect(() => {
+    const chatPanel = composerRef.current?.closest(
+      '[data-testid="chat-panel"]',
+    );
+    if (!(chatPanel instanceof HTMLElement)) return;
+
+    const containsFiles = (event: globalThis.DragEvent): boolean =>
+      Array.from(event.dataTransfer?.types ?? []).includes('Files');
+    const dragOver = (event: globalThis.DragEvent): void => {
+      if (disabled || !containsFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      setIsDraggingFiles(true);
+    };
+    const dragLeave = (event: globalThis.DragEvent): void => {
+      if (!containsFiles(event) || event.relatedTarget !== null) return;
+      setIsDraggingFiles(false);
+    };
+    const drop = (event: globalThis.DragEvent): void => {
+      if (disabled || !containsFiles(event)) return;
+      event.preventDefault();
+      setIsDraggingFiles(false);
+      addFileAttachments(
+        Array.from(event.dataTransfer?.files ?? []).flatMap((file) => {
+          try {
+            return [window.api.getPathForFile(file)];
+          } catch {
+            return [];
+          }
+        }),
+      );
+    };
+
+    chatPanel.addEventListener('dragover', dragOver);
+    chatPanel.addEventListener('dragleave', dragLeave);
+    chatPanel.addEventListener('drop', drop);
+    return () => {
+      chatPanel.removeEventListener('dragover', dragOver);
+      chatPanel.removeEventListener('dragleave', dragLeave);
+      chatPanel.removeEventListener('drop', drop);
+    };
+  }, [disabled]);
+
+  function openPlusPanel(panel: 'issue' | 'workspaces'): void {
     setPlusPanel(panel);
     if (panel !== 'issue' || selectedWorkspace?.projectId === undefined) {
       return;
@@ -467,16 +920,43 @@ export function Composer({
   }
 
   return (
-    <div className="shrink-0 bg-surface-app px-6 pb-5" data-testid="composer">
+    <div
+      ref={composerRef}
+      className="relative z-40 shrink-0 bg-surface-app px-6 pb-5"
+      data-testid="composer"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div className="relative mx-auto w-full max-w-[1120px]">
+        {modelSwitchNotice ? (
+          <div
+            className="mb-3 flex items-start gap-3 rounded-4 border border-border-2 bg-surface-panel px-4 py-3 text-sm text-fg-1 shadow-3"
+            data-testid="composer-model-switch-notice"
+            role="status"
+          >
+            <Info className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+            <p className="min-w-0 flex-1 leading-5">
+              <span className="font-semibold">FYI:</span> When you switch models
+              mid-chat, your next response may be slower and use more tokens.
+            </p>
+            <button
+              type="button"
+              className="rounded-1 p-1 text-fg-3 hover:bg-bg-3 hover:text-fg-1"
+              aria-label="Dismiss model switch notice"
+              data-testid="composer-model-switch-notice-dismiss"
+              onClick={() => setModelSwitchNotice(false)}
+            >
+              <X className="h-4 w-4" aria-hidden />
+            </button>
+          </div>
+        ) : null}
         {slashOpen ? (
           <div
             className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-[360px] overflow-y-auto rounded-4 border border-border-1 bg-surface-panel shadow-4"
             data-testid="slash-menu"
           >
-            <div className="border-b border-border-1 px-4 py-2 text-xs font-medium uppercase tracking-wide text-fg-3">
-              Available commands
-            </div>
             {slashLoading ? (
               <div className="px-4 py-3 text-sm text-fg-3">
                 Loading commands...
@@ -490,18 +970,18 @@ export function Composer({
                 <button
                   key={command.name}
                   type="button"
-                  className={`flex w-full items-baseline gap-4 px-4 py-3 text-left transition-colors duration-fast ease-out ${
+                  className={`flex w-full items-baseline px-4 py-3 text-left transition-colors duration-fast ease-out ${
                     index === slashActive ? 'bg-bg-3' : 'hover:bg-bg-3'
                   }`}
                   data-testid={`slash-command-${command.name}`}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => chooseSlash(command)}
                 >
-                  <span className="font-mono text-lg text-fg-3">/</span>
-                  <span className="min-w-[120px] text-lg font-semibold text-fg-1">
+                  <span className="min-w-[120px] text-xs font-semibold text-fg-1">
+                    <span className="font-mono font-normal text-fg-3">/</span>
                     {command.name}
                   </span>
-                  <span className="truncate text-base text-fg-3">
+                  <span className="ml-4 truncate text-[11px] text-fg-3">
                     {commandDescription(command)}
                   </span>
                 </button>
@@ -509,7 +989,21 @@ export function Composer({
             )}
           </div>
         ) : null}
-        <div className="rounded-4 border border-border-1 bg-surface-panel shadow-3">
+        <div
+          className={`relative rounded-4 border bg-surface-panel shadow-3 transition-colors duration-fast ${
+            isDraggingFiles
+              ? 'border-accent ring-2 ring-accent-border'
+              : 'border-border-1'
+          }`}
+        >
+          {isDraggingFiles ? (
+            <div
+              className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-4 bg-surface-panel/90 text-base font-medium text-fg-1"
+              data-testid="composer-drop-target"
+            >
+              Drop files to attach
+            </div>
+          ) : null}
           <AttachmentBar
             attachments={attachments}
             onRemove={(i) =>
@@ -626,6 +1120,12 @@ export function Composer({
                               disabled={!enabled}
                               onClick={() => {
                                 if (option.harness === undefined) return;
+                                if (
+                                  option.id !== selectedProviderModel &&
+                                  (turns?.length ?? 0) > 0
+                                ) {
+                                  setModelSwitchNotice(true);
+                                }
                                 setSelectedHarness(option.harness);
                                 setSelectedProviderModel(option.id);
                                 setModelOpen(false);
@@ -634,6 +1134,11 @@ export function Composer({
                               <Zap className="h-4 w-4 text-fg-3" aria-hidden />
                               <span className="min-w-0 flex-1 truncate text-base font-medium text-fg-1">
                                 {option.label}
+                                {option.isNew ? (
+                                  <span className="ml-2 rounded border border-accent-border bg-accent-muted px-1.5 py-0.5 text-xs uppercase text-fg-2">
+                                    New
+                                  </span>
+                                ) : null}
                               </span>
                               {active ? (
                                 <Check
@@ -659,7 +1164,7 @@ export function Composer({
                 </div>
               ) : null}
             </div>
-            <div className="relative">
+            <div className="relative" ref={effortPickerRef}>
               <button
                 type="button"
                 className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
@@ -714,16 +1219,8 @@ export function Composer({
               <Map className="h-5 w-5" aria-hidden />
             </button>
             <div className="ml-auto flex items-center gap-3">
-              <button
-                type="button"
-                className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-                aria-label="Attach file"
-                title="Attach file"
-                onClick={addPath}
-              >
-                <Paperclip className="h-5 w-5" aria-hidden />
-              </button>
-              <div className="relative">
+              <ContextIndicator stats={context} />
+              <div className="relative" ref={plusPickerRef}>
                 <button
                   type="button"
                   className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
@@ -740,7 +1237,7 @@ export function Composer({
                 </button>
                 {plusOpen ? (
                   <div
-                    className="absolute bottom-[calc(100%+10px)] right-0 z-30 w-[300px] rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
+                    className="absolute bottom-[calc(100%+10px)] right-0 z-50 w-[300px] rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
                     data-testid="composer-plus-menu"
                   >
                     {plusPanel === 'root' ? (
@@ -749,7 +1246,7 @@ export function Composer({
                           type="button"
                           className="rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
                           data-testid="composer-plus-attachment"
-                          onClick={() => openPlusPanel('attachment')}
+                          onClick={attachFile}
                         >
                           Attach file
                         </button>
@@ -768,31 +1265,6 @@ export function Composer({
                           onClick={() => openPlusPanel('workspaces')}
                         >
                           Link workspace
-                        </button>
-                      </div>
-                    ) : null}
-                    {plusPanel === 'attachment' ? (
-                      <div className="flex gap-2">
-                        <Input
-                          className="min-w-0 flex-1"
-                          value={plusPathDraft}
-                          data-testid="composer-plus-attach-input"
-                          placeholder="Path"
-                          onChange={(e) => setPlusPathDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              addPlusPath();
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="rounded-2 bg-accent px-3 text-sm font-medium text-accent-fg"
-                          data-testid="composer-plus-attach-add"
-                          onClick={addPlusPath}
-                        >
-                          Add
                         </button>
                       </div>
                     ) : null}
@@ -860,25 +1332,6 @@ export function Composer({
             </div>
           </div>
         </div>
-      </div>
-      <div className="sr-only">
-        <Input
-          mono
-          className="w-64"
-          placeholder="Attach a file path…"
-          value={pathDraft}
-          data-testid="composer-attach-input"
-          onChange={(e) => setPathDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              addPath();
-            }
-          }}
-        />
-        <button type="button" data-testid="composer-attach" onClick={addPath}>
-          Attach
-        </button>
       </div>
     </div>
   );

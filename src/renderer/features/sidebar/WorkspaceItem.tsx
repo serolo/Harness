@@ -16,10 +16,12 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, Pin, RotateCcw } from 'lucide-react';
+import { Archive, LoaderCircle, Pin, RotateCcw } from 'lucide-react';
 import type { Workspace, WorkspaceStatus } from '@shared/models';
 import { invoke } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
+import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
+import { useWorkspaceArchiveStore } from '@renderer/stores/workspaceArchive';
 import { Button, Checkbox, Dialog, Input } from '@renderer/components/ui';
 import {
   archiveWorkspaceWithConfirmation,
@@ -74,6 +76,16 @@ export function WorkspaceItem({
 }: WorkspaceItemProps): React.JSX.Element {
   const queryClient = useQueryClient();
   const upsertWorkspace = useWorkspacesStore((state) => state.upsertWorkspace);
+  const isCreating = useWorkspaceCreationStore(
+    (state) =>
+      state.current?.workspaceId === workspace.id &&
+      state.current.status === 'creating',
+  );
+  const isArchiving = useWorkspaceArchiveStore(
+    (state) =>
+      state.current?.workspaceId === workspace.id &&
+      state.current.status === 'running',
+  );
   const isArchived = workspace.status === 'archived';
   const [contextPoint, setContextPoint] = useState<{
     x: number;
@@ -223,7 +235,17 @@ export function WorkspaceItem({
                 data-testid="workspace-pinned-icon"
               />
             ) : null}
-            <StatusBadge status={workspace.status} />
+            {isCreating || isArchiving ? (
+              <span
+                className="inline-flex shrink-0 items-center gap-1 text-2xs font-medium text-fg-2"
+                data-testid="workspace-operation-progress"
+              >
+                <LoaderCircle className="h-3 w-3 animate-spin text-accent" aria-hidden />
+                {isArchiving ? 'archiving' : 'creating'}
+              </span>
+            ) : (
+              <StatusBadge status={workspace.status} />
+            )}
           </div>
 
           <div className="mt-0.5 flex items-center gap-2 text-xs text-fg-3">
@@ -248,7 +270,7 @@ export function WorkspaceItem({
           >
             <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
-        ) : (
+        ) : isCreating || isArchiving ? null : (
           <button
             type="button"
             onClick={() => void handleArchive()}

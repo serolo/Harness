@@ -261,6 +261,15 @@ describe('GithubClient PRs', () => {
       expect.objectContaining({ number: 1, author: 'bob' }),
       expect.objectContaining({ number: 2, author: undefined }),
     ]);
+    expect(octokit.request).toHaveBeenCalledWith(
+      'GET /repos/{owner}/{repo}/pulls',
+      expect.objectContaining({
+        owner: 'o',
+        repo: 'r',
+        state: 'open',
+        per_page: 100,
+      }),
+    );
   });
 });
 

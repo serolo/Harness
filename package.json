@@ -1,5 +1,6 @@
 {
   "name": "harness",
+  "productName": "Harness",
   "version": "0.0.0",
   "description": "Parallel Coding Agents — a macOS desktop app for running multiple coding agents against one repo.",
   "author": "Sebastian",
@@ -8,7 +9,7 @@
   "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/dev.mjs",
     "build": "electron-vite build",
     "package": "electron-builder",
     "check": "tsc -b && eslint . && node scripts/vitest-electron.mjs run && electron-vite build",

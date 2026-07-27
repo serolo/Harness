@@ -3,10 +3,22 @@
 // main-process access point — so the real @renderer/ipc funnel + real components run.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 
 import { ChatPanel } from './ChatPanel';
 import { useChatStore } from '@renderer/stores/chat';
+import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
+import { useWorkspaceArchiveStore } from '@renderer/stores/workspaceArchive';
+import {
+  DEFAULT_MODEL_PREFERENCES,
+  writeModelPreferences,
+} from '../settings/modelPreferences';
 import type { ChatHistory, HarnessInfo, TurnStreamChunk } from '@shared/ipc';
 import type { SlashCommand } from '@shared/slash';
 import type { FileDiff } from '@shared/review';
@@ -61,6 +73,9 @@ function installApi(opts: {
         },
       );
     }
+    if (channel === 'workspace:pickFile') {
+      return Promise.resolve('/tmp/ws/src/app.ts');
+    }
     if (channel === 'slash:list')
       return Promise.resolve(
         opts.slashCommands ?? [
@@ -88,7 +103,10 @@ function installApi(opts: {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   useChatStore.setState({ byWorkspace: {}, busyByWorkspace: {} });
+  useWorkspaceCreationStore.setState({ current: null });
+  useWorkspaceArchiveStore.setState({ current: null });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -96,6 +114,59 @@ afterEach(() => {
 });
 
 describe('ChatPanel reconstruction', () => {
+  it('shows workspace creation progress in a chat terminal', async () => {
+    installApi({});
+    useWorkspaceCreationStore.setState({
+      current: {
+        runId: 'create-1',
+        projectId: 'project-1',
+        workspaceId: 'ws1',
+        phase: 'Running setup…',
+        lines: ['Installing dependencies', 'Ready'],
+        status: 'creating',
+        error: null,
+      },
+    });
+
+    const { rerender } = render(<ChatPanel workspaceId="ws1" />);
+
+    expect(
+      await screen.findByTestId('workspace-creation-terminal'),
+    ).toHaveTextContent('Running setup…');
+    expect(screen.getByText('Installing dependencies')).toBeInTheDocument();
+
+    rerender(<ChatPanel workspaceId="ws2" />);
+    expect(
+      screen.queryByTestId('workspace-creation-terminal'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows workspace archive progress and script output in chat', async () => {
+    installApi({});
+    useWorkspaceArchiveStore.setState({
+      current: {
+        workspaceId: 'ws1',
+        workspaceName: 'paris',
+        phase: 'Running archive script…',
+        lines: ['Stopping server', 'Cleanup complete'],
+        status: 'running',
+        error: null,
+      },
+    });
+
+    const { rerender } = render(<ChatPanel workspaceId="ws1" />);
+
+    expect(
+      await screen.findByTestId('workspace-archive-terminal'),
+    ).toHaveTextContent('Archiving paris');
+    expect(screen.getByText('Stopping server')).toBeInTheDocument();
+
+    rerender(<ChatPanel workspaceId="ws2" />);
+    expect(
+      screen.queryByTestId('workspace-archive-terminal'),
+    ).not.toBeInTheDocument();
+  });
+
   it('rebuilds a transcript from chat:history (text, tool card, todo, divider)', async () => {
     const history: ChatHistory = {
       turns: [
@@ -160,6 +231,94 @@ describe('ChatPanel reconstruction', () => {
     expect(screen.getByTestId('todo-list')).toBeInTheDocument();
     const divider = screen.getByTestId('turn-divider');
     expect(divider).toHaveAttribute('data-status', 'completed');
+
+    fireEvent.click(screen.getByTestId('composer-context'));
+    expect(screen.getByTestId('composer-context-popover')).toHaveTextContent(
+      '30/200.0k',
+    );
+
+    fireEvent.click(screen.getByTestId('composer-context'));
+    fireEvent.click(screen.getByTestId('composer-model'));
+    fireEvent.click(
+      await screen.findByTestId('composer-model-option-claude-sonnet-5-1m'),
+    );
+    expect(
+      screen.getByTestId('composer-model-switch-notice'),
+    ).toHaveTextContent(
+      'When you switch models mid-chat, your next response may be slower and use more tokens.',
+    );
+    fireEvent.click(
+      screen.getByTestId('composer-model-switch-notice-dismiss'),
+    );
+    expect(
+      screen.queryByTestId('composer-model-switch-notice'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('restores a completed plan from history and approves it into a default turn', async () => {
+    const history: ChatHistory = {
+      turns: [
+        {
+          id: 'plan-turn',
+          workspaceId: 'ws1',
+          idx: 0,
+          status: 'completed',
+          sessionId: 'plan-session',
+          mode: 'plan',
+          startedAt: 1,
+          endedAt: 2,
+          inputTokens: null,
+          outputTokens: null,
+          events: [
+            {
+              id: 'plan-text',
+              turnId: 'plan-turn',
+              kind: 'text',
+              ts: 1,
+              event: {
+                kind: 'text',
+                delta: '## Implementation plan\n\n1. Update the parser.',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (c: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: 'implementation-turn',
+          sessionId: 'plan-session',
+          mode: 'default',
+        });
+        onChunk({ kind: 'event', event: { kind: 'turn_end' } });
+        return Promise.resolve();
+      },
+    );
+    installApi({ history, stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByText('Implementation plan')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('plan-approve'));
+
+    await waitFor(() =>
+      expect(stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          prompt: 'The plan is approved. Start implementing it now.',
+          mode: 'default',
+        }),
+        expect.any(Function),
+        expect.anything(),
+      ),
+    );
   });
 
   it('renders semantic tool summaries with expandable command output', async () => {
@@ -508,22 +667,200 @@ describe('ChatPanel reconstruction', () => {
     );
   });
 
-  it('uses the plus button to start a new chat', async () => {
+  it('does not replay an old file request after switching workspaces', async () => {
+    const api = installApi({
+      files: { 'src/old.ts': 'old workspace file' },
+    });
+    const request = {
+      id: 1,
+      workspaceId: 'ws1',
+      path: 'src/old.ts',
+      mode: 'edit' as const,
+    };
+    const { rerender } = render(
+      <ChatPanel workspaceId="ws1" inspectFileRequest={request} />,
+    );
+
+    expect(await screen.findByTestId('chat-file-tab')).toHaveTextContent(
+      'old.ts',
+    );
+    rerender(<ChatPanel workspaceId="ws2" inspectFileRequest={request} />);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('chat-file-tab')).not.toBeInTheDocument(),
+    );
+    expect(api.invoke).not.toHaveBeenCalledWith('workspace:readFile', {
+      workspaceId: 'ws2',
+      path: 'src/old.ts',
+    });
+  });
+
+  it('does not reopen a closed file when returning to its workspace', async () => {
+    const api = installApi({
+      files: { 'src/closed.ts': 'closed workspace file' },
+    });
+    const request = {
+      id: 2,
+      workspaceId: 'ws1',
+      path: 'src/closed.ts',
+      mode: 'edit' as const,
+    };
+    const { rerender } = render(
+      <ChatPanel workspaceId="ws1" inspectFileRequest={request} />,
+    );
+
+    await screen.findByTestId('chat-file-tab');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close src/closed.ts' }),
+    );
+    expect(screen.queryByTestId('chat-file-tab')).not.toBeInTheDocument();
+
+    rerender(<ChatPanel workspaceId="ws2" inspectFileRequest={request} />);
+    rerender(<ChatPanel workspaceId="ws1" inspectFileRequest={request} />);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('chat-file-tab')).not.toBeInTheDocument(),
+    );
+    expect(
+      api.invoke.mock.calls.filter(
+        ([channel]) => channel === 'workspace:readFile',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('uses the plus button to open a new context without clearing the current one', async () => {
+    writeModelPreferences({
+      ...DEFAULT_MODEL_PREFERENCES,
+      defaultModel: 'anthropic/claude-sonnet-5-1m',
+      defaultEffort: 'medium',
+    });
     const api = installApi({});
 
     render(<ChatPanel workspaceId="ws1" />);
 
     fireEvent.click(await screen.findByTestId('chat-new'));
 
-    await waitFor(() =>
-      expect(api.invoke).toHaveBeenCalledWith('chat:clear', {
-        workspaceId: 'ws1',
-      }),
+    expect(await screen.findByTestId('chat-context-tab')).toHaveTextContent(
+      'Untitled',
     );
+    expect(screen.getByTestId('chat-context-tab')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(api.invoke).not.toHaveBeenCalledWith('chat:clear', {
+      workspaceId: 'ws1',
+    });
+
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Start a separate task' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    await waitFor(() =>
+      expect(api.stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          prompt: 'Start a separate task',
+          sessionId: null,
+          model: 'sonnet',
+        }),
+        expect.any(Function),
+        expect.objectContaining({ id: expect.any(String) }),
+      ),
+    );
+  });
+
+  it('closes a chat context and selects a remaining context', async () => {
+    installApi({});
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('chat-new'));
+    expect(await screen.findByTestId('chat-context-tab')).toHaveTextContent(
+      'Untitled',
+    );
+
+    fireEvent.click(screen.getByTestId('chat-context-close-1'));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('chat-context-tab')).toBeNull(),
+    );
+    expect(screen.getByTestId('chat-tab')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    fireEvent.click(screen.getByTestId('chat-context-close-0'));
+
+    expect(screen.getByTestId('chat-tab')).toHaveTextContent('Untitled');
+    expect(screen.getByTestId('chat-tab')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Close Untitled' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renames a chat context inline', async () => {
+    installApi({});
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Rename Untitled' }),
+    );
+    const input = screen.getByTestId('chat-context-name-input');
+    fireEvent.change(input, { target: { value: 'API cleanup' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.getByTestId('chat-tab')).toHaveTextContent('API cleanup');
+    expect(
+      screen.getByRole('button', { name: 'Rename API cleanup' }),
+    ).toBeInTheDocument();
   });
 });
 
 describe('ChatPanel streaming', () => {
+  it('updates estimated context usage while the model is still streaming', async () => {
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (c: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: 't-live-usage',
+          sessionId: 'sess-live-usage',
+          mode: 'default',
+        });
+        onChunk({
+          kind: 'event',
+          event: {
+            kind: 'text',
+            delta: 'This response is arriving incrementally from the model.',
+          },
+        });
+        return Promise.resolve();
+      },
+    );
+    installApi({ stream });
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.change(await screen.findByTestId('composer-input'), {
+      target: { value: 'Explain this code' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('composer-context')).toHaveTextContent(
+        /^[1-9]\d*$/,
+      ),
+    );
+    fireEvent.click(screen.getByTestId('composer-context'));
+    expect(
+      screen.getByTestId('composer-context-popover'),
+    ).not.toHaveTextContent('0/1.0M');
+  });
+
   it('streams a turn: started + text + turn_end render, then completes', async () => {
     const stream = vi.fn(
       (
@@ -531,7 +868,12 @@ describe('ChatPanel streaming', () => {
         _arg: unknown,
         onChunk: (c: TurnStreamChunk) => void,
       ) => {
-        onChunk({ kind: 'started', turnId: 't1', sessionId: 'sess-1' });
+        onChunk({
+          kind: 'started',
+          turnId: 't1',
+          sessionId: 'sess-1',
+          mode: 'default',
+        });
         onChunk({
           kind: 'event',
           event: { kind: 'text', delta: 'Streaming ' },
@@ -571,7 +913,12 @@ describe('ChatPanel streaming', () => {
         _arg: unknown,
         onChunk: (c: TurnStreamChunk) => void,
       ) => {
-        onChunk({ kind: 'started', turnId: 't1', sessionId: 's' });
+        onChunk({
+          kind: 'started',
+          turnId: 't1',
+          sessionId: 's',
+          mode: 'default',
+        });
         onChunk({
           kind: 'event',
           event: { kind: 'text', delta: 'thinking…' },
@@ -590,7 +937,9 @@ describe('ChatPanel streaming', () => {
 
     // Busy → Stop button shows; clicking it invokes turn:interrupt.
     const stop = await screen.findByTestId('composer-interrupt');
-    expect(await screen.findByTestId('turn-elapsed')).toHaveTextContent(/\d+\.\ds/);
+    expect(await screen.findByTestId('turn-elapsed')).toHaveTextContent(
+      /\d+\.\ds/,
+    );
     expect(screen.queryByText('streaming…')).not.toBeInTheDocument();
     fireEvent.click(stop);
     await waitFor(() =>
@@ -613,7 +962,12 @@ describe('ChatPanel streaming', () => {
         _arg: unknown,
         onChunk: (c: TurnStreamChunk) => void,
       ) => {
-        onChunk({ kind: 'started', turnId: 't1', sessionId: 's' });
+        onChunk({
+          kind: 'started',
+          turnId: 't1',
+          sessionId: 's',
+          mode: 'default',
+        });
         onChunk({
           kind: 'event',
           event: { kind: 'activity', title: 'Thinking' },
@@ -710,7 +1064,7 @@ describe('ChatPanel streaming', () => {
     const input = await screen.findByTestId('composer-input');
     fireEvent.change(input, { target: { value: '/cl' } });
 
-    expect(await screen.findByTestId('slash-menu')).toHaveTextContent(
+    expect(await screen.findByTestId('slash-menu')).not.toHaveTextContent(
       'Available commands',
     );
     expect(await screen.findByTestId('slash-command-clear')).toHaveTextContent(
@@ -733,6 +1087,24 @@ describe('ChatPanel streaming', () => {
     expect(
       screen.getByTestId('composer-model-option-claude-opus-4-8-1m'),
     ).toHaveTextContent('Opus 4.8 1M');
+    expect(
+      screen.getByTestId('composer-model-option-claude-opus-5'),
+    ).toHaveTextContent('New');
+    expect(
+      screen.queryByTestId('composer-model-opencode'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows OpenCode models only after OpenCode has been configured', async () => {
+    window.localStorage.setItem('harness:opencode-configured', 'true');
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+    fireEvent.click(await screen.findByTestId('composer-model'));
+
+    expect(
+      await screen.findByTestId('composer-model-opencode'),
+    ).toHaveTextContent('OpenCode');
   });
 
   it('closes the model catalogue when pressing outside it', async () => {
@@ -740,12 +1112,62 @@ describe('ChatPanel streaming', () => {
 
     render(<ChatPanel workspaceId="ws1" />);
     fireEvent.click(await screen.findByTestId('composer-model'));
-    expect(await screen.findByTestId('composer-model-menu')).toBeInTheDocument();
+    expect(
+      await screen.findByTestId('composer-model-menu'),
+    ).toBeInTheDocument();
 
     fireEvent.pointerDown(document.body);
     await waitFor(() =>
       expect(screen.queryByTestId('composer-model-menu')).toBeNull(),
     );
+  });
+
+  it('closes the context, effort, and plus menus when pressing outside them', async () => {
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-context'));
+    expect(
+      await screen.findByTestId('composer-context-popover'),
+    ).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    await waitFor(() =>
+      expect(screen.queryByTestId('composer-context-popover')).toBeNull(),
+    );
+
+    fireEvent.click(screen.getByTestId('composer-effort'));
+    expect(
+      await screen.findByTestId('composer-effort-menu'),
+    ).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    await waitFor(() =>
+      expect(screen.queryByTestId('composer-effort-menu')).toBeNull(),
+    );
+
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    expect(await screen.findByTestId('composer-plus-menu')).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    await waitFor(() =>
+      expect(screen.queryByTestId('composer-plus-menu')).toBeNull(),
+    );
+  });
+
+  it('opens the plus menu and attaches a file from the picker', async () => {
+    const api = installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-plus'));
+    fireEvent.click(await screen.findByTestId('composer-plus-attachment'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('workspace:pickFile', undefined),
+    );
+    expect(await screen.findByTestId('attachment-bar')).toHaveTextContent(
+      'app.ts',
+    );
+    expect(screen.queryByTestId('composer-plus-menu')).toBeNull();
   });
 
   it('keeps native tooltips on composer controls', async () => {

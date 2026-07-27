@@ -13,9 +13,8 @@
 //               seeds a one-time `pendingPrompt` (the issue text) for the chat composer.
 //
 // All three funnel through `runCreate`, which drives the `workspace:create` stream:
-//   - `{ kind: 'setupLog' }` chunks accumulate into <SetupLogPanel>.
-//   - `{ kind: 'phase' }` chunks update the status line.
-//   - `{ kind: 'created' }` → optional per-workspace hook → selectWorkspace + close.
+// Creation is handed to the app-level workspace-creation store and the modal closes
+// immediately. That store keeps the stream alive and renders progress in chat.
 //
 // The PR/issue lists degrade gracefully: when no GitHub account is connected the
 // `invoke` rejects with a typed AppError and an inline "Connect GitHub" empty state is
@@ -29,15 +28,15 @@
 // tabs (data-testid + aria-pressed + per-tab disabled) and the location/base-branch/PR/issue
 // controls stay hand-rolled or adopt `Input`/`Select`/`Button`/`IconButton` where useful.
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { GitBranch, GitPullRequest, CircleDot, CornerDownLeft } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { GitBranch, GitPullRequest, CircleDot, Check } from 'lucide-react';
 import type { CreateWorkspaceReq } from '@shared/models';
 import type { IssueListItem, PrListItem } from '@shared/github';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useComposerStore } from '@renderer/stores/composer';
+import { createWorkspaceInBackground } from '@renderer/stores/workspaceCreation';
 import { Button, IconButton, Input } from '@renderer/components/ui';
-import { SetupLogPanel } from './SetupLogPanel';
 
 type SourceTab = 'branch' | 'pr' | 'issue';
 
@@ -146,6 +145,9 @@ export function NewWorkspaceDialog({
   const [branchListLoading, setBranchListLoading] = useState(false);
   const [branchListError, setBranchListError] = useState<string | null>(null);
   const [sourceFilter, setSourceFilter] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState<BranchChoice | null>(null);
+  const [selectedPr, setSelectedPr] = useState<PrListItem | null>(null);
+  const [selectedIssue, setSelectedIssue] = useState<IssueListItem | null>(null);
   const [location, setLocation] = useState<'project' | 'worktree'>('worktree');
   const [worktreeNaming, setWorktreeNaming] = useState<'automatic' | 'custom'>(
     'automatic',
@@ -169,19 +171,6 @@ export function NewWorkspaceDialog({
 
   // Streaming state
   const [isStreaming, setIsStreaming] = useState(false);
-  const [phaseMessage, setPhaseMessage] = useState('');
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  // Abort controller for cancellation
-  const abortRef = useRef<AbortController | null>(null);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, []);
 
   // Load base branches for the Branch tab. The main command fetches origin before
   // returning refs so the select reflects the latest local + remote branch list.
@@ -265,7 +254,6 @@ export function NewWorkspaceDialog({
   }, [activeTab, projectId, githubReload]);
 
   function handleClose(): void {
-    abortRef.current?.abort();
     onClose();
   }
 
@@ -275,45 +263,18 @@ export function NewWorkspaceDialog({
    * before selection + close — used by the issue flow to stash the pending prompt.
    */
   const runCreate = useCallback(
-    async (
+    (
       req: Omit<CreateWorkspaceReq, 'projectId'>,
       onCreated?: (workspaceId: string) => void,
-    ): Promise<void> => {
+    ): void => {
       if (projectId === null || isStreaming) return;
 
       setIsStreaming(true);
-      setLogLines([]);
-      setPhaseMessage('');
-      setError(null);
-
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-
-      try {
-        await subscribeStream(
-          'workspace:create',
-          { projectId, ...req },
-          (chunk) => {
-            if (chunk.kind === 'setupLog') {
-              setLogLines((prev) => [...prev, chunk.chunk]);
-            } else if (chunk.kind === 'phase') {
-              setPhaseMessage(chunk.message ?? chunk.phase);
-            } else if (chunk.kind === 'created') {
-              onCreated?.(chunk.workspace.id);
-              selectWorkspace(chunk.workspace.id);
-              onClose();
-            }
-          },
-          { signal: ctrl.signal },
-        );
-      } catch (err) {
-        if ((err as { name?: string }).name === 'AbortError') return;
-        const msg = err instanceof Error ? err.message : String(err);
-        setError(msg);
-      } finally {
-        setIsStreaming(false);
-        abortRef.current = null;
-      }
+      createWorkspaceInBackground({ projectId, ...req }, (workspaceId) => {
+        onCreated?.(workspaceId);
+        selectWorkspace(workspaceId);
+      });
+      onClose();
     },
     [projectId, isStreaming, selectWorkspace, onClose],
   );
@@ -331,35 +292,50 @@ export function NewWorkspaceDialog({
 
   function handleSelectBranch(branch: BranchChoice): void {
     if (customNameInvalid) return;
-    void runCreate({
-      ...locationOptions(),
-      baseBranch: branch.ref,
-      sourceKind: 'branch',
-    });
+    setSelectedBranch(branch);
   }
 
   function handleSelectPr(pr: PrListItem): void {
-    // Seed the worktree from the PR head; the name/branch are auto-allocated by main
-    // (consistent with the branch flow leaving them blank).
-    void runCreate({
-      ...locationOptions(),
-      sourceKind: 'pr',
-      sourceRef: String(pr.number),
-    });
+    setSelectedPr(pr);
   }
 
   function handleSelectIssue(issue: IssueListItem): void {
-    // A normal branch-from-base workspace tagged with the issue, plus a one-time
-    // composer prompt keyed on the freshly-created workspace id.
-    const prompt = issuePrompt(issue);
-    void runCreate(
-      {
+    setSelectedIssue(issue);
+  }
+
+  function handleCreate(): void {
+    if (customNameInvalid) return;
+    if (activeTab === 'branch' && selectedBranch !== null) {
+      runCreate({
         ...locationOptions(),
-        sourceKind: 'github_issue',
-        sourceRef: String(issue.number),
-      },
-      (workspaceId) => setPendingPrompt(workspaceId, prompt),
-    );
+        baseBranch: selectedBranch.ref,
+        sourceKind: 'branch',
+      });
+      return;
+    }
+    if (
+      activeTab === 'pr' &&
+      selectedPr !== null &&
+      selectedLocation !== 'project'
+    ) {
+      runCreate({
+        ...locationOptions(),
+        sourceKind: 'pr',
+        sourceRef: String(selectedPr.number),
+      });
+      return;
+    }
+    if (activeTab === 'issue' && selectedIssue !== null) {
+      const prompt = issuePrompt(selectedIssue);
+      runCreate(
+        {
+          ...locationOptions(),
+          sourceKind: 'github_issue',
+          sourceRef: String(selectedIssue.number),
+        },
+        (workspaceId) => setPendingPrompt(workspaceId, prompt),
+      );
+    }
   }
 
   /**
@@ -423,6 +399,14 @@ export function NewWorkspaceDialog({
       ),
     [issues, sourceFilter],
   );
+  const canCreate =
+    !isStreaming &&
+    !customNameInvalid &&
+    ((activeTab === 'branch' && selectedBranch !== null) ||
+      (activeTab === 'pr' &&
+        selectedPr !== null &&
+        selectedLocation !== 'project') ||
+      (activeTab === 'issue' && selectedIssue !== null));
 
   return (
     <>
@@ -549,15 +533,10 @@ export function NewWorkspaceDialog({
             {/* Source selection is intentionally below location + naming. Changing it
                 swaps only the source-specific controls that follow. */}
             <div className="mb-4" data-testid="source-section">
-              <Input
-                value={sourceFilter}
-                onChange={(e) => setSourceFilter(e.target.value)}
-                placeholder="Search by name"
-                disabled={isStreaming}
-                data-testid="source-filter"
-                className="mb-3 h-12 rounded-3 border-border-1 bg-surface-overlay px-4 text-sm"
-              />
-              <div className="flex gap-1 border-y border-border-1 py-2">
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-caps text-fg-3">
+                Create From
+              </h3>
+              <div className="mb-3 flex gap-1 border-y border-border-1 py-2">
                 {TABS.map(({ id, label }) => (
                   <button
                     key={id}
@@ -576,6 +555,14 @@ export function NewWorkspaceDialog({
                   </button>
                 ))}
               </div>
+              <Input
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value)}
+                placeholder="Search by name"
+                disabled={isStreaming}
+                data-testid="source-filter"
+                className="h-12 rounded-3 border-border-1 bg-surface-overlay px-4 text-sm"
+              />
             </div>
 
             {/* --- Branch tab --- */}
@@ -608,7 +595,12 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectBranch(branch)}
                             data-testid="branch-item"
                             data-branch-ref={branch.ref}
-                            className="group flex w-full items-center gap-3 rounded-2 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:bg-bg-4 disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-pressed={selectedBranch?.ref === branch.ref}
+                            className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                              selectedBranch?.ref === branch.ref
+                                ? 'border-accent bg-accent-muted'
+                                : 'border-transparent bg-surface-well hover:bg-bg-4'
+                            }`}
                           >
                             <GitBranch
                               className="h-4 w-4 shrink-0 text-fg-3"
@@ -617,13 +609,9 @@ export function NewWorkspaceDialog({
                             <span className="min-w-0 flex-1 truncate text-sm text-fg-1">
                               {branch.label}
                             </span>
-                            <span className="hidden items-center gap-1 text-xs text-fg-3 group-hover:inline-flex">
-                              Select
-                              <CornerDownLeft
-                                className="h-3.5 w-3.5"
-                                aria-hidden="true"
-                              />
-                            </span>
+                            {selectedBranch?.ref === branch.ref ? (
+                              <Check className="h-4 w-4 text-accent" aria-hidden />
+                            ) : null}
                           </button>
                         </li>
                       ))}
@@ -633,12 +621,6 @@ export function NewWorkspaceDialog({
                       No branches found.
                     </p>
                   ))}
-
-                <div className="flex justify-end gap-2">
-                  <Button type="button" variant="ghost" onClick={handleClose}>
-                    Cancel
-                  </Button>
-                </div>
               </div>
             )}
 
@@ -729,7 +711,12 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectPr(pr)}
                             data-testid="pr-item"
                             data-pr-number={pr.number}
-                            className="group flex w-full items-center gap-3 rounded-2 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:bg-bg-4 disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-pressed={selectedPr?.number === pr.number}
+                            className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                              selectedPr?.number === pr.number
+                                ? 'border-accent bg-accent-muted'
+                                : 'border-transparent bg-surface-well hover:bg-bg-4'
+                            }`}
                           >
                             <GitPullRequest
                               className="h-4 w-4 shrink-0 text-fg-3"
@@ -744,13 +731,9 @@ export function NewWorkspaceDialog({
                                 {pr.author ? ` · ${pr.author}` : ''}
                               </span>
                             </span>
-                            <span className="hidden items-center gap-1 text-xs text-fg-3 group-hover:inline-flex">
-                              Select
-                              <CornerDownLeft
-                                className="h-3.5 w-3.5"
-                                aria-hidden="true"
-                              />
-                            </span>
+                            {selectedPr?.number === pr.number ? (
+                              <Check className="h-4 w-4 text-accent" aria-hidden />
+                            ) : null}
                           </button>
                         </li>
                       ))}
@@ -775,7 +758,12 @@ export function NewWorkspaceDialog({
                             onClick={() => handleSelectIssue(issue)}
                             data-testid="issue-item"
                             data-issue-number={issue.number}
-                            className="group flex w-full items-center gap-3 rounded-2 bg-surface-well px-3 py-2 text-left transition-colors duration-fast ease-out hover:bg-bg-4 disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-pressed={selectedIssue?.number === issue.number}
+                            className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                              selectedIssue?.number === issue.number
+                                ? 'border-accent bg-accent-muted'
+                                : 'border-transparent bg-surface-well hover:bg-bg-4'
+                            }`}
                           >
                             <CircleDot
                               className="h-4 w-4 shrink-0 text-fg-3"
@@ -789,13 +777,9 @@ export function NewWorkspaceDialog({
                                 #{issue.number}
                               </span>
                             </span>
-                            <span className="hidden items-center gap-1 text-xs text-fg-3 group-hover:inline-flex">
-                              Select
-                              <CornerDownLeft
-                                className="h-3.5 w-3.5"
-                                aria-hidden="true"
-                              />
-                            </span>
+                            {selectedIssue?.number === issue.number ? (
+                              <Check className="h-4 w-4 text-accent" aria-hidden />
+                            ) : null}
                           </button>
                         </li>
                       ))}
@@ -808,27 +792,21 @@ export function NewWorkspaceDialog({
               </div>
             )}
 
-            {/* Phase status line */}
-            {phaseMessage && (
-              <p className="mt-3 text-xs text-fg-2">
-                <span className="mr-1 inline-block h-2 w-2 animate-spin rounded-full border border-accent border-t-transparent align-middle" />
-                {phaseMessage}
-              </p>
-            )}
+            <div className="mt-4 flex justify-end gap-2 border-t border-border-1 pt-4">
+              <Button type="button" variant="ghost" onClick={handleClose}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                disabled={!canCreate}
+                onClick={handleCreate}
+                data-testid="create-workspace-submit"
+              >
+                Create
+              </Button>
+            </div>
 
-            {/* Setup log */}
-            {(isStreaming || logLines.length > 0) && (
-              <div className="mt-3">
-                <SetupLogPanel lines={logLines} />
-              </div>
-            )}
-
-            {/* Error */}
-            {error && (
-              <p className="mt-3 rounded-2 border border-danger/30 bg-danger-muted px-2 py-1.5 text-xs text-danger">
-                {error}
-              </p>
-            )}
           </div>
         </div>
       </div>

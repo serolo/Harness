@@ -15,7 +15,21 @@ export interface OpenInAppMenuProps {
   workspaceId: string | null;
 }
 
-function AppIcon({ kind }: Pick<WorkspaceOpenApp, 'kind'>): React.JSX.Element {
+function AppIcon({
+  kind,
+  icon,
+  label,
+}: Pick<WorkspaceOpenApp, 'kind' | 'icon' | 'label'>): React.JSX.Element {
+  if (icon) {
+    return (
+      <img
+        src={icon}
+        alt=""
+        className="h-5 w-5 shrink-0 object-contain"
+        data-testid={`open-app-icon-${label}`}
+      />
+    );
+  }
   const className = 'h-4 w-4 shrink-0 text-fg-3';
   if (kind === 'finder')
     return <FolderOpen className={className} aria-hidden="true" />;
@@ -114,7 +128,11 @@ export function OpenInAppMenu({
                 data-testid={`open-app-${application.id}`}
                 onClick={() => void launch(application)}
               >
-                <AppIcon kind={application.kind} />
+                <AppIcon
+                  kind={application.kind}
+                  icon={application.icon}
+                  label={application.label}
+                />
                 <span className="min-w-0 flex-1 truncate">
                   {application.label}
                 </span>

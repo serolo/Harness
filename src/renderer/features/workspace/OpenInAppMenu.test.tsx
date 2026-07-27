@@ -15,7 +15,12 @@ function installApi(): ApiStub {
     if (channel === 'workspace:listOpenApps') {
       return Promise.resolve([
         { id: 'finder', label: 'Finder', kind: 'finder' },
-        { id: 'vscode', label: 'Visual Studio Code', kind: 'editor' },
+        {
+          id: 'vscode',
+          label: 'Visual Studio Code',
+          kind: 'editor',
+          icon: 'data:image/png;base64,aWNvbg==',
+        },
       ]);
     }
     return Promise.resolve(undefined);
@@ -48,7 +53,11 @@ describe('OpenInAppMenu', () => {
     renderMenu('ws-1');
 
     fireEvent.click(screen.getByTestId('open-app-menu'));
-    fireEvent.click(await screen.findByTestId('open-app-vscode'));
+    const vscode = await screen.findByTestId('open-app-vscode');
+    expect(
+      screen.getByTestId('open-app-icon-Visual Studio Code'),
+    ).toHaveAttribute('src', 'data:image/png;base64,aWNvbg==');
+    fireEvent.click(vscode);
 
     await waitFor(() =>
       expect(api.invoke).toHaveBeenCalledWith('workspace:openInApp', {

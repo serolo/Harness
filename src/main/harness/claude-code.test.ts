@@ -104,8 +104,13 @@ function appendCapturedStdout(fake: {
 }
 
 describe('Claude Code adapter — MCP passthrough (settings → .mcp.json)', () => {
-  it('always bypasses approvals in every app mode', () => {
-    for (const mode of ['default', 'plan', 'auto_accept'] as const) {
+  it('uses native read-only planning mode and keeps other modes non-blocking', () => {
+    const planArgs = buildArgs(opts([], { mode: 'plan' }));
+    expect(planArgs).toContain('--permission-mode');
+    expect(planArgs).toContain('plan');
+    expect(planArgs).not.toContain('--dangerously-skip-permissions');
+
+    for (const mode of ['default', 'auto_accept'] as const) {
       const args = buildArgs(opts([], { mode }));
       expect(args).toContain('--dangerously-skip-permissions');
       expect(args).not.toContain('--permission-mode');

@@ -2,13 +2,20 @@
 // Track H3 / spec §7). HEIGHTENED-SCRUTINY: the disclosure copy below is the security
 // contract shown to the user before any agent/run command executes.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import type { OnboardingState } from '@shared/ipc';
+import {
+  COMPLETION_SOUNDS,
+  isCompletionSound,
+  type CompletionSound,
+} from '@shared/settings';
 import { invoke } from '@renderer/ipc';
+import { useSettings } from '@renderer/features/settings/useSettings';
 
 /** localStorage key recording that the user acknowledged the v1 execution-model disclosure. */
 const ACK_KEY = 'harness.onboarding.acknowledged';
+const FORCE_SHOW_ONBOARDING = import.meta.env.MODE !== 'test';
 
 /** Read the persisted acknowledgement flag (sandbox-safe: localStorage may be unavailable). */
 function readAck(): boolean {
@@ -30,8 +37,18 @@ function writeAck(): void {
 
 export function OnboardingWizard(): React.JSX.Element | null {
   const [state, setState] = useState<OnboardingState | null>(null);
-  const [acknowledged, setAcknowledged] = useState<boolean>(readAck);
+  const [acknowledged, setAcknowledged] = useState<boolean>(
+    FORCE_SHOW_ONBOARDING ? false : readAck,
+  );
   const [ackChecked, setAckChecked] = useState(false);
+
+  const loadState = useCallback((): void => {
+    void invoke('onboarding:state', undefined)
+      .then((s) => setState(s))
+      .catch(() => {
+        /* Unavailable -> leave state null so the wizard stays hidden (never blocks). */
+      });
+  }, []);
 
   useEffect(() => {
     if (acknowledged) return;
@@ -57,33 +74,94 @@ export function OnboardingWizard(): React.JSX.Element | null {
   };
 
   return (
+    <OnboardingWizardContent
+      state={state}
+      setState={setState}
+      loadState={loadState}
+      ackChecked={ackChecked}
+      setAckChecked={setAckChecked}
+      acknowledge={acknowledge}
+    />
+  );
+}
+
+function OnboardingWizardContent({
+  state,
+  setState,
+  loadState,
+  ackChecked,
+  setAckChecked,
+  acknowledge,
+}: {
+  state: OnboardingState;
+  setState: (state: OnboardingState) => void;
+  loadState: () => void;
+  ackChecked: boolean;
+  setAckChecked: (checked: boolean) => void;
+  acknowledge: () => void;
+}): React.JSX.Element {
+  const { effective, set: setSetting } = useSettings();
+  const [busyAction, setBusyAction] = useState<
+    'github' | 'refresh' | null
+  >(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const completionSound = effective?.notifications.completionSound ?? 'none';
+
+  const refreshState = (): void => {
+    setBusyAction('refresh');
+    setActionError(null);
+    void invoke('onboarding:state', undefined)
+      .then(setState)
+      .catch((err: unknown) => {
+        setActionError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setBusyAction(null));
+  };
+
+  const connectGithub = async (): Promise<void> => {
+    setBusyAction('github');
+    setActionError(null);
+    try {
+      await invoke('github:connectGhCli', undefined);
+      loadState();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const updateCompletionSound = (next: CompletionSound): void => {
+    void setSetting('notifications.completionSound', next)
+      .then(() => invoke('notifications:previewSound', { sound: next }))
+      .catch((err: unknown) => {
+        setActionError(err instanceof Error ? err.message : String(err));
+      });
+  };
+
+  return (
     <div
-      className="absolute inset-0 z-[60] overflow-hidden bg-[#17070d] text-zinc-100"
+      className="absolute inset-0 z-[60] overflow-hidden bg-surface-app text-fg-1"
       data-testid="onboarding-overlay"
     >
       <div
-        className="flex h-full w-full flex-col overflow-hidden border border-white/10 bg-[#17070d] shadow-2xl"
+        className="flex h-full w-full flex-col overflow-hidden border border-border-1 bg-surface-app shadow-2xl"
         data-testid="onboarding-wizard"
       >
-        <div className="flex h-9 shrink-0 items-center gap-2 px-4">
-          <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-          <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
-          <span className="h-3 w-3 rounded-full bg-[#28c840]" />
-        </div>
+        <div className="h-9 shrink-0" aria-hidden="true" />
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-5 pt-10 sm:px-10 lg:px-[13.5vw]">
           <header className="max-w-[920px]">
-            <h2 className="text-[28px] font-semibold leading-tight text-zinc-100">
-              Set up Conductor
+            <h2 className="text-[28px] font-semibold leading-tight text-fg-1">
+              Set up Harness
             </h2>
-            <p className="mt-2 text-[15px] text-zinc-400">
-              Conductor relies on GitHub and uses your existing subscriptions.
-              Configure them here.
+            <p className="mt-2 text-[15px] text-fg-2">
+              Connect GitHub and make sure at least one agent CLI is ready.
             </p>
           </header>
 
           <ol
-            className="mt-9 grid max-w-[1180px] grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4"
+            className="mt-9 grid max-w-[760px] grid-cols-1 gap-3 md:grid-cols-2"
             data-testid="onboarding-steps"
           >
             <ProviderCard
@@ -91,70 +169,44 @@ export function OnboardingWizard(): React.JSX.Element | null {
               done={state.githubConnected}
               icon={<GitHubMark />}
               title="GitHub"
-              description="Clone, push, and create PRs."
-              action="Sign in"
-              status="Required"
-            />
-            <ProviderCard
-              testId="onboarding-step-project"
-              done={state.hasProjects}
-              icon={<FolderMark />}
-              title="Workspace"
-              description="Add your first local repo."
-              action={state.hasProjects ? 'Project ready' : 'Add project'}
-              status={state.hasProjects ? undefined : 'Required'}
+              description="Push branches and open PRs."
+              action={state.githubConnected ? 'Connected' : 'Connect gh CLI'}
+              onAction={() => void connectGithub()}
+              busy={busyAction === 'github'}
+              status={state.githubConnected ? undefined : 'Optional'}
             />
             <ProviderCard
               testId="onboarding-step-harness"
               done={state.harnessReady}
-              icon={<CodexMark />}
-              title="Codex"
-              description="OpenAI's coding agent."
-              action={state.harnessReady ? 'Agent ready' : 'Sign in'}
-            />
-            <ProviderCard
-              done={false}
-              icon={<CloudMark />}
-              title="More providers"
-              description="Bedrock, Vertex, and more."
-              action="Provider docs"
-              external
+              icon={<HarnessMark />}
+              title="Agent CLI"
+              description="Claude Code, Codex, or Cursor."
+              action={state.harnessReady ? 'Agent ready' : 'Detect again'}
+              onAction={refreshState}
+              busy={busyAction === 'refresh'}
+              status={state.harnessReady ? undefined : 'Required'}
             />
           </ol>
 
-          <div className="mt-16 grid max-w-[1180px] gap-x-16 gap-y-12 lg:grid-cols-[1fr_440px]">
-            <SettingCopy
-              title="Theme"
-              shortcut="⌘⌥T"
-              description="Choose light, dark, or system."
-            />
-            <div className="grid grid-cols-3 gap-2 self-start">
-              <ThemeChoice label="Light" variant="light" />
-              <ThemeChoice label="Dark" variant="dark" selected />
-              <ThemeChoice label="System" variant="system" />
+          {actionError ? (
+            <div className="mt-4 max-w-[1180px] rounded border border-danger bg-danger-muted px-3 py-2 text-sm text-danger">
+              {actionError}
             </div>
+          ) : null}
 
-            <SettingCopy
-              title="Message sending"
-              description="Choose whether new messages queue after the current turn or steer the turn in progress."
-            />
-            <div className="grid grid-cols-2 gap-3 self-start justify-self-end">
-              <MessageChoice label="Queue" />
-              <MessageChoice label="Steer" selected />
-            </div>
-
+          <div className="mt-16 grid max-w-[760px] gap-x-16 gap-y-12 lg:grid-cols-[1fr_440px]">
             <SettingCopy
               title="Execution"
               description="Review how agent commands run before finishing setup."
             />
             <div
-              className="max-w-[440px] rounded-md border border-amber-700/50 bg-black/25 p-3"
+              className="max-w-[440px] rounded-md border border-warn bg-warn-muted p-3"
               data-testid="onboarding-disclosure"
             >
-              <div className="text-xs font-semibold text-amber-200">
+              <div className="text-xs font-semibold text-warn">
                 Before you run an agent
               </div>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-amber-100/85">
+              <p className="mt-1.5 text-[12px] leading-relaxed text-fg-1">
                 Agent turns and run scripts execute as{' '}
                 <strong>
                   real commands with your user account’s privileges
@@ -164,12 +216,12 @@ export function OnboardingWizard(): React.JSX.Element | null {
                 changes in the diff before merging.
               </p>
               <label
-                className="mt-2.5 flex cursor-pointer items-start gap-2 text-[12px] text-amber-100"
+                className="mt-2.5 flex cursor-pointer items-start gap-2 text-[12px] text-fg-1"
                 data-testid="onboarding-ack-label"
               >
                 <input
                   type="checkbox"
-                  className="mt-0.5 h-4 w-4 accent-amber-400"
+                  className="mt-0.5 h-4 w-4 accent-warn"
                   data-testid="onboarding-ack"
                   checked={ackChecked}
                   onChange={(e) => setAckChecked(e.target.checked)}
@@ -187,13 +239,22 @@ export function OnboardingWizard(): React.JSX.Element | null {
             />
             <div className="flex items-center justify-end gap-3 self-start">
               <select
-                className="h-9 w-[206px] rounded-md border border-white/15 bg-black/20 px-3 text-sm font-medium text-zinc-200 outline-none"
-                defaultValue="choo-choo"
+                className="h-9 w-[206px] rounded-md border border-border-2 bg-surface-well px-3 text-sm font-medium text-fg-1 outline-none"
+                value={completionSound}
+                onChange={(e) => {
+                  if (isCompletionSound(e.target.value)) {
+                    updateCompletionSound(e.target.value);
+                  }
+                }}
                 aria-label="Completion sound"
               >
-                <option value="choo-choo">Choo Choo</option>
-                <option value="ding">Ding</option>
-                <option value="none">None</option>
+                {COMPLETION_SOUNDS.map((sound) => (
+                  <option key={sound} value={sound}>
+                    {sound === 'none'
+                      ? 'None'
+                      : sound.charAt(0).toUpperCase() + sound.slice(1)}
+                  </option>
+                ))}
               </select>
               <SpeakerMark />
             </div>
@@ -201,20 +262,17 @@ export function OnboardingWizard(): React.JSX.Element | null {
         </div>
 
         <div className="flex shrink-0 items-center justify-center px-6 pb-7 sm:px-10 lg:px-[13.5vw]">
-          <div className="flex flex-1 items-center justify-center gap-3">
-            <span className="h-3 w-3 rounded-full bg-zinc-300/90" />
-            <span className="h-3 w-3 rounded-full bg-zinc-300/90" />
-          </div>
+          <div className="flex-1" />
           <button
             type="button"
-            className="mr-4 flex items-center gap-2 text-sm font-semibold text-zinc-300 hover:text-white"
+            className="mr-4 flex items-center gap-2 text-sm font-semibold text-fg-2 hover:text-fg-1"
           >
             <HelpMark />
             Get support
           </button>
           <button
             type="button"
-            className="h-10 rounded-md bg-zinc-200 px-5 text-sm font-semibold text-zinc-950 shadow-sm hover:bg-white disabled:cursor-not-allowed disabled:bg-zinc-500 disabled:text-zinc-800"
+            className="h-10 rounded-md bg-accent px-5 text-sm font-semibold text-accent-fg shadow-sm hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-fg-disabled disabled:text-bg-2"
             data-testid="onboarding-continue"
             disabled={!ackChecked}
             onClick={acknowledge}
@@ -235,7 +293,8 @@ function ProviderCard({
   description,
   action,
   status,
-  external = false,
+  onAction,
+  busy = false,
 }: {
   testId?: string;
   done: boolean;
@@ -244,37 +303,42 @@ function ProviderCard({
   description: string;
   action: string;
   status?: string;
-  external?: boolean;
+  onAction?: () => void;
+  busy?: boolean;
 }): React.JSX.Element {
   return (
     <li
-      className="overflow-hidden rounded border border-white/10 bg-black/10"
+      className="overflow-hidden rounded border border-border-1 bg-surface-card"
       data-testid={testId}
       data-done={done}
     >
       <div className="flex min-h-[86px] flex-col justify-center px-4 py-3">
         <div className="flex items-center gap-3">
           {icon}
-          <div className="text-[17px] font-semibold text-zinc-100">{title}</div>
+          <div className="text-[17px] font-semibold text-fg-1">{title}</div>
         </div>
-        <div className="mt-2 text-sm font-medium text-zinc-400">
+        <div className="mt-2 text-sm font-medium text-fg-2">
           {description}
         </div>
       </div>
-      <div className="flex h-12 items-center justify-between border-t border-white/10 bg-[#201016] px-4">
-        <span className="text-sm font-medium text-zinc-300">
+      <div className="flex h-12 items-center justify-between border-t border-border-1 bg-surface-panel px-4">
+        <button
+          type="button"
+          className="text-left text-sm font-medium text-fg-2 hover:text-fg-1 disabled:cursor-default disabled:hover:text-fg-2"
+          disabled={done || !onAction || busy}
+          onClick={onAction}
+        >
           {done ? (
-            <span className="flex items-center gap-2 text-zinc-300">
+            <span className="flex items-center gap-2 text-fg-2">
               <CheckMark /> {action}
             </span>
           ) : (
-            action
+            <span>{busy ? 'Working…' : action}</span>
           )}
-        </span>
+        </button>
         {status ? (
-          <span className="text-sm font-semibold text-rose-400">{status}</span>
+          <span className="text-sm font-semibold text-danger">{status}</span>
         ) : null}
-        {external ? <span className="text-lg text-zinc-400">↗</span> : null}
       </div>
     </li>
   );
@@ -291,187 +355,35 @@ function SettingCopy({
 }): React.JSX.Element {
   return (
     <div>
-      <div className="flex items-center gap-3 text-[18px] font-semibold text-zinc-100">
+      <div className="flex items-center gap-3 text-[18px] font-semibold text-fg-1">
         {title}
         {shortcut ? (
-          <span className="text-[13px] font-semibold text-zinc-500">
+          <span className="text-[13px] font-semibold text-fg-3">
             {shortcut}
           </span>
         ) : null}
       </div>
-      <p className="mt-2 max-w-[680px] text-[15px] font-medium leading-relaxed text-zinc-500">
+      <p className="mt-2 max-w-[680px] text-[15px] font-medium leading-relaxed text-fg-2">
         {description}
       </p>
     </div>
   );
 }
 
-function ThemeChoice({
-  label,
-  variant,
-  selected = false,
-}: {
-  label: string;
-  variant: 'light' | 'dark' | 'system';
-  selected?: boolean;
-}): React.JSX.Element {
-  return (
-    <button type="button" className="group text-center">
-      <div
-        className={`relative h-[68px] overflow-hidden rounded-md border bg-zinc-900 ${
-          selected
-            ? 'border-white shadow-[0_0_0_2px_rgba(255,255,255,0.85)]'
-            : 'border-white/15'
-        }`}
-      >
-        <ThemePreview variant={variant} />
-      </div>
-      <div
-        className={`mt-2 text-[16px] font-semibold ${
-          selected ? 'text-zinc-100' : 'text-zinc-500'
-        }`}
-      >
-        {label}
-      </div>
-    </button>
-  );
-}
-
-function ThemePreview({
-  variant,
-}: {
-  variant: 'light' | 'dark' | 'system';
-}): React.JSX.Element {
-  const dark = (
-    <PreviewLines
-      bg="bg-[#171312]"
-      rail="bg-[#292322]"
-      text="bg-zinc-600"
-      accent="bg-[#51323a]"
-    />
-  );
-
-  if (variant === 'dark') return dark;
-  if (variant === 'system') {
-    return (
-      <>
-        <PreviewLines
-          bg="bg-zinc-50"
-          rail="bg-zinc-200"
-          text="bg-zinc-300"
-          accent="bg-rose-200"
-        />
-        <div className="absolute inset-y-0 right-0 w-1/2 overflow-hidden [clip-path:polygon(100%_0,0_100%,100%_100%)]">
-          {dark}
-        </div>
-      </>
-    );
-  }
-
-  return (
-    <PreviewLines
-      bg="bg-zinc-50"
-      rail="bg-zinc-200"
-      text="bg-zinc-300"
-      accent="bg-rose-200"
-    />
-  );
-}
-
-function PreviewLines({
-  bg,
-  rail,
-  text,
-  accent,
-}: {
-  bg: string;
-  rail: string;
-  text: string;
-  accent: string;
-}): React.JSX.Element {
-  return (
-    <div className={`h-full ${bg} p-2`}>
-      <div className="grid h-full grid-cols-[20px_1fr] gap-2">
-        <div className="space-y-1">
-          <div className={`h-2 rounded-sm ${rail}`} />
-          <div className={`h-2 rounded-sm ${rail}`} />
-          <div className={`h-2 rounded-sm ${rail}`} />
-        </div>
-        <div className="space-y-2">
-          <div className={`h-3 w-1/3 rounded-sm ${text}`} />
-          <div className={`h-3 w-3/4 rounded-sm ${text}`} />
-          <div className={`ml-auto h-3 w-1/2 rounded-sm ${accent}`} />
-          <div className={`mx-auto h-3 w-2/3 rounded-sm ${text}`} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MessageChoice({
-  label,
-  selected = false,
-}: {
-  label: string;
-  selected?: boolean;
-}): React.JSX.Element {
-  return (
-    <button type="button" className="w-[136px] text-center">
-      <div
-        className={`h-[72px] rounded-md border bg-black/10 p-2 ${
-          selected
-            ? 'border-white shadow-[0_0_0_2px_rgba(255,255,255,0.85)]'
-            : 'border-white/10'
-        }`}
-      >
-        <div className="space-y-2">
-          <div className="h-3 rounded-sm bg-zinc-700" />
-          <div className="h-3 rounded-sm bg-zinc-700" />
-          <div className="flex items-center gap-2">
-            <div className="h-3 flex-1 rounded-sm bg-[#51323a]" />
-            <span className="text-lg leading-none text-zinc-500">
-              {selected ? '↟' : '↵'}
-            </span>
-          </div>
-        </div>
-      </div>
-      <div
-        className={`mt-2 text-[16px] font-semibold ${
-          selected ? 'text-zinc-100' : 'text-zinc-500'
-        }`}
-      >
-        {label}
-      </div>
-    </button>
-  );
-}
-
 function GitHubMark(): React.JSX.Element {
   return (
-    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-100 text-[13px] font-black text-[#17070d]">
+    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-fg-1 text-[13px] font-black text-bg-1">
       GH
     </span>
   );
 }
 
-function CodexMark(): React.JSX.Element {
+function HarnessMark(): React.JSX.Element {
   return (
-    <span className="flex h-6 w-6 items-center justify-center rounded-full border border-zinc-300 text-[13px] font-bold text-zinc-100">
-      O
+    <span className="flex h-6 w-6 items-center justify-center rounded-full border border-fg-2 text-[13px] font-bold text-fg-1">
+      H
     </span>
   );
-}
-
-function FolderMark(): React.JSX.Element {
-  return (
-    <span className="flex h-6 w-6 items-center justify-center rounded bg-zinc-200 text-[13px] font-black text-[#17070d]">
-      W
-    </span>
-  );
-}
-
-function CloudMark(): React.JSX.Element {
-  return <span className="text-[13px] font-black text-zinc-200">AWS</span>;
 }
 
 function CheckMark(): React.JSX.Element {
@@ -480,12 +392,12 @@ function CheckMark(): React.JSX.Element {
 
 function HelpMark(): React.JSX.Element {
   return (
-    <span className="flex h-5 w-5 items-center justify-center rounded-full border border-zinc-500 text-xs">
+    <span className="flex h-5 w-5 items-center justify-center rounded-full border border-border-2 text-xs">
       ?
     </span>
   );
 }
 
 function SpeakerMark(): React.JSX.Element {
-  return <span className="text-xl text-zinc-300">⌕</span>;
+  return <span className="text-xl text-fg-2">⌕</span>;
 }

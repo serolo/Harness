@@ -64,7 +64,14 @@ describe('normalizeCodex — normalization table (ASSUMED codex format)', () => 
     expect(sessionIds).toEqual(['thread-current-1']);
     expect(events).toEqual([
       { kind: 'text', delta: 'hello' },
-      { kind: 'turn_end', usage: { inputTokens: 12, outputTokens: 5 } },
+      {
+        kind: 'turn_end',
+        usage: {
+          inputTokens: 12,
+          cachedInputTokens: 4,
+          outputTokens: 5,
+        },
+      },
     ]);
   });
 

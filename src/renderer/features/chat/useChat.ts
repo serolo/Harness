@@ -12,6 +12,7 @@ import type {
   Usage,
 } from '@shared/harness';
 import type { ChatHistory } from '@shared/ipc';
+import { calculateTurnBilling } from '@shared/billing';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useChatStore, type RenderedTurn } from '@renderer/stores/chat';
 
@@ -23,15 +24,21 @@ function historyToTurns(history: ChatHistory): RenderedTurn[] {
   return history.turns.map((t) => ({
     turnId: t.id,
     status: t.status,
+    mode: t.mode ?? undefined,
     sessionId: t.sessionId ?? undefined,
     events: t.events.map((e) => e.event),
     startedAt: t.startedAt,
     endedAt: t.endedAt ?? undefined,
+    harness: t.harness ?? undefined,
+    model: t.model ?? undefined,
+    costMicros: t.costMicros ?? undefined,
+    pricingKey: t.pricingKey ?? undefined,
     usage:
       t.inputTokens != null || t.outputTokens != null
         ? {
             inputTokens: t.inputTokens ?? undefined,
             outputTokens: t.outputTokens ?? undefined,
+            cachedInputTokens: t.cachedInputTokens ?? undefined,
           }
         : undefined,
   }));
@@ -45,6 +52,8 @@ export interface UseChat {
     attachments: Attachment[],
     mode?: AgentMode,
     harness?: HarnessId,
+    sessionId?: string | null,
+    model?: string,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
   clear: () => Promise<void>;
@@ -91,37 +100,70 @@ export function useChat(workspaceId: string | null): UseChat {
       attachments: Attachment[],
       mode?: AgentMode,
       harness?: HarnessId,
+      sessionId?: string | null,
+      model?: string,
     ): Promise<void> => {
       if (!workspaceId) return;
       const startedAt = Date.now();
       const pendingTurnId = `pending:${startedAt}:${Math.random()}`;
       let started = false;
-      startTurn(workspaceId, pendingTurnId, '', {
-        kind: 'user_message',
-        text: prompt,
-      }, startedAt);
+      startTurn(
+        workspaceId,
+        pendingTurnId,
+        '',
+        {
+          kind: 'user_message',
+          text: prompt,
+        },
+        startedAt,
+        mode,
+        harness,
+        model,
+      );
       setBusy(workspaceId, true);
       try {
-        await subscribeStream(
-          'turn:start',
-          { workspaceId, prompt, attachments, mode, harness },
-          (chunk) => {
-            if (chunk.kind === 'started') {
-              started = true;
-              startTurn(workspaceId, chunk.turnId, chunk.sessionId);
-              return;
-            }
-            const event: AgentEvent = chunk.event;
-            if (event.kind === 'turn_end') {
-              endTurn(workspaceId, 'completed', event.usage as Usage);
-            } else if (event.kind === 'error') {
-              appendEvent(workspaceId, event);
-              endTurn(workspaceId, 'error');
-            } else {
-              appendEvent(workspaceId, event);
-            }
-          },
-        );
+        const turnArg = {
+          workspaceId,
+          prompt,
+          attachments,
+          mode,
+          harness,
+          model,
+          ...(sessionId === undefined ? {} : { sessionId }),
+        };
+        await subscribeStream('turn:start', turnArg, (chunk) => {
+          if (chunk.kind === 'started') {
+            started = true;
+            startTurn(
+              workspaceId,
+              chunk.turnId,
+              chunk.sessionId,
+              undefined,
+              undefined,
+              chunk.mode,
+            );
+            return;
+          }
+          const event: AgentEvent = chunk.event;
+          if (event.kind === 'turn_end') {
+            const billing =
+              harness === undefined
+                ? null
+                : calculateTurnBilling(harness, model, event.usage);
+            endTurn(
+              workspaceId,
+              'completed',
+              event.usage as Usage,
+              billing?.costMicros,
+              billing?.pricingKey,
+            );
+          } else if (event.kind === 'error') {
+            appendEvent(workspaceId, event);
+            endTurn(workspaceId, 'error');
+          } else {
+            appendEvent(workspaceId, event);
+          }
+        });
       } catch (err) {
         // Stream-level failure: record a terminal error so the UI recovers.
         if (!started) startTurn(workspaceId, pendingTurnId, '');

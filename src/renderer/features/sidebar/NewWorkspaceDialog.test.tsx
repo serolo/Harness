@@ -15,6 +15,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { NewWorkspaceDialog } from './NewWorkspaceDialog';
 import { useComposerStore } from '@renderer/stores/composer';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
+import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
 import type { IssueListItem, PrListItem } from '@shared/github';
 
 interface ApiStub {
@@ -134,6 +135,7 @@ function installApi(opts?: {
 function resetStores(): void {
   useComposerStore.setState({ pendingPromptByWorkspace: {} });
   useWorkspacesStore.setState({ selectedWorkspaceId: null });
+  useWorkspaceCreationStore.setState({ current: null });
 }
 
 beforeEach(() => {
@@ -150,6 +152,30 @@ afterEach(() => {
 });
 
 describe('NewWorkspaceDialog — Branch tab', () => {
+  it('closes immediately while workspace creation continues in the background', async () => {
+    const api = installApi();
+    api.stream.mockImplementation(() => new Promise<void>(() => {}));
+    const onClose = vi.fn();
+    render(
+      <NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId('branch-item')).not.toHaveLength(0),
+    );
+    fireEvent.click(screen.getAllByTestId('branch-item')[0]);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(api.stream).toHaveBeenCalledWith(
+      'workspace:create',
+      expect.objectContaining({ projectId: PROJECT_ID }),
+      expect.any(Function),
+      expect.any(Object),
+    );
+  });
+
   it('shows remote branches without origin/ plus local-only branches and creates from the selected ref', async () => {
     const api = installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
@@ -172,6 +198,8 @@ describe('NewWorkspaceDialog — Branch tab', () => {
       .getAllByTestId('branch-item')
       .find((el) => el.getAttribute('data-branch-ref') === 'origin/release');
     fireEvent.click(release as HTMLElement);
+    expect(api.stream).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
     await waitFor(() => {
       expect(api.stream).toHaveBeenCalled();
@@ -217,6 +245,7 @@ describe('NewWorkspaceDialog — Branch tab', () => {
       expect(screen.getAllByTestId('branch-item').length).toBe(3);
     });
     fireEvent.click(screen.getAllByTestId('branch-item')[0]);
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
     await waitFor(() => expect(api.stream).toHaveBeenCalled());
     const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
@@ -239,6 +268,7 @@ describe('NewWorkspaceDialog — Branch tab', () => {
       expect(screen.getAllByTestId('branch-item').length).toBe(3);
     });
     fireEvent.click(screen.getAllByTestId('branch-item')[0]);
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
     await waitFor(() => expect(api.stream).toHaveBeenCalled());
     const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
@@ -292,7 +322,7 @@ describe('NewWorkspaceDialog — Branch tab', () => {
 });
 
 describe('NewWorkspaceDialog — From PR tab', () => {
-  it('lists PRs and creates a workspace with sourceKind "pr" on select', async () => {
+  it('lists PRs and creates a workspace with sourceKind "pr" on submit', async () => {
     const api = installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
 
@@ -311,6 +341,8 @@ describe('NewWorkspaceDialog — From PR tab', () => {
       .getAllByTestId('pr-item')
       .find((el) => el.getAttribute('data-pr-number') === '3');
     fireEvent.click(first as HTMLElement);
+    expect(api.stream).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
     await waitFor(() => {
       expect(api.stream).toHaveBeenCalled();
@@ -357,6 +389,7 @@ describe('NewWorkspaceDialog — From issue tab', () => {
     });
 
     fireEvent.click(screen.getByTestId('issue-item'));
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
     // The composer store now holds the issue text keyed on the new workspace id.
     await waitFor(() => {

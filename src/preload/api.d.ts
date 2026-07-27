@@ -67,6 +67,9 @@ export interface Api {
 
   /** Cancel an active scoped stream by its renderer-allocated subscription id. */
   cancelStream(id: string): void;
+
+  /** Resolve a file received from a native drag-and-drop operation to its path. */
+  getPathForFile(file: File): string;
 }
 
 declare global {

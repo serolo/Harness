@@ -88,6 +88,33 @@ describe('TurnRecorder.beginTurn', () => {
   });
 });
 
+describe('TurnRecorder billing', () => {
+  it('persists the model, cached usage, catalogue key, and estimated cost', async () => {
+    db = openDb(dbFile);
+    const wsId = await seedWorkspace(db);
+    const recorder = makeRecorder(db);
+    const turns = new TurnsRepo(db);
+    const turnId = await recorder.beginTurn(wsId, {
+      harness: 'claude_code',
+      model: 'claude-sonnet-5-1m',
+    });
+
+    await recorder.endTurn(turnId, 'completed', {
+      inputTokens: 1_000,
+      cachedInputTokens: 200,
+      outputTokens: 100,
+    });
+
+    await expect(turns.getById(turnId)).resolves.toMatchObject({
+      harness: 'claude_code',
+      model: 'claude-sonnet-5-1m',
+      cachedInputTokens: 200,
+      costMicros: 2_640,
+      pricingKey: '2026-07-27:claude-sonnet-5-intro',
+    });
+  });
+});
+
 describe('TurnRecorder coalescing + round-trip', () => {
   it('coalesces adjacent text deltas into fewer rows and preserves order', async () => {
     db = openDb(dbFile);

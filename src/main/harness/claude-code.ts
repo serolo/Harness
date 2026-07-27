@@ -478,9 +478,14 @@ export function buildArgs(opts: StartTurnOpts): string[] {
     args.push('--resume', opts.sessionId);
   }
 
-  // Harness runs Claude headlessly and has no interactive approval bridge. Keep
-  // every app mode non-blocking so turns cannot stall on CLI permission prompts.
-  args.push('--dangerously-skip-permissions');
+  // Plan mode must reach Claude as an actual read-only planning turn. The renderer
+  // offers a separate approval action that resumes the session in default mode.
+  // Other modes remain non-blocking because Harness has no generic permission bridge.
+  if (opts.mode === 'plan') {
+    args.push('--permission-mode', 'plan');
+  } else {
+    args.push('--dangerously-skip-permissions');
+  }
 
   // Phase 12: optional model override (e.g. `--model sonnet`). A DISCRETE argv element
   // under spawn(shell:false) — never string-interpolated. The value is validated against

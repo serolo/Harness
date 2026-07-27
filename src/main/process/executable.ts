@@ -1,4 +1,5 @@
 import { accessSync, constants } from 'node:fs';
+import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 
 import { childProcessEnv } from './childEnv';
@@ -10,8 +11,18 @@ export function resolveExecutable(command: string): string {
   }
 
   const env = childProcessEnv();
-  const path = env.PATH ?? '';
-  for (const dir of path.split(delimiter)) {
+  const pathDirs = (env.PATH ?? '').split(delimiter);
+  // Apps launched from Finder inherit launchd's minimal PATH rather than the PATH
+  // configured by the user's interactive shell. Claude's native installer uses
+  // ~/.local/bin, so a packaged app must check that location explicitly. The two
+  // system locations cover the common Homebrew/npm installs without invoking a
+  // shell or sourcing user-controlled startup files.
+  const fallbackDirs =
+    process.platform === 'darwin'
+      ? [join(homedir(), '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin']
+      : [join(homedir(), '.local', 'bin')];
+
+  for (const dir of [...pathDirs, ...fallbackDirs]) {
     if (dir === '') continue;
     const candidate = join(dir, command);
     try {

@@ -119,4 +119,13 @@ export interface TurnRecord {
   inputTokens: number | null; // input_tokens — usage at turn end
   outputTokens: number | null; // output_tokens
   events: TurnEventRecord[]; // ordered ts ASC; empty on a bare row read
+  /** Provider used for this turn (migration 0010). */
+  harness?: HarnessId | null;
+  /** Requested/resolved provider model; null when the CLI did not expose one. */
+  model?: string | null;
+  cachedInputTokens?: number | null;
+  /** Persisted estimate in integer USD micro-dollars. */
+  costMicros?: number | null;
+  /** Versioned catalogue/rate key used for costMicros. */
+  pricingKey?: string | null;
 }

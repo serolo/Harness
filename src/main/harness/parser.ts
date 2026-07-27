@@ -205,7 +205,10 @@ function normalizeAssistant(obj: Record<string, unknown>): NormalizeResult[] {
         out.push({ type: 'event', event });
       }
     } else if (blockType === 'thinking' || blockType === 'reasoning') {
-      out.push({ type: 'event', event: { kind: 'activity', title: 'Thinking' } });
+      out.push({
+        type: 'event',
+        event: { kind: 'activity', title: 'Thinking' },
+      });
     }
     // Other block types are ignored for forward-compat.
   }
@@ -371,13 +374,28 @@ function extractTodos(input: unknown): Todo[] {
 }
 
 /** Map result `usage` (snake_case) to the frozen `Usage` (camelCase), or undefined. */
-function extractUsage(
-  raw: unknown,
-): { inputTokens?: number; outputTokens?: number } | undefined {
+function extractUsage(raw: unknown):
+  | {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      cacheWriteInputTokens?: number;
+    }
+  | undefined {
   if (!isRecord(raw)) {
     return undefined;
   }
-  const inputTokens = asNumber(raw.input_tokens);
+  const baseInputTokens = asNumber(raw.input_tokens);
+  const cachedInputTokens = asNumber(raw.cache_read_input_tokens);
+  const cacheWriteInputTokens = asNumber(raw.cache_creation_input_tokens);
+  const inputTokens =
+    baseInputTokens === undefined &&
+    cachedInputTokens === undefined &&
+    cacheWriteInputTokens === undefined
+      ? undefined
+      : (baseInputTokens ?? 0) +
+        (cachedInputTokens ?? 0) +
+        (cacheWriteInputTokens ?? 0);
   const outputTokens = asNumber(raw.output_tokens);
   if (inputTokens === undefined && outputTokens === undefined) {
     return undefined;
@@ -385,5 +403,7 @@ function extractUsage(
   return {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens } : {}),
   };
 }

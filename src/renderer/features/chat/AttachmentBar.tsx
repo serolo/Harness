@@ -9,13 +9,18 @@ export interface AttachmentBarProps {
   onRemove: (index: number) => void;
 }
 
+/** Return the final path segment for both POSIX and Windows-style paths. */
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
 /** A short, secret-free label for an attachment chip. */
 function label(a: Attachment): string {
   switch (a.type) {
     case 'file':
-      return `📄 ${a.path}`;
+      return `📄 ${fileName(a.path)}`;
     case 'image':
-      return `🖼 ${a.path}`;
+      return `🖼 ${fileName(a.path)}`;
     case 'diff_comment':
       return `💬 ${a.file}:${a.lineStart}-${a.lineEnd}`;
     default:

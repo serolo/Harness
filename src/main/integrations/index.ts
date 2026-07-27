@@ -206,7 +206,18 @@ export class IntegrationService {
     if (active === undefined) {
       throw new AppError('integration', 'no GitHub account connected');
     }
-    const token = await this.secrets.get(active.tokenRef);
+    let token: string;
+    try {
+      token = await this.secrets.get(active.tokenRef);
+    } catch {
+      // OS safe-storage keys can change after a keychain reset, app re-sign, or data
+      // migration. Treat the now-undecryptable row as a disconnected credential rather
+      // than leaking Electron's low-level decrypt failure through IPC.
+      throw new AppError(
+        'integration',
+        'saved GitHub credential is unavailable; reconnect GitHub',
+      );
+    }
     return this.octokitFactory(token);
   }
 

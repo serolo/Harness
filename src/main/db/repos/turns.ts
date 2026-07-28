@@ -159,6 +159,15 @@ export class TurnsRepo {
       .execute();
   }
 
+  /** Persist the exact model resolved by the harness after process startup. */
+  async setModel(turnId: string, model: string): Promise<void> {
+    await this.db
+      .updateTable('turns')
+      .set({ model })
+      .where('id', '=', turnId)
+      .execute();
+  }
+
   /**
    * The session id of the most recent turn for a workspace that captured one (highest
    * `idx` with a non-null `session_id`), or undefined. Used to `--resume` the next turn.

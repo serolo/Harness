@@ -39,6 +39,8 @@ export interface TurnHandle {
 }
 
 export type AgentEvent =
+  /** Harness metadata used by main-process persistence; not rendered as transcript content. */
+  | { kind: 'model_info'; model: string }
   | { kind: 'text'; delta: string }
   | { kind: 'activity'; title: string; detail?: string }
   | { kind: 'tool_use'; name: string; input: unknown }

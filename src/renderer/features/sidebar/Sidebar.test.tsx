@@ -97,6 +97,7 @@ function renderSidebar(): void {
 }
 
 function resetStore(): void {
+  window.localStorage.removeItem('harness:last-workspace-id');
   useWorkspacesStore.setState({
     projects: [],
     workspaces: [],
@@ -132,6 +133,22 @@ describe('Sidebar project tree', () => {
     expect(screen.queryByText('tokyo')).not.toBeInTheDocument();
     fireEvent.click(screen.getAllByTestId('project-toggle')[1]);
     expect(await screen.findByText('tokyo')).toBeInTheDocument();
+  });
+
+  it('opens the project containing the restored current workspace', async () => {
+    window.localStorage.setItem('harness:last-workspace-id', WORKSPACE_TWO.id);
+    installApi([PROJECT_ONE, PROJECT_TWO], [WORKSPACE_ONE, WORKSPACE_TWO]);
+    renderSidebar();
+
+    expect(await screen.findByText('tokyo')).toBeInTheDocument();
+    expect(useWorkspacesStore.getState()).toMatchObject({
+      selectedWorkspaceId: WORKSPACE_TWO.id,
+      selectedProjectId: PROJECT_TWO.id,
+    });
+    expect(screen.getAllByTestId('project-toggle')[1]).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
   });
 
   it('omits archived workspaces from the project list', async () => {

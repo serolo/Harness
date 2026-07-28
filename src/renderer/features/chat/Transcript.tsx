@@ -2,8 +2,8 @@
 // Auto-scrolls to the bottom as new content streams in, but PAUSES auto-scroll when the
 // user has scrolled up (so reading history isn't yanked back down).
 
-import { useLayoutEffect, useRef } from 'react';
-import type { AgentEvent } from '@shared/harness';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { AgentEvent, AgentQuestion } from '@shared/harness';
 import type { RenderedTurn } from '@renderer/stores/chat';
 import { TextMessage } from './TextMessage';
 import { ToolCard } from './ToolCard';
@@ -20,6 +20,8 @@ import { ModelActivity } from './ModelActivity';
 import { StreamingElapsed } from './StreamingElapsed';
 import { ActivityChip } from './ActivityChip';
 import { PlanApproval } from './PlanApproval';
+import { Markdown } from './markdown';
+import { invoke } from '@renderer/ipc';
 
 export interface TranscriptProps {
   turns: RenderedTurn[];
@@ -27,6 +29,8 @@ export interface TranscriptProps {
   workspaceId?: string | null;
   onOpenFile?: (path: string) => void;
   onApprovePlan?: () => void;
+  onAnswerQuestion?: (answer: string) => void;
+  isBusy?: boolean;
 }
 
 function transcriptScrollKey(turns: RenderedTurn[]): string {
@@ -66,12 +70,21 @@ function renderEvent(
   workspaceId?: string | null,
   toolResult?: unknown,
   onOpenFile?: (path: string) => void,
+  onAnswerQuestion?: (answer: string) => void,
+  questionDisabled?: boolean,
 ): React.JSX.Element | null {
   switch (event.kind) {
     case 'user_message':
       return <UserMessage key={key} text={event.text} />;
     case 'question_request':
-      return <QuestionCard key={key} questions={event.questions} />;
+      return (
+        <QuestionCard
+          key={key}
+          questions={event.questions}
+          disabled={questionDisabled}
+          onSubmit={onAnswerQuestion}
+        />
+      );
     case 'permission_request':
       return (
         <PermissionCard
@@ -83,6 +96,32 @@ function renderEvent(
         />
       );
     case 'text':
+      {
+        const directQuestion = directQuestionFallback(event.delta);
+        if (directQuestion) {
+          return (
+            <QuestionCard
+              key={key}
+              questions={[{ question: directQuestion }]}
+              disabled={questionDisabled}
+              onSubmit={onAnswerQuestion}
+            />
+          );
+        }
+        const proseQuestions = proseQuestionFallback(event.delta);
+        if (proseQuestions) {
+          return (
+            <div key={key} className="space-y-3">
+              <TextMessage delta={event.delta} onOpenFile={onOpenFile} />
+              <QuestionCard
+                questions={proseQuestions}
+                disabled={questionDisabled}
+                onSubmit={onAnswerQuestion}
+              />
+            </div>
+          );
+        }
+      }
       return (
         <TextMessage key={key} delta={event.delta} onOpenFile={onOpenFile} />
       );
@@ -134,6 +173,182 @@ function renderEvent(
     default:
       return null;
   }
+}
+
+/**
+ * Headless agent CLIs sometimes replace an unavailable interaction tool with this
+ * explanatory prefix. Keep the implementation detail out of chat and turn the actual
+ * question into the same resumable UI used by native structured question events.
+ */
+function directQuestionFallback(text: string): string | null {
+  const match =
+    /(?:AskUserQuestion|request_user_input)\s+(?:isn't|is not)\s+available here,\s*(?:so\s+)?I(?:'ll| will)\s+just ask directly\s*(?:[:—–-]\s*)?([\s\S]+)/i.exec(
+      text,
+    );
+  return match?.[1]?.trim() || null;
+}
+
+function cleanQuestionText(text: string): string {
+  return text
+    .replace(/^\s*\d+\.\s*/, '')
+    .replace(/\*\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Recover clickable questions when a model writes a multiple-choice prompt as prose
+ * instead of emitting the structured question event. This intentionally requires
+ * lettered `(a)` options plus an explicit question, keeping ordinary numbered plans
+ * out of the interaction UI.
+ */
+function proseQuestionFallback(text: string): AgentQuestion[] | null {
+  const lines = text.split('\n');
+  const questionIndex = lines.findIndex(
+    (line) =>
+      /\?\s*$/.test(cleanQuestionText(line)) &&
+      /what|which|choose|select|outcome/i.test(line),
+  );
+  if (questionIndex < 0) return null;
+
+  const options: Array<{ label: string; description?: string }> = [];
+  let current: { label: string; description: string } | null = null;
+  let scopeQuestion = '';
+
+  const flushOption = (): void => {
+    if (!current) return;
+    options.push({
+      label: current.label,
+      ...(cleanQuestionText(current.description)
+        ? { description: cleanQuestionText(current.description) }
+        : {}),
+    });
+    current = null;
+  };
+
+  for (const line of lines.slice(questionIndex + 1)) {
+    const cleanedLine = cleanQuestionText(line);
+    const option = /^\s*(?:\d+\.\s*)?\(([a-z])\)\s*(.*)$/i.exec(line);
+    if (option) {
+      flushOption();
+      current = {
+        label: option[1].toLowerCase(),
+        description: option[2],
+      };
+      continue;
+    }
+    if (/^scope check\s*:/i.test(cleanedLine)) {
+      flushOption();
+      scopeQuestion = cleanedLine.replace(/^scope check\s*:\s*/i, '');
+      continue;
+    }
+    if (scopeQuestion) {
+      if (!/\btell me\b/i.test(line)) scopeQuestion += ` ${line}`;
+      continue;
+    }
+    if (current && line.trim() !== '' && !/\btell me\b/i.test(line)) {
+      current.description += ` ${line}`;
+    }
+  }
+  flushOption();
+
+  if (options.length < 2) return null;
+  const questions: AgentQuestion[] = [
+    {
+      header: 'Outcome',
+      question: cleanQuestionText(lines[questionIndex]),
+      options,
+    },
+  ];
+  const cleanedScope = cleanQuestionText(scopeQuestion);
+  if (cleanedScope.includes('?')) {
+    questions.push({
+      header: 'Scope',
+      question: cleanedScope.slice(0, cleanedScope.indexOf('?') + 1),
+    });
+  }
+  return questions;
+}
+
+function isQuestionEvent(event: AgentEvent): boolean {
+  return (
+    event.kind === 'question_request' ||
+    (event.kind === 'text' &&
+      (directQuestionFallback(event.delta) !== null ||
+        proseQuestionFallback(event.delta) !== null))
+  );
+}
+
+/**
+ * Some harnesses emit clarification requests as ordinary text instead of a structured
+ * question event. Inspect only the tail of the final model message so questions quoted
+ * inside an otherwise complete plan do not suppress approval.
+ */
+function endsWithUserResponseRequest(events: AgentEvent[]): boolean {
+  const finalText = events
+    .slice()
+    .reverse()
+    .find((event) => event.kind === 'text');
+  if (finalText?.kind !== 'text') return false;
+  const tail = finalText.delta.trim().slice(-600);
+  return (
+    /\b(?:tell me|let me know|reply with|respond with)\b/i.test(tail) ||
+    /\bplease\s+(?:answer|choose|confirm|clarify|provide|select)\b/i.test(tail) ||
+    /\bI need to know\b/i.test(tail)
+  );
+}
+
+function savedPlanPath(events: AgentEvent[]): string | null {
+  for (const event of events.slice().reverse()) {
+    if (event.kind !== 'text') continue;
+    const match = /(?:`|^|\s)(\/[^\s`]*\/\.claude\/plans\/[^\s`]+\.md)(?:`|$|\s)/m.exec(
+      event.delta,
+    );
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+function PlanReady({
+  events,
+  onApprove,
+  onOpenFile,
+}: {
+  events: AgentEvent[];
+  onApprove: () => void;
+  onOpenFile?: (path: string) => void;
+}): React.JSX.Element {
+  const path = savedPlanPath(events);
+  const [content, setContent] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!path) return;
+    void invoke('plan:read', { path })
+      .then((plan) => {
+        if (active) setContent(plan.content);
+      })
+      .catch(() => {
+        if (active) setContent(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [path]);
+
+  return (
+    <div className="space-y-3">
+      {path && content ? (
+        <section
+          className="rounded-3 border border-border-1 bg-surface-panel p-5"
+          data-testid="plan-preview"
+        >
+          <Markdown text={content} onOpenFile={onOpenFile} />
+        </section>
+      ) : null}
+      <PlanApproval onApprove={onApprove} />
+    </div>
+  );
 }
 
 function isActivityEvent(event: AgentEvent): boolean {
@@ -204,6 +419,8 @@ function renderEvents(
   keyPrefix: string,
   workspaceId?: string | null,
   onOpenFile?: (path: string) => void,
+  onAnswerQuestion?: (answer: string) => void,
+  questionDisabled?: boolean,
 ): React.JSX.Element[] {
   const rendered: React.JSX.Element[] = [];
   const toolResults = pairToolResults(events);
@@ -225,6 +442,8 @@ function renderEvents(
           workspaceId,
           toolResults.get(absoluteIndex),
           onOpenFile,
+          onAnswerQuestion,
+          questionDisabled,
         );
         if (item) rendered.push(item);
       });
@@ -252,6 +471,8 @@ function renderEvents(
         workspaceId,
         toolResults.get(absoluteIndex),
         onOpenFile,
+        onAnswerQuestion,
+        questionDisabled,
       );
       return item ? [item] : [];
     });
@@ -289,6 +510,8 @@ function renderEvents(
       workspaceId,
       toolResults.get(index),
       onOpenFile,
+      onAnswerQuestion,
+      questionDisabled,
     );
     if (item) rendered.push(item);
     segmentStart = index + 1;
@@ -303,6 +526,8 @@ export function Transcript({
   workspaceId,
   onOpenFile,
   onApprovePlan,
+  onAnswerQuestion,
+  isBusy = false,
 }: TranscriptProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
@@ -346,16 +571,31 @@ export function Transcript({
             data-status={turn.status}
           >
             <div className="space-y-3">
-              {renderEvents(turn.events, turn.turnId, workspaceId, onOpenFile)}
+              {renderEvents(
+                turn.events,
+                turn.turnId,
+                workspaceId,
+                onOpenFile,
+                index === turns.length - 1 && turn.status !== 'streaming'
+                  ? onAnswerQuestion
+                  : undefined,
+                isBusy || turn.status === 'streaming',
+              )}
             </div>
             {index === turns.length - 1 &&
             turn.mode === 'plan' &&
             turn.status === 'completed' &&
+            !turn.events.some(isQuestionEvent) &&
+            !endsWithUserResponseRequest(turn.events) &&
             turn.events.some(
               (event) => event.kind === 'text' && event.delta.trim() !== '',
             ) &&
             onApprovePlan ? (
-              <PlanApproval onApprove={onApprovePlan} />
+              <PlanReady
+                events={turn.events}
+                onApprove={onApprovePlan}
+                onOpenFile={onOpenFile}
+              />
             ) : null}
             {turn.status === 'streaming' ? (
               <StreamingElapsed startedAt={turn.startedAt} />

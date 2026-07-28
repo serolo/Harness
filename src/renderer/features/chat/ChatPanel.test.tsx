@@ -47,6 +47,7 @@ function installApi(opts: {
   stream?: ApiStub['stream'];
   slashCommands?: SlashCommand[];
   files?: Record<string, string>;
+  plans?: Record<string, string>;
   fileDiffs?: Record<string, FileDiff>;
 }): ApiStub {
   const invoke = vi.fn((channel: string, req?: unknown) => {
@@ -60,6 +61,13 @@ function installApi(opts: {
       return Promise.resolve({
         path,
         content: opts.files?.[path] ?? '',
+      });
+    }
+    if (channel === 'plan:read') {
+      const path = (req as { path?: string } | undefined)?.path ?? '';
+      return Promise.resolve({
+        path,
+        content: opts.plans?.[path] ?? '',
       });
     }
     if (channel === 'diff:file') {
@@ -255,6 +263,45 @@ describe('ChatPanel reconstruction', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('uses the latest provider usage snapshot instead of summing resumed contexts', async () => {
+    const turn = (
+      id: string,
+      idx: number,
+      inputTokens: number,
+      outputTokens: number,
+    ): ChatHistory['turns'][number] => ({
+      id,
+      workspaceId: 'ws1',
+      idx,
+      status: 'completed',
+      sessionId: 'sess-shared',
+      mode: 'default',
+      startedAt: idx + 1,
+      endedAt: idx + 2,
+      inputTokens,
+      outputTokens,
+      events: [],
+    });
+    installApi({
+      history: {
+        turns: [
+          turn('t-context-1', 0, 100, 10),
+          turn('t-context-2', 1, 150, 20),
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-context'));
+    expect(screen.getByTestId('composer-context-popover')).toHaveTextContent(
+      '170/200.0k',
+    );
+    expect(screen.getByTestId('composer-context-popover')).not.toHaveTextContent(
+      '280/200.0k',
+    );
+  });
+
   it('restores a completed plan from history and approves it into a default turn', async () => {
     const history: ChatHistory = {
       turns: [
@@ -434,7 +481,7 @@ describe('ChatPanel reconstruction', () => {
         },
       ],
     };
-    installApi({ history });
+    const api = installApi({ history });
 
     render(<ChatPanel workspaceId="ws1" />);
 
@@ -449,6 +496,224 @@ describe('ChatPanel reconstruction', () => {
 
     fireEvent.click(screen.getByText('Review requested action'));
     expect(screen.getByText(/npm publish/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /React/ }));
+    fireEvent.click(screen.getByTestId('question-submit'));
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    expect(api.stream.mock.calls[0]?.[1]).toMatchObject({
+      workspaceId: 'ws1',
+      prompt: 'React',
+      sessionId: 'sess-1',
+    });
+  });
+
+  it('turns a plan-mode unavailable-tool fallback into a resumable chat question', async () => {
+    const api = installApi({
+      history: {
+        turns: [
+          {
+            id: 't-direct-question',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'sess-question',
+            mode: 'plan',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            events: [
+              {
+                id: 'q-fallback',
+                turnId: 't-direct-question',
+                kind: 'text',
+                ts: 1,
+                event: {
+                  kind: 'text',
+                  delta:
+                    "The comparison is above. Since AskUserQuestion isn't available here, I'll just ask directly — which database should I use?",
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByTestId('question-card')).toHaveTextContent(
+      'which database should I use?',
+    );
+    expect(screen.queryByText(/isn't available here/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Approve plan & start/i }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('which database should I use?'), {
+      target: { value: 'PostgreSQL' },
+    });
+    fireEvent.click(screen.getByTestId('question-submit'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    expect(api.stream.mock.calls[0]?.[1]).toMatchObject({
+      prompt: 'PostgreSQL',
+      sessionId: 'sess-question',
+      mode: 'plan',
+    });
+  });
+
+  it('does not offer plan approval when plan-mode prose asks for clarification', async () => {
+    installApi({
+      history: {
+        turns: [
+          {
+            id: 't-prose-question',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'sess-prose-question',
+            mode: 'plan',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            events: [
+              {
+                id: 'prose-question',
+                turnId: 't-prose-question',
+                kind: 'text',
+                ts: 1,
+                event: {
+                  kind: 'text',
+                  delta:
+                    'I need to know what outcome you want. Tell me (a/b/c/d) and the scope answer, and I’ll take it from there.',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByText(/Tell me \(a\/b\/c\/d\)/)).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-approval')).not.toBeInTheDocument();
+  });
+
+  it('shows a saved plan inline and opens its path in a file tab', async () => {
+    const planPath = '/Users/test/.claude/plans/reconciliation.md';
+    const api = installApi({
+      plans: { [planPath]: '# Reconciliation plan\n\n1. Merge the persistence fix.' },
+      history: {
+        turns: [
+          {
+            id: 't-saved-plan',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'sess-saved-plan',
+            mode: 'plan',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            events: [
+              {
+                id: 'saved-plan-text',
+                turnId: 't-saved-plan',
+                kind: 'text',
+                ts: 1,
+                event: {
+                  kind: 'text',
+                  delta: `The plan is saved at \`${planPath}\`. Ready for review.`,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const preview = await screen.findByTestId('plan-preview');
+    expect(preview).toHaveTextContent('Reconciliation plan');
+    expect(screen.getByTestId('plan-preview')).not.toHaveTextContent(
+      'reconciliation.md',
+    );
+    fireEvent.click(screen.getByRole('button', { name: `Open ${planPath}` }));
+
+    expect(await screen.findByTestId('chat-file-tab')).toHaveTextContent(
+      'reconciliation.md',
+    );
+    expect(api.invoke).toHaveBeenCalledWith('plan:read', { path: planPath });
+  });
+
+  it('turns lettered prose choices into clickable answers', async () => {
+    const api = installApi({
+      history: {
+        turns: [
+          {
+            id: 't-lettered-options',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'sess-lettered-options',
+            mode: 'plan',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            events: [
+              {
+                id: 'lettered-options',
+                turnId: 't-lettered-options',
+                kind: 'text',
+                ts: 1,
+                event: {
+                  kind: 'text',
+                  delta: [
+                    'A couple of questions:',
+                    '',
+                    '1. **What outcome do you want?**',
+                    '2. (a) Just the comparison',
+                    '3. (b) A plan to reconcile both into one branch',
+                    '4. (c) Pick one approach',
+                    '5. (d) Deep-dive a specific gap',
+                    '',
+                    '1. **Scope check:** Should the email reflect invite-level auto-action?',
+                    '',
+                    'Tell me (a/b/c/d) and the scope answer.',
+                  ].join('\n'),
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const card = await screen.findByTestId('question-card');
+    fireEvent.click(screen.getByRole('button', { name: /b - A plan to reconcile/i }));
+    fireEvent.change(
+      screen.getByLabelText(
+        'Should the email reflect invite-level auto-action?',
+      ),
+      { target: { value: 'Yes, include email.' } },
+    );
+    fireEvent.click(screen.getByTestId('question-submit'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    expect(api.stream.mock.calls[0]?.[1]).toMatchObject({
+      prompt: 'Outcome: b\nScope: Yes, include email.',
+      sessionId: 'sess-lettered-options',
+      mode: 'plan',
+    });
+    expect(card).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-approval')).not.toBeInTheDocument();
   });
 
   it('hides tool results and turns blocked results into permission UI', async () => {
@@ -731,7 +996,7 @@ describe('ChatPanel reconstruction', () => {
   it('uses the plus button to open a new context without clearing the current one', async () => {
     writeModelPreferences({
       ...DEFAULT_MODEL_PREFERENCES,
-      defaultModel: 'anthropic/claude-sonnet-5-1m',
+      defaultModel: 'codex-gpt-5-6-terra',
       defaultEffort: 'medium',
     });
     const api = installApi({});
@@ -762,7 +1027,8 @@ describe('ChatPanel reconstruction', () => {
           workspaceId: 'ws1',
           prompt: 'Start a separate task',
           sessionId: null,
-          model: 'sonnet',
+          harness: 'codex',
+          model: 'codex-gpt-5-6-terra',
         }),
         expect.any(Function),
         expect.objectContaining({ id: expect.any(String) }),
@@ -819,6 +1085,32 @@ describe('ChatPanel reconstruction', () => {
 });
 
 describe('ChatPanel streaming', () => {
+  it('navigates all sent text with ArrowUp and ArrowDown', async () => {
+    installApi({});
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'First request' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(useChatStore.getState().busyByWorkspace['ws1']).toBe(false),
+    );
+    fireEvent.change(input, { target: { value: 'Second request' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(input).toHaveValue('Second request');
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(input).toHaveValue('First request');
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(input).toHaveValue('First request');
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input).toHaveValue('Second request');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input).toHaveValue('');
+  });
+
   it('updates estimated context usage while the model is still streaming', async () => {
     const stream = vi.fn(
       (

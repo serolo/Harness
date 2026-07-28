@@ -189,13 +189,18 @@ describe('SettingsPanel rendering', () => {
 
     fireEvent.click(await screen.findByTestId('settings-nav-models'));
 
-    expect(screen.getByTestId('models-default-model')).toHaveValue('opus');
+    expect(screen.getByTestId('models-default-model')).toHaveValue(
+      'claude-opus-5',
+    );
+    expect(screen.getByTestId('models-default-model')).toHaveTextContent(
+      'GPT-5.6 Sol',
+    );
     expect(screen.getByTestId('models-review-effort')).toHaveValue('high');
     fireEvent.change(screen.getByTestId('models-default-model'), {
-      target: { value: 'sonnet' },
+      target: { value: 'codex-gpt-5-6-sol' },
     });
     expect(window.localStorage.getItem('harness:model-preferences')).toContain(
-      'sonnet',
+      'codex-gpt-5-6-sol',
     );
     expect(screen.getByTestId('models-plan-mode')).toHaveAttribute(
       'aria-checked',

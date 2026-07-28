@@ -81,7 +81,8 @@ export const CLAUDE_MODEL_PRESETS = ['opus', 'sonnet', 'haiku'] as const;
  * Conservative allowlist for the custom-model escape hatch. Validated at the IPC
  * boundary BEFORE the string can ever reach spawn argv (defense in depth on top of
  * `spawn(shell:false)`): a leading alphanumeric then up to 99 chars from a small safe
- * set (letters, digits, `._:@-`). Rejects whitespace and shell metacharacters.
+ * set (letters, digits, `._:@-`), plus Claude's exact trailing `[1m]` context
+ * modifier. Rejects whitespace, arbitrary brackets, and shell metacharacters.
  */
 export const MODEL_PATTERN =
-  /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._:@-]{0,99})?$/;
+  /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._:@-]{0,99})?(?:\[1m\])?$/;

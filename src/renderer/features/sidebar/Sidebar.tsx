@@ -35,12 +35,14 @@ export function Sidebar(): React.JSX.Element {
 
   return (
     <nav
-      className="flex h-full flex-col gap-3 p-3"
+      className="flex h-full flex-col gap-3 px-3 py-4"
       aria-label="Workspaces"
       data-testid="sidebar"
     >
       <div className="flex items-center justify-between">
-        <h2 className="px-1 text-sm font-semibold text-fg-2">Projects</h2>
+        <h2 className="px-1 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-3">
+          Projects
+        </h2>
         <button
           type="button"
           onClick={() => setAddProjectOpen((value) => !value)}

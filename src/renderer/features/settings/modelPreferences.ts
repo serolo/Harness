@@ -37,11 +37,9 @@ export function readModelPreferences(): ModelPreferences {
 }
 
 function migrateClaudeModel(model: string): string {
-  if (/^(?:anthropic\/)?claude-.*opus/i.test(model)) return 'opus';
-  if (/^(?:anthropic\/)?claude-.*sonnet/i.test(model)) return 'sonnet';
-  if (/^(?:anthropic\/)?claude-.*haiku/i.test(model)) return 'haiku';
-  if (/^(?:anthropic\/)?claude-.*fable/i.test(model)) return 'fable';
-  return model;
+  // Older builds stored provider-qualified IDs. Keep the exact model/version while
+  // removing only the provider prefix understood by the UI catalogue.
+  return model.replace(/^anthropic\/(?=claude-)/i, '');
 }
 
 export function writeModelPreferences(preferences: ModelPreferences): void {

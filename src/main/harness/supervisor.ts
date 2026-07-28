@@ -157,7 +157,10 @@ export class HarnessSupervisor {
     // persistence/finalize step on the per-turn write chain (order-preserving).
     const wrapped: StreamSink<AgentEvent> = {
       push: (event) => {
-        sink.push(event);
+        // Provider metadata belongs in persistence, not in the visible transcript.
+        if (event.kind !== 'model_info') {
+          sink.push(event);
+        }
         const current = this.registry.get(workspaceId);
         if (!current || current !== live) return; // already finalized
         if (event.kind === 'turn_end' || event.kind === 'error') {

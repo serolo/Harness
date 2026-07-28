@@ -178,6 +178,11 @@ export interface Commands {
     req: { workspaceId: string; path: string };
     res: { path: string; content: string };
   };
+  /** Read a Claude plan Markdown file confined to the user's ~/.claude/plans folder. */
+  'plan:read': {
+    req: { path: string };
+    res: { path: string; content: string };
+  };
   /** Open the OS file picker and return the selected path, or null if cancelled. */
   'workspace:pickFile': { req: void; res: string | null };
   /** Probe whether a registered harness CLI is installed/authenticated. */

@@ -203,8 +203,10 @@ export function WorkspaceItem({
       }}
     >
       <div
-        className={`group flex items-center rounded-2 transition-colors duration-fast ease-out ${
-          isSelected ? 'bg-bg-4 text-fg-1' : 'text-fg-2 hover:bg-bg-3'
+        className={`group flex items-center rounded-2 border transition-colors duration-fast ease-out ${
+          isSelected
+            ? 'border-accent-border bg-accent-muted text-fg-1 shadow-[inset_2px_0_0_var(--accent)]'
+            : 'border-transparent text-fg-2 hover:bg-bg-3'
         }`}
       >
         <button

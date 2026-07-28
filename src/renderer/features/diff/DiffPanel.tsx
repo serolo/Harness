@@ -57,26 +57,26 @@ export function DiffPanel({
       data-testid="diff-panel"
     >
       <header
-        className="flex h-12 shrink-0 items-center gap-2 border-b border-border-1 px-3"
+        className="flex h-12 shrink-0 items-end gap-1 border-b border-border-1 bg-surface-panel px-3"
         data-testid="git-changes-header"
       >
         <button
           type="button"
-          className="shrink-0 rounded-2 px-2 py-1 text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+          className="h-10 shrink-0 border-b-2 border-transparent px-3 text-xs font-medium text-fg-3 hover:text-fg-1"
           onClick={() => selectFile(null)}
         >
           All files
         </button>
         <button
           type="button"
-          className="flex shrink-0 items-center gap-2 rounded-3 bg-bg-4 px-3 py-1.5 text-sm font-medium text-fg-1"
+          className="flex h-10 shrink-0 items-center gap-2 border-b-2 border-accent px-3 text-xs font-semibold text-accent"
           aria-pressed={selectedPath === null}
           onClick={() => selectFile(null)}
         >
           Changes <span className="text-fg-2">{files.length}</span>
         </button>
 
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex h-11 items-center gap-1 pb-1">
           <Button
             variant="ghost"
             size="sm"

@@ -37,6 +37,12 @@ import type { RenderedTurn } from '@renderer/stores/chat';
 import { Textarea } from '@renderer/components/ui';
 import { AttachmentBar } from './AttachmentBar';
 import { readModelPreferences } from '../settings/modelPreferences';
+import {
+  isOpenCodeConfigured,
+  PROVIDER_MODEL_GROUPS,
+  runtimeProviderModel,
+  type ProviderModelGroup,
+} from './modelCatalog';
 
 export interface ComposerProps {
   isBusy: boolean;
@@ -70,22 +76,6 @@ const MODEL_LABELS: Record<HarnessId, string> = {
   cursor: 'Cursor',
 };
 
-interface ProviderModelOption {
-  id: string;
-  label: string;
-  model?: string;
-  harness?: HarnessId;
-  favorite?: boolean;
-  isNew?: boolean;
-}
-
-interface ProviderModelGroup {
-  id: string;
-  label: string;
-  harness?: HarnessId;
-  options: ProviderModelOption[];
-}
-
 interface ComposerIssue {
   id: string;
   label: string;
@@ -110,116 +100,11 @@ const CODEX_EFFORT_OPTIONS: EffortOption[] = [
   { id: 'xhigh', label: 'Extra High' },
 ];
 
-const PROVIDER_MODEL_GROUPS: ProviderModelGroup[] = [
-  {
-    id: 'claude_code',
-    label: 'Claude Code',
-    harness: 'claude_code',
-    options: [
-      {
-        id: 'claude-fable-5',
-        label: 'Fable 5',
-        model: 'fable',
-        harness: 'claude_code',
-        favorite: true,
-      },
-      {
-        id: 'claude-opus-5',
-        label: 'Opus 5',
-        model: 'opus',
-        harness: 'claude_code',
-        isNew: true,
-      },
-      {
-        id: 'claude-opus-4-8-1m',
-        label: 'Opus 4.8 1M',
-        model: 'opus',
-        harness: 'claude_code',
-        favorite: true,
-      },
-      {
-        id: 'claude-opus-4-7-1m',
-        label: 'Opus 4.7 1M',
-        model: 'opus',
-        harness: 'claude_code',
-      },
-      {
-        id: 'claude-opus-4-6-1m',
-        label: 'Opus 4.6 1M',
-        model: 'opus',
-        harness: 'claude_code',
-      },
-      {
-        id: 'claude-sonnet-5-1m',
-        label: 'Sonnet 5 1M',
-        model: 'sonnet',
-        harness: 'claude_code',
-      },
-      {
-        id: 'claude-sonnet-4-6-1m',
-        label: 'Sonnet 4.6 1M',
-        model: 'sonnet',
-        harness: 'claude_code',
-      },
-      {
-        id: 'claude-sonnet-4-6',
-        label: 'Sonnet 4.6',
-        model: 'sonnet',
-        harness: 'claude_code',
-      },
-      {
-        id: 'claude-haiku-4-5',
-        label: 'Haiku 4.5',
-        model: 'haiku',
-        harness: 'claude_code',
-      },
-    ],
-  },
-  {
-    id: 'codex',
-    label: 'Codex',
-    harness: 'codex',
-    options: [
-      { id: 'codex-gpt-5-6-sol', label: 'GPT-5.6 Sol', harness: 'codex' },
-      { id: 'codex-gpt-5-6-terra', label: 'GPT-5.6 Terra', harness: 'codex' },
-      { id: 'codex-gpt-5-6-luna', label: 'GPT-5.6 Luna', harness: 'codex' },
-      { id: 'codex-gpt-5-5', label: 'GPT-5.5', harness: 'codex' },
-      { id: 'codex-gpt-5-4', label: 'GPT-5.4', harness: 'codex' },
-    ],
-  },
-  {
-    id: 'opencode',
-    label: 'OpenCode',
-    options: [
-      { id: 'opencode-big-pickle', label: 'opencode/big-pickle' },
-      {
-        id: 'opencode-deepseek-v4-flash',
-        label: 'opencode/deepseek-v4-flash-fr...',
-      },
-      { id: 'opencode-mimo-v2-5-free', label: 'opencode/mimo-v2.5-free' },
-      {
-        id: 'opencode-nemotron-3-ultra-free',
-        label: 'opencode/nemotron-3-ultra-free',
-      },
-      {
-        id: 'opencode-north-mini-code-free',
-        label: 'opencode/north-mini-code-free',
-      },
-    ],
-  },
-];
-
 function defaultModelIdForHarness(
   harness: HarnessId | undefined,
 ): string | undefined {
   return PROVIDER_MODEL_GROUPS.find((group) => group.harness === harness)
     ?.options[0]?.id;
-}
-
-const OPENCODE_SETUP_KEY = 'harness:opencode-configured';
-
-function isOpenCodeConfigured(): boolean {
-  return window.localStorage.getItem(OPENCODE_SETUP_KEY) === 'true';
 }
 
 function slashQuery(input: string): string | null {
@@ -297,8 +182,18 @@ function contextStats(
         estimatedInput += estimatedTokens(event.output);
       }
     }
-    input += turn.usage?.inputTokens ?? estimatedInput;
-    output += turn.usage?.outputTokens ?? estimatedOutput;
+    if (turn.usage?.inputTokens != null) {
+      // A resumed turn's provider input count is a snapshot of the context sent for
+      // that request, including earlier messages. Replacing the previous snapshot is
+      // essential: summing snapshots counts the same history once per turn.
+      input = turn.usage.inputTokens;
+      output = turn.usage.outputTokens ?? estimatedOutput;
+    } else {
+      // No provider snapshot yet (normally the live turn). Roll the preceding model
+      // output into the next request's input, then add only this turn's new material.
+      input += output + estimatedInput;
+      output = turn.usage?.outputTokens ?? estimatedOutput;
+    }
   }
 
   return {
@@ -481,6 +376,9 @@ export function Composer({
   const plusPickerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const dragDepthRef = useRef(0);
+  const sentTextHistoryRef = useRef<string[]>([]);
+  const sentTextHistoryIndexRef = useRef(-1);
+  const preHistoryDraftRef = useRef('');
 
   // The composer always targets the currently selected workspace (its host
   // <ChatPanel> is rendered with `workspaceId={selectedWorkspaceId}`), so read the
@@ -521,11 +419,33 @@ export function Composer({
   }, [contextId, selectedWorkspaceId]);
 
   useEffect(() => {
-    if (!modelSwitchNotice) return;
-    const timeout = window.setTimeout(
-      () => setModelSwitchNotice(false),
-      5_000,
+    sentTextHistoryRef.current = [];
+    sentTextHistoryIndexRef.current = -1;
+    preHistoryDraftRef.current = '';
+  }, [selectedWorkspaceId]);
+
+  useEffect(() => {
+    const persisted = (turns ?? []).flatMap((turn) =>
+      turn.events.flatMap((event) =>
+        event.kind === 'user_message' ? [event.text] : [],
+      ),
     );
+    const current = sentTextHistoryRef.current;
+    const currentIsPersistedPrefix = current.every(
+      (entry, index) => persisted[index] === entry,
+    );
+    if (
+      persisted.length > 0 &&
+      (current.length === 0 ||
+        (persisted.length > current.length && currentIsPersistedPrefix))
+    ) {
+      sentTextHistoryRef.current = persisted;
+    }
+  }, [turns]);
+
+  useEffect(() => {
+    if (!modelSwitchNotice) return;
+    const timeout = window.setTimeout(() => setModelSwitchNotice(false), 5_000);
     return () => window.clearTimeout(timeout);
   }, [modelSwitchNotice]);
 
@@ -536,9 +456,7 @@ export function Composer({
     ).find(
       (option) =>
         (option.id === preferences.defaultModel ||
-          option.model === preferences.defaultModel) &&
-        (selectedWorkspace?.harness === undefined ||
-          option.harness === selectedWorkspace.harness),
+          option.model === preferences.defaultModel),
     );
     const harness = preferred?.harness ?? selectedWorkspace?.harness;
     setSelectedHarness(harness);
@@ -738,12 +656,17 @@ export function Composer({
       parsedSlash !== null && command !== undefined
         ? expandSlashTemplate(command.template, parsedSlash.args)
         : text;
+    sentTextHistoryRef.current.push(text);
+    sentTextHistoryIndexRef.current = -1;
+    preHistoryDraftRef.current = '';
     void onSend(
       prompt,
       attachments,
       mode,
       selectedHarness,
-      selectedProviderModelOption?.model ?? selectedProviderModel,
+      selectedProviderModelOption
+        ? runtimeProviderModel(selectedProviderModelOption)
+        : selectedProviderModel,
     );
     setText('');
     setAttachments([]);
@@ -1055,6 +978,46 @@ export function Composer({
                   setText('');
                   return;
                 }
+              }
+              if (
+                e.key === 'ArrowUp' &&
+                (e.currentTarget.value.length === 0 ||
+                  sentTextHistoryIndexRef.current >= 0) &&
+                sentTextHistoryRef.current.length > 0
+              ) {
+                e.preventDefault();
+                if (sentTextHistoryIndexRef.current === -1) {
+                  preHistoryDraftRef.current = e.currentTarget.value;
+                }
+                sentTextHistoryIndexRef.current = Math.min(
+                  sentTextHistoryIndexRef.current + 1,
+                  sentTextHistoryRef.current.length - 1,
+                );
+                setText(
+                  sentTextHistoryRef.current[
+                    sentTextHistoryRef.current.length -
+                      1 -
+                      sentTextHistoryIndexRef.current
+                  ],
+                );
+                return;
+              }
+              if (
+                e.key === 'ArrowDown' &&
+                sentTextHistoryIndexRef.current >= 0
+              ) {
+                e.preventDefault();
+                sentTextHistoryIndexRef.current -= 1;
+                setText(
+                  sentTextHistoryIndexRef.current === -1
+                    ? preHistoryDraftRef.current
+                    : sentTextHistoryRef.current[
+                        sentTextHistoryRef.current.length -
+                          1 -
+                          sentTextHistoryIndexRef.current
+                      ],
+                );
+                return;
               }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();

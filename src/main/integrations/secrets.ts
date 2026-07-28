@@ -45,10 +45,38 @@ const SECRET_FILE_MODE = 0o600;
  * it is never logged.
  */
 export class SecretStore {
+  private unlockResult: boolean | undefined;
+
   constructor(
     private readonly safeStorage: SafeStorageLike = electronSafeStorage,
     private readonly dir: string = secretsDir(),
   ) {}
+
+  /**
+   * Ask the OS secure store for access during application initialization instead of
+   * surprising the user when an integration first needs a token. The probe contains
+   * no credential, writes nothing to disk, and is cached for this process. On macOS,
+   * choosing "Always Allow" is what persists authorization across later launches.
+   */
+  unlock(): boolean {
+    if (this.unlockResult !== undefined) return this.unlockResult;
+    if (!this.safeStorage.isEncryptionAvailable()) {
+      this.unlockResult = false;
+      return false;
+    }
+
+    const probe = 'harness-safe-storage-unlock';
+    let ciphertext: Buffer | undefined;
+    try {
+      ciphertext = this.safeStorage.encryptString(probe);
+      this.unlockResult = this.safeStorage.decryptString(ciphertext) === probe;
+    } catch {
+      this.unlockResult = false;
+    } finally {
+      ciphertext?.fill(0);
+    }
+    return this.unlockResult;
+  }
 
   /**
    * Encrypt `plaintext` and persist it under a fresh `tokenRef`. Returns the `tokenRef`

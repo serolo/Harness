@@ -21,6 +21,7 @@
 import { app, dialog, BrowserWindow, ipcMain, nativeImage } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { basename, join, relative, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { spawn as spawnChild } from 'node:child_process';
 import { readFile, rm, stat } from 'node:fs/promises';
 import { v7 as uuidv7 } from 'uuid';
@@ -1292,6 +1293,29 @@ export function registerIpc(ctx: AppContext): void {
       path: workspaceRelativePath(workspace.worktreePath, req.path),
       content: await readFile(absolutePath, 'utf8'),
     };
+  });
+
+  // plan:read — narrowly scoped read-only access for Claude's saved plan handoff.
+  handle('plan:read', async (req) => {
+    if (typeof req.path !== 'string' || !req.path.endsWith('.md')) {
+      throw new AppError('invalid_input', 'invalid plan path');
+    }
+    const root = resolve(homedir(), '.claude', 'plans');
+    const target = resolve(req.path);
+    const rel = relative(root, target);
+    if (
+      rel === '' ||
+      rel.startsWith('..') ||
+      rel.includes(`..${sep}`) ||
+      !target.endsWith('.md')
+    ) {
+      throw new AppError('invalid_input', 'plan path must stay inside Claude plans');
+    }
+    const fileStat = await stat(target);
+    if (!fileStat.isFile() || fileStat.size > CHAT_FILE_PREVIEW_MAX_BYTES) {
+      throw new AppError('invalid_input', 'plan file cannot be previewed');
+    }
+    return { path: target, content: await readFile(target, 'utf8') };
   });
 
   // workspace:pickFile — open the OS file picker for chat attachments.

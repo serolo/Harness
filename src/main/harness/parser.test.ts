@@ -116,6 +116,7 @@ describe('normalize — normalization table', () => {
     const { events, sessionIds } = run(readFixture('text.jsonl'));
     expect(sessionIds).toEqual(['sess-text-001']);
     expect(events).toEqual([
+      { kind: 'model_info', model: 'claude-opus-4' },
       { kind: 'text', delta: 'Hello, ' },
       { kind: 'text', delta: 'world.' },
       { kind: 'turn_end', usage: { inputTokens: 123, outputTokens: 45 } },
@@ -126,6 +127,7 @@ describe('normalize — normalization table', () => {
     const { events, sessionIds } = run(readFixture('tool_use.jsonl'));
     expect(sessionIds).toEqual(['sess-tool-001']);
     expect(events).toEqual([
+      { kind: 'model_info', model: 'claude-opus-4' },
       {
         kind: 'tool_use',
         name: 'Bash',
@@ -155,6 +157,7 @@ describe('normalize — normalization table', () => {
   it('maps Write→create and Edit→modify file_edit events (not raw tool_use)', () => {
     const { events } = run(readFixture('file_edit.jsonl'));
     expect(events).toEqual([
+      { kind: 'model_info', model: 'claude-opus-4' },
       { kind: 'file_edit', path: '/repo/src/new.ts', op: 'create' },
       { kind: 'file_edit', path: '/repo/src/existing.ts', op: 'modify' },
       { kind: 'turn_end', usage: { inputTokens: 300, outputTokens: 80 } },
@@ -164,6 +167,7 @@ describe('normalize — normalization table', () => {
   it('maps a result with is_error:true to an error event carrying only a message', () => {
     const { events } = run(readFixture('error.jsonl'));
     expect(events).toEqual([
+      { kind: 'model_info', model: 'claude-opus-4' },
       { kind: 'error', message: 'The agent hit an unrecoverable error.' },
     ]);
   });
@@ -172,6 +176,7 @@ describe('normalize — normalization table', () => {
     const { events, sessionIds } = run(readFixture('resume.jsonl'));
     expect(sessionIds).toEqual(['sess-resume-abc']);
     expect(events).toEqual([
+      { kind: 'model_info', model: 'claude-opus-4' },
       { kind: 'text', delta: 'Resuming where we left off.' },
       {
         kind: 'todo_update',

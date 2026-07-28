@@ -288,9 +288,9 @@ function fileReferenceFromText(
     .replace(/:\d+(?::\d+)?$/, '');
   if (
     path === '' ||
-    path.startsWith('/') ||
     path.includes('\0') ||
     path.split(/[\\/]+/).includes('..') ||
+    (path.startsWith('/') && !/\/\.claude\/plans\/[^/]+\.md$/.test(path)) ||
     (!opts.allowBareFile && !path.includes('/')) ||
     !/\.[A-Za-z0-9]{1,12}$/.test(path)
   ) {

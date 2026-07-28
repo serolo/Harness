@@ -22,6 +22,16 @@ body,
   height: 100%;
 }
 
+[data-theme='light'] body {
+  background: #6558ef;
+}
+
+[data-theme='light'] #root {
+  overflow: hidden;
+  border: 1px solid #6558ef;
+  border-radius: 14px;
+}
+
 .scrollbar-bare {
   scrollbar-color: rgba(255, 255, 255, 0.32) transparent;
   scrollbar-width: thin;

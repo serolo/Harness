@@ -14,11 +14,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import {
+  Activity,
+  Bot,
+  Boxes,
   PanelLeft,
   PanelRight,
+  Rocket,
   Search,
   Settings as SettingsIcon,
-  CircleDollarSign,
+  TerminalSquare,
 } from 'lucide-react';
 import { invoke, onEvent } from '@renderer/ipc';
 import { Sidebar } from '@renderer/features/sidebar/Sidebar';
@@ -269,7 +273,6 @@ function WorkPaneResizeHandle({
 /** The top-level adjustable 3-pane shell: [rail | content | context]. */
 export function AppLayout(): React.JSX.Element {
   const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
-  const workspaces = useWorkspacesStore((s) => s.workspaces);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -299,11 +302,6 @@ export function AppLayout(): React.JSX.Element {
 
   const togglePalette = useUiStore((s) => s.togglePalette);
   const setNewWorkspaceOpen = useUiStore((s) => s.setNewWorkspaceOpen);
-
-  const activeWorkspaceName = useMemo(
-    () => workspaces.find((w) => w.id === selectedWorkspaceId)?.name ?? null,
-    [workspaces, selectedWorkspaceId],
-  );
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -430,31 +428,30 @@ export function AppLayout(): React.JSX.Element {
       <PanelLeft className="h-4 w-4" aria-hidden="true" />
     </IconButton>
   );
-  const rightPaneControls = (
-    <div className="flex items-center" style={NO_DRAG_STYLE}>
-      <button
-        type="button"
-        onClick={togglePalette}
-        className="flex items-center gap-1.5 rounded-2 px-2 py-1 text-xs text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-2"
-        data-testid="titlebar-search"
-        aria-label="Open command palette"
-      >
-        <Search className="h-3.5 w-3.5" aria-hidden="true" />
-        Search
-        <Kbd keys="⌘K" />
-      </button>
-      <IconButton
-        label={rightPaneOpen ? 'Hide right pane' : 'Show right pane'}
-        size="md"
-        active={rightPaneOpen}
-        aria-pressed={rightPaneOpen}
-        className="ml-1"
-        data-testid="toggle-right-pane"
-        onClick={() => setRightPaneOpen((open) => !open)}
-      >
-        <PanelRight className="h-4 w-4" aria-hidden="true" />
-      </IconButton>
-    </div>
+  const titlebarSearch = (
+    <button
+      type="button"
+      onClick={togglePalette}
+      className="flex h-9 w-64 items-center gap-2 rounded-2 border border-border-1 bg-bg-3 px-3 text-xs text-fg-3 transition-colors duration-fast ease-out hover:border-border-2 hover:text-fg-2"
+      data-testid="titlebar-search"
+      aria-label="Open command palette"
+    >
+      <Search className="h-4 w-4" aria-hidden="true" />
+      <span className="flex-1 text-left">Search logs or agents...</span>
+      <Kbd keys="⌘K" />
+    </button>
+  );
+  const rightPaneToggle = (
+    <IconButton
+      label={rightPaneOpen ? 'Hide right pane' : 'Show right pane'}
+      size="md"
+      active={rightPaneOpen}
+      aria-pressed={rightPaneOpen}
+      data-testid="toggle-right-pane"
+      onClick={() => setRightPaneOpen((open) => !open)}
+    >
+      <PanelRight className="h-4 w-4" aria-hidden="true" />
+    </IconButton>
   );
 
   return (
@@ -467,37 +464,70 @@ export function AppLayout(): React.JSX.Element {
         {leftPaneOpen ? (
           <>
             <aside
-              className="flex shrink-0 flex-col bg-surface-panel"
+              className="flex shrink-0 flex-col border-r border-border-1 bg-surface-panel"
               style={{ width: leftPaneWidth }}
               data-testid="left-pane"
             >
               <header
-                className="flex h-titlebar shrink-0 items-center pl-[96px] pr-3"
+                className="flex h-titlebar shrink-0 items-center border-b border-border-1 pl-[88px] pr-3"
                 style={DRAG_STYLE}
                 data-testid="left-titlebar"
               >
+                <div className="flex-1" />
                 {leftPaneToggle}
               </header>
+              <nav className="shrink-0 space-y-1 border-b border-border-1 px-3 py-4 text-sm">
+                <div className="mb-3 flex items-center gap-2.5 px-2">
+                  <img
+                    src={new URL('../../../build/icon.png', import.meta.url).href}
+                    alt=""
+                    className="h-10 w-10 shrink-0 rounded-2"
+                    data-testid="sidebar-app-icon"
+                  />
+                  <div className="min-w-0 leading-none">
+                    <div className="truncate text-sm font-bold tracking-tight text-fg-1">
+                      Harness
+                    </div>
+                    <div className="mt-1 truncate font-mono text-[8px] uppercase tracking-[0.18em] text-fg-3">
+                      Parallel Engine
+                    </div>
+                  </div>
+                </div>
+                <button className="flex w-full items-center gap-3 rounded-2 px-2.5 py-2 text-left text-fg-2 hover:bg-bg-3 hover:text-fg-1">
+                  <Boxes className="h-4 w-4" aria-hidden="true" /> Workspaces
+                </button>
+                <button className="flex w-full items-center gap-3 rounded-2 border-l-2 border-accent bg-accent-muted px-2.5 py-2 text-left font-medium text-accent">
+                  <Bot className="h-4 w-4" aria-hidden="true" /> Active agents
+                </button>
+                <button className="flex w-full items-center gap-3 rounded-2 px-2.5 py-2 text-left text-fg-2 hover:bg-bg-3 hover:text-fg-1">
+                  <Rocket className="h-4 w-4" aria-hidden="true" /> Deployment
+                </button>
+                <button className="flex w-full items-center gap-3 rounded-2 px-2.5 py-2 text-left text-fg-2 hover:bg-bg-3 hover:text-fg-1">
+                  <TerminalSquare className="h-4 w-4" aria-hidden="true" /> Terminal hub
+                </button>
+              </nav>
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <Sidebar />
               </div>
-              <footer className="flex items-center justify-end gap-1 border-t border-border-1 p-3">
-                <IconButton
-                  label="Open usage"
-                  size="sm"
+              <footer className="space-y-1 border-t border-border-1 p-3">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-3 rounded-2 px-2 py-2 text-xs text-fg-2 hover:bg-bg-3 hover:text-fg-1"
                   data-testid="open-usage"
                   onClick={() => setUsageOpen(true)}
                 >
-                  <CircleDollarSign className="h-4 w-4" aria-hidden="true" />
-                </IconButton>
-                <IconButton
-                  label="Open settings"
-                  size="sm"
+                  <Activity className="h-4 w-4" aria-hidden="true" />
+                  Usage
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-3 rounded-2 px-2 py-2 text-xs text-fg-2 hover:bg-bg-3 hover:text-fg-1"
                   data-testid="open-settings"
                   onClick={() => setSettingsOpen(true)}
                 >
                   <SettingsIcon className="h-4 w-4" aria-hidden="true" />
-                </IconButton>
+                  Settings
+                </button>
               </footer>
             </aside>
             <PaneResizeHandle
@@ -524,18 +554,16 @@ export function AppLayout(): React.JSX.Element {
             data-testid="center-titlebar"
           >
             {!leftPaneOpen ? leftPaneToggle : null}
-            <span
-              className="pointer-events-none absolute inset-x-28 truncate text-center font-display text-sm font-semibold tracking-[-0.01em] text-fg-2"
-              data-testid="workspace-title"
-            >
-              Harness — {activeWorkspaceName ?? 'no workspace'}
+            <span className="sr-only" data-testid="workspace-title">
+              Harness
             </span>
             <div
               className="ml-auto flex items-center gap-2"
               style={NO_DRAG_STYLE}
             >
+              {titlebarSearch}
               <OpenInAppMenu workspaceId={selectedWorkspaceId} />
-              {!rightPaneOpen ? rightPaneControls : null}
+              {rightPaneToggle}
             </div>
           </header>
           <div className="min-h-0 flex-1">
@@ -559,13 +587,6 @@ export function AppLayout(): React.JSX.Element {
               style={{ width: rightPaneWidth }}
               data-testid="right-pane"
             >
-              <header
-                className="flex h-titlebar shrink-0 items-center justify-end px-3"
-                style={DRAG_STYLE}
-                data-testid="right-titlebar"
-              >
-                {rightPaneControls}
-              </header>
               <div
                 className="flex min-h-0 flex-1 flex-col"
                 data-testid="right-work-area"

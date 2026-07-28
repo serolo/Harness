@@ -39,6 +39,15 @@ export function ProjectGroup({
     }
   }, [data, project.id, setProjectWorkspaces]);
 
+  // `defaultExpanded` can become true after workspace queries restore the last
+  // selection. Open that project when it becomes current, but do not force it
+  // closed later or prevent the user from collapsing it manually.
+  useEffect(() => {
+    if (defaultExpanded) {
+      setExpanded(true);
+    }
+  }, [defaultExpanded]);
+
   function selectSession(workspaceId: string): void {
     selectProject(project.id);
     selectWorkspace(workspaceId);
@@ -54,7 +63,7 @@ export function ProjectGroup({
             setExpanded((value) => !value);
           }}
           aria-expanded={expanded}
-          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm font-medium text-fg-2"
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-xs font-semibold text-fg-2"
           data-testid="project-toggle"
         >
           <ChevronRight
@@ -86,7 +95,7 @@ export function ProjectGroup({
       </div>
 
       {expanded && (
-        <div className="ml-4 border-l border-border-1 pl-1.5">
+        <div className="ml-2 border-l border-border-1 pl-2">
           {isLoading ? (
             <p className="px-2 py-2 text-xs text-fg-3">Loading sessions…</p>
           ) : visibleWorkspaces.length === 0 ? (

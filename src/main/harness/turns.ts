@@ -107,6 +107,12 @@ export class TurnRecorder {
   async record(turnId: string, event: AgentEvent): Promise<void> {
     const st = this.stateFor(turnId);
 
+    if (event.kind === 'model_info') {
+      st.model = event.model;
+      await this.turns.setModel(turnId, event.model);
+      return;
+    }
+
     if (event.kind === 'text') {
       if (event.delta.length === 0) {
         return; // empty delta — nothing to accumulate

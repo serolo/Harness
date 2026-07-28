@@ -13,7 +13,7 @@
 // and `dir` is pointed at an os.tmpdir() directory so nothing touches the real
 // userData secrets directory.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   mkdtempSync,
   rmSync,
@@ -76,6 +76,32 @@ describe('SecretStore — round-trip', () => {
     expect(ref1).not.toBe(ref2);
     expect(await store.get(ref1)).toBe(secret);
     expect(await store.get(ref2)).toBe(secret);
+  });
+});
+
+describe('SecretStore — startup unlock', () => {
+  it('performs one credential-free round trip and caches the result', () => {
+    const safeStorage = fakeSafeStorage();
+    const encrypt = vi.spyOn(safeStorage, 'encryptString');
+    const decrypt = vi.spyOn(safeStorage, 'decryptString');
+    const store = new SecretStore(safeStorage, tmpDir);
+
+    expect(store.unlock()).toBe(true);
+    expect(store.unlock()).toBe(true);
+    expect(encrypt).toHaveBeenCalledTimes(1);
+    expect(decrypt).toHaveBeenCalledTimes(1);
+    expect(readdirSync(tmpDir)).toEqual([]);
+  });
+
+  it('treats a denied or failed unlock as non-fatal', () => {
+    const safeStorage = fakeSafeStorage();
+    safeStorage.encryptString = () => {
+      throw new Error('denied');
+    };
+    const store = new SecretStore(safeStorage, tmpDir);
+
+    expect(store.unlock()).toBe(false);
+    expect(store.unlock()).toBe(false);
   });
 });
 

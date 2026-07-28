@@ -347,6 +347,9 @@ function createAppContext(): AppContext {
   // Shared across the GitHub + Linear connectors: one integrations repo (rows carry a
   // `kind` discriminator) and one SecretStore (token-at-rest under userData/secrets).
   const secrets = new SecretStore();
+  logger.info(
+    `[startup] secure storage ${secrets.unlock() ? 'unlocked' : 'unavailable or denied'}`,
+  );
   const integrationsRepo = new IntegrationsRepo(db);
   const integrations = new IntegrationService({
     repo: integrationsRepo,

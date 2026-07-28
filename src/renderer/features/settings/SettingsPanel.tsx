@@ -43,6 +43,10 @@ import {
   readModelPreferences,
   writeModelPreferences,
 } from './modelPreferences';
+import {
+  resolveProviderModelId,
+  visibleProviderModelGroups,
+} from '../chat/modelCatalog';
 
 export interface SettingsPanelProps {
   /** Close affordance for the overlay host (a header button). */
@@ -700,12 +704,6 @@ function NavButton({
   );
 }
 
-const MODEL_OPTIONS = [
-  ['opus', 'Opus (latest)'],
-  ['sonnet', 'Sonnet (latest)'],
-  ['haiku', 'Haiku (latest)'],
-] as const;
-
 const EFFORT_OPTIONS = [
   ['low', 'Effort low'],
   ['medium', 'Effort medium'],
@@ -794,16 +792,20 @@ function ModelPreferenceRow({
       </div>
       <div className="grid grid-cols-2 overflow-hidden rounded-2 border border-border-2 bg-surface-well">
         <select
-          value={model}
+          value={resolveProviderModelId(model)}
           onChange={(event) => onModelChange(event.target.value)}
           data-testid={`models-${testId}-model`}
           aria-label={`${title} model`}
           className="h-12 min-w-0 border-r border-border-2 bg-transparent px-4 text-base text-fg-1 outline-none"
         >
-          {MODEL_OPTIONS.map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
+          {visibleProviderModelGroups().map((group) => (
+            <optgroup key={group.id} label={group.label}>
+              {group.options.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
         <select

@@ -379,6 +379,7 @@ export function ChatPanel({
   const openFile = useCallback(
     (path: string, mode: FileTab['mode'] = 'edit'): void => {
       if (!workspaceId) return;
+      const isClaudePlan = /\/\.claude\/plans\/[^/]+\.md$/.test(path);
       const id = `file:${path}`;
       setActiveTab(id);
       setFileTabs((tabs) => {
@@ -413,7 +414,10 @@ export function ChatPanel({
         ];
       });
 
-      void invoke('workspace:readFile', { workspaceId, path })
+      const read = isClaudePlan
+        ? invoke('plan:read', { path })
+        : invoke('workspace:readFile', { workspaceId, path });
+      void read
         .then((file) => {
           setFileTabs((tabs) =>
             tabs.map((tab) =>
@@ -440,7 +444,9 @@ export function ChatPanel({
             ),
           );
         });
-      fetchFileDiff(id, path);
+      if (!isClaudePlan) {
+        fetchFileDiff(id, path);
+      }
     },
     [fetchFileDiff, workspaceId],
   );
@@ -682,6 +688,17 @@ export function ChatPanel({
             turns={contextTurns}
             workspaceId={workspaceId}
             onOpenFile={openFile}
+            isBusy={isBusy}
+            onAnswerQuestion={(answer) =>
+              sendTurn(
+                answer,
+                [],
+                contextTurns.at(-1)?.mode ?? 'default',
+                contextTurns.at(-1)?.harness,
+                contextSessionId,
+                contextTurns.at(-1)?.model,
+              )
+            }
             onApprovePlan={() =>
               sendTurn(
                 'The plan is approved. Start implementing it now.',

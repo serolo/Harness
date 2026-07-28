@@ -67,16 +67,28 @@ describe('UsageRepo.monthly', () => {
       status: 'completed',
       startedAt: startAt + 3_000,
     });
-    const reverted = await turns.create({
+    const unpriced = await turns.create({
       workspaceId,
       idx: 2,
+      status: 'streaming',
+      harness: 'claude_code',
+      startedAt: startAt + 3_500,
+    });
+    await turns.setStatus(unpriced.id, 'completed', {
+      endedAt: startAt + 3_600,
+      inputTokens: 50,
+      outputTokens: 10,
+    });
+    const reverted = await turns.create({
+      workspaceId,
+      idx: 3,
       status: 'completed',
       harness: 'claude_code',
       model: 'claude-sonnet-5-1m',
       startedAt: startAt + 4_000,
     });
-    await turns.markRevertedAfter(workspaceId, 1);
-    expect(reverted.idx).toBe(2);
+    await turns.markRevertedAfter(workspaceId, 2);
+    expect(reverted.idx).toBe(3);
 
     await expect(
       new UsageRepo(db).monthly(
@@ -87,8 +99,10 @@ describe('UsageRepo.monthly', () => {
     ).resolves.toMatchObject({
       month: '2026-07',
       totalCostMicros: 2_640,
-      turns: 2,
-      unpricedTurns: 1,
+      inputTokens: 1_050,
+      outputTokens: 110,
+      turns: 3,
+      unpricedTurns: 2,
       models: [
         {
           model: 'claude-sonnet-5-1m',

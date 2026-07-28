@@ -34,7 +34,15 @@ export class UsageRepo {
 
     const groups = new Map<string, MonthlyUsageModel>();
     let unpricedTurns = 0;
+    let inputTokens = 0;
+    let cachedInputTokens = 0;
+    let outputTokens = 0;
     for (const row of rows) {
+      // Token telemetry remains useful even when an older turn lacks enough model
+      // metadata to calculate a price.
+      inputTokens += row.input_tokens ?? 0;
+      cachedInputTokens += row.cached_input_tokens ?? 0;
+      outputTokens += row.output_tokens ?? 0;
       if (
         row.cost_micros === null ||
         row.model === null ||
@@ -66,12 +74,9 @@ export class UsageRepo {
     return {
       month,
       totalCostMicros: models.reduce((sum, row) => sum + row.costMicros, 0),
-      inputTokens: models.reduce((sum, row) => sum + row.inputTokens, 0),
-      cachedInputTokens: models.reduce(
-        (sum, row) => sum + row.cachedInputTokens,
-        0,
-      ),
-      outputTokens: models.reduce((sum, row) => sum + row.outputTokens, 0),
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
       turns: rows.length,
       unpricedTurns,
       models,

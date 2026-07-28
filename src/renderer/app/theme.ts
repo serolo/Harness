@@ -35,17 +35,17 @@ export const darkColors = {
 /** Named color tokens for the light shell chrome (mirrors `tokens/colors.css` `[data-theme='light']`). */
 export const lightColors = {
   /** App background (outermost). */
-  bg: '#f5f6f8',
+  bg: '#ffffff',
   /** Slightly raised surface — sidebar rail, panels. */
-  surface: '#ffffff',
+  surface: '#f6f7f9',
   /** Panel border / divider hairline. */
-  border: '#e4e7ed',
+  border: '#d6dbe3',
   /** Primary text. */
-  text: '#1b202b',
+  text: '#20242b',
   /** Muted / secondary text. */
-  textMuted: '#5d6575',
+  textMuted: '#555e6e',
   /** Accent (interactive) color. */
-  accent: '#3d6ee8',
+  accent: '#0967c6',
   /** IPC-health OK / status "running". */
   ok: '#1f9d4d',
   /** IPC-health error / status "attention". */

@@ -63,7 +63,7 @@ export function TerminalPanel({
     >
       {/* Compact tab bar: tabs, add terminal, and collapse/expand. */}
       <div
-        className="flex h-9 shrink-0 items-center gap-1 border-b border-border-1 px-2"
+        className="flex h-10 shrink-0 items-center gap-1 border-b border-border-1 bg-surface-panel px-2"
         data-testid="terminal-tabs"
       >
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">

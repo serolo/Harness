@@ -7,7 +7,7 @@ import {
 afterEach(() => window.localStorage.clear());
 
 describe('model preferences migration', () => {
-  it('migrates versioned Claude model ids to CLI-supported aliases', () => {
+  it('preserves exact versioned Claude model ids', () => {
     window.localStorage.setItem(
       'harness:model-preferences',
       JSON.stringify({
@@ -18,12 +18,12 @@ describe('model preferences migration', () => {
     );
 
     expect(readModelPreferences()).toMatchObject({
-      defaultModel: 'opus',
-      reviewModel: 'sonnet',
+      defaultModel: 'claude-opus-4-8-1m',
+      reviewModel: 'claude-sonnet-5-1m',
     });
   });
 
-  it('migrates provider-qualified Claude model ids to CLI aliases', () => {
+  it('removes provider qualification without losing the exact model', () => {
     window.localStorage.setItem(
       'harness:model-preferences',
       JSON.stringify({
@@ -34,8 +34,8 @@ describe('model preferences migration', () => {
     );
 
     expect(readModelPreferences()).toMatchObject({
-      defaultModel: 'opus',
-      reviewModel: 'haiku',
+      defaultModel: 'claude-opus-4-8-1m',
+      reviewModel: 'claude-haiku-4-5',
     });
   });
 });

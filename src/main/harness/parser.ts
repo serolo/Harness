@@ -112,7 +112,8 @@ export function createJsonLineSplitter(
 //
 //   source object                                   → NormalizeResult(s)
 //   ─────────────────────────────────────────────────────────────────────────
-//   {type:'system', subtype:'init', session_id}     → { session, sessionId }
+//   {type:'system', subtype:'init', session_id,     → { session, sessionId }
+//                                      model}       + { event: model_info }
 //   {type:'assistant', message:{content:[…]}}        → per content block:
 //       {type:'text', text}                          → { event: text }
 //       {type:'tool_use', name:'TodoWrite', input}   → { event: todo_update }
@@ -176,13 +177,24 @@ export function normalize(obj: unknown): NormalizeResult[] {
   }
 }
 
-/** system/init carries the session id we thread onto the TurnHandle. */
+/** system/init carries the session id and the exact provider-resolved model. */
 function normalizeSystem(obj: Record<string, unknown>): NormalizeResult[] {
   if (asString(obj.subtype) !== 'init') {
     return [];
   }
   const sessionId = asString(obj.session_id);
-  return sessionId ? [{ type: 'session', sessionId }] : [];
+  const model = asString(obj.model);
+  return [
+    ...(sessionId ? [{ type: 'session' as const, sessionId }] : []),
+    ...(model
+      ? [
+          {
+            type: 'event' as const,
+            event: { kind: 'model_info' as const, model },
+          },
+        ]
+      : []),
+  ];
 }
 
 /** assistant messages fan out over their content blocks. */

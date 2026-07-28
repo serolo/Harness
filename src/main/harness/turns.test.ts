@@ -113,6 +113,33 @@ describe('TurnRecorder billing', () => {
       pricingKey: '2026-07-27:claude-sonnet-5-intro',
     });
   });
+
+  it('prices a default-model Claude turn from resolved stream metadata', async () => {
+    db = openDb(dbFile);
+    const wsId = await seedWorkspace(db);
+    const recorder = makeRecorder(db);
+    const turns = new TurnsRepo(db);
+    const events = new EventsRepo(db);
+    const turnId = await recorder.beginTurn(wsId, {
+      harness: 'claude_code',
+    });
+
+    await recorder.record(turnId, {
+      kind: 'model_info',
+      model: 'claude-opus-4',
+    });
+    await recorder.endTurn(turnId, 'completed', {
+      inputTokens: 100,
+      outputTokens: 10,
+    });
+
+    await expect(turns.getById(turnId)).resolves.toMatchObject({
+      model: 'claude-opus-4',
+      costMicros: 2_250,
+      pricingKey: '2026-07-27:claude-opus-4',
+    });
+    await expect(events.listByTurn(turnId)).resolves.toHaveLength(0);
+  });
 });
 
 describe('TurnRecorder coalescing + round-trip', () => {

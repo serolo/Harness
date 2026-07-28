@@ -7,27 +7,27 @@
   color-scheme: dark;
 
   /* ---- Base ramp (dark) ---- */
-  --bg-0: #07090d; /* deepest — terminal, code wells */
-  --bg-1: #0b0e14; /* app background (theme.ts bg) */
-  --bg-2: #11151f; /* raised surface — sidebar, panels (theme.ts surface) */
-  --bg-3: #171c29; /* hover surface, cards on panels */
-  --bg-4: #1f2534; /* active / selected surface */
+  --bg-0: #0c0c0d; /* deepest — terminal, code wells */
+  --bg-1: #111112; /* app background */
+  --bg-2: #161617; /* raised surface — sidebar, panels */
+  --bg-3: #1e1e20; /* hover surface, cards on panels */
+  --bg-4: #29292c; /* active / selected surface */
 
-  --border-1: #1e2430; /* hairline divider (theme.ts border) */
-  --border-2: #2a3140; /* control borders, hover borders */
+  --border-1: #2a2a2d; /* hairline divider */
+  --border-2: #3a3a3f; /* control borders, hover borders */
 
-  --fg-1: #e6e9ef; /* primary text (theme.ts text) */
-  --fg-2: #8b93a7; /* secondary / muted (theme.ts textMuted) */
-  --fg-3: #5c6478; /* tertiary — hints, timestamps */
-  --fg-disabled: #3e4453;
+  --fg-1: #f1f1f3;
+  --fg-2: #aaaab2;
+  --fg-3: #71717a;
+  --fg-disabled: #4a4a51;
 
   /* ---- Accent (interactive blue, theme.ts accent) ---- */
-  --accent: #5b8cff;
-  --accent-hover: #729cff;
-  --accent-active: #4a7bf0;
-  --accent-fg: #0b0e14; /* text on accent fills */
-  --accent-muted: rgba(91, 140, 255, 0.14);
-  --accent-border: rgba(91, 140, 255, 0.45);
+  --accent: #8fb5ff;
+  --accent-hover: #a5c4ff;
+  --accent-active: #78a5ff;
+  --accent-fg: #111112;
+  --accent-muted: rgba(143, 181, 255, 0.14);
+  --accent-border: rgba(143, 181, 255, 0.46);
 
   /* ---- Status (workspace lifecycle + checks) ---- */
   --status-idle: #6b7488;
@@ -58,41 +58,44 @@
   --surface-panel: var(--bg-2);
   --surface-card: var(--bg-3);
   --surface-well: var(--bg-0); /* terminal / code background */
-  --surface-overlay: #141926; /* dialogs, palette, menus */
+  --surface-overlay: #1b1b1d; /* dialogs, palette, menus */
   --scrim: rgba(4, 6, 10, 0.6);
   --text-body: var(--fg-1);
   --text-muted: var(--fg-2);
   --text-hint: var(--fg-3);
   --link: var(--accent);
   --link-hover: var(--accent-hover);
-  --focus-ring: rgba(91, 140, 255, 0.55);
-  --selection-bg: rgba(91, 140, 255, 0.28);
-  --chat-user-bg: #2c2020;
+  --focus-ring: rgba(143, 181, 255, 0.55);
+  --selection-bg: rgba(143, 181, 255, 0.28);
+  --chat-user-bg: #29292b;
+  --terminal-bg: #0c0c0d;
+  --terminal-fg: #f1f1f3;
 }
 
 [data-theme='light'] {
   color-scheme: light;
 
-  --bg-0: #eceef2;
-  --bg-1: #f5f6f8;
-  --bg-2: #ffffff;
-  --bg-3: #f2f4f7;
-  --bg-4: #e8ebf1;
+  /* Cool, high-contrast operations console. */
+  --bg-0: #eef0f3;
+  --bg-1: #ffffff;
+  --bg-2: #f6f7f9;
+  --bg-3: #eef0f3;
+  --bg-4: #e3e6ea;
 
-  --border-1: #e4e7ed;
-  --border-2: #d2d7e0;
+  --border-1: #d6dbe3;
+  --border-2: #bcc5d2;
 
-  --fg-1: #1b202b;
-  --fg-2: #5d6575;
-  --fg-3: #8a91a1;
-  --fg-disabled: #b6bcc9;
+  --fg-1: #20242b;
+  --fg-2: #555e6e;
+  --fg-3: #7c8697;
+  --fg-disabled: #adb5c1;
 
-  --accent: #3d6ee8;
-  --accent-hover: #2f5fd8;
-  --accent-active: #2751bd;
+  --accent: #0967c6;
+  --accent-hover: #0758aa;
+  --accent-active: #054b92;
   --accent-fg: #ffffff;
-  --accent-muted: rgba(61, 110, 232, 0.1);
-  --accent-border: rgba(61, 110, 232, 0.4);
+  --accent-muted: rgba(9, 103, 198, 0.09);
+  --accent-border: rgba(9, 103, 198, 0.55);
 
   --status-idle: #8a91a1;
   --status-working: #b57d17;
@@ -107,22 +110,24 @@
   --danger: #d63a44;
   --danger-hover: #c02832;
   --danger-muted: rgba(214, 58, 68, 0.09);
-  --info: #3d6ee8;
-  --info-muted: rgba(61, 110, 232, 0.1);
+  --info: #0967c6;
+  --info-muted: rgba(9, 103, 198, 0.1);
 
   --diff-add-bg: rgba(31, 157, 77, 0.1);
   --diff-add-accent: #1f9d4d;
   --diff-del-bg: rgba(214, 58, 68, 0.09);
   --diff-del-accent: #d63a44;
-  --diff-hunk-bg: rgba(61, 110, 232, 0.07);
+  --diff-hunk-bg: rgba(9, 103, 198, 0.07);
 
-  --surface-app: var(--bg-1);
-  --surface-panel: var(--bg-2);
-  --surface-card: var(--bg-2);
-  --surface-well: #f0f1f4;
+  --surface-app: #ffffff;
+  --surface-panel: #f6f7f9;
+  --surface-card: #ffffff;
+  --surface-well: #f1f3f6;
   --surface-overlay: #ffffff;
   --scrim: rgba(23, 28, 38, 0.35);
-  --focus-ring: rgba(61, 110, 232, 0.45);
-  --selection-bg: rgba(61, 110, 232, 0.2);
-  --chat-user-bg: #f0e5e5;
+  --focus-ring: rgba(9, 103, 198, 0.45);
+  --selection-bg: rgba(9, 103, 198, 0.18);
+  --chat-user-bg: #ffffff;
+  --terminal-bg: #ffffff;
+  --terminal-fg: #20242b;
 }

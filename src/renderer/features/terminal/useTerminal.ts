@@ -24,8 +24,8 @@ function cssVar(style: CSSStyleDeclaration, name: string, fallback: string): str
 function terminalThemeFromCss(): ITheme {
   const style = getComputedStyle(document.documentElement);
   return {
-    background: cssVar(style, '--surface-well', '#07090d'),
-    foreground: cssVar(style, '--fg-1', '#e6e9ef'),
+    background: cssVar(style, '--terminal-bg', '#0c0c0d'),
+    foreground: cssVar(style, '--terminal-fg', '#f1f1f3'),
     cursor: cssVar(style, '--accent', '#5b8cff'),
     selectionBackground: cssVar(style, '--selection-bg', 'rgba(91, 140, 255, 0.28)'),
   };

@@ -92,7 +92,9 @@ export function TasksPanel({
       data-testid="tasks-panel"
     >
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-1 bg-surface-panel px-4">
-        <span className="text-sm font-semibold text-fg-1">Tasks</span>
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-2">
+          Tasks
+        </span>
         <Button
           variant="primary"
           size="sm"

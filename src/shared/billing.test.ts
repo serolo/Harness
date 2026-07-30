@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { calculateTurnBilling } from './billing';
+import {
+  calculateTurnBilling,
+  formatTokenCount,
+  formatUsdMicros,
+} from './billing';
 
 describe('calculateTurnBilling', () => {
   it('prices uncached, cache-read, cache-write, and output tokens separately', () => {
@@ -36,5 +40,16 @@ describe('calculateTurnBilling', () => {
     expect(
       calculateTurnBilling('codex', undefined, { inputTokens: 100 }),
     ).toBeNull();
+  });
+
+  it('formats token counts for compact transcript labels', () => {
+    expect(formatTokenCount(317_297)).toBe('317k');
+    expect(formatTokenCount(1_297)).toBe('1.3k');
+    expect(formatTokenCount(1_250_000)).toBe('1.3M');
+  });
+
+  it('formats an exact zero cost without decimal places', () => {
+    expect(formatUsdMicros(0)).toBe('$0');
+    expect(formatUsdMicros(123_400)).toBe('$0.1234');
   });
 });

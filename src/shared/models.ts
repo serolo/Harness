@@ -66,6 +66,8 @@ export interface CreateWorkspaceReq {
   projectId: string;
   /** Explicit city name; allocated from the city list when omitted. */
   name?: string;
+  /** Explicit managed worktree directory name; defaults to the workspace name. */
+  worktreeName?: string;
   /** Explicit branch; derived as `<prefix>/<name>` when omitted. */
   branch?: string;
   /** Base ref the worktree branches from (defaults to the project default branch). */

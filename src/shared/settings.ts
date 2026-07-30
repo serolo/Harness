@@ -90,6 +90,24 @@ export interface AppearanceSettings {
   theme: AppearanceTheme;
 }
 
+/** Optional project knowledge wiki. Disabled by default. */
+export interface KnowledgeSettings {
+  enabled: boolean;
+  storage: 'local' | 'github';
+  proposal_mode: 'review_required';
+  inject_context: boolean;
+  extract_after_turn: boolean;
+  show_notifications: boolean;
+  search: {
+    enabled: boolean;
+    provider: 'qmd' | 'basic' | 'none';
+    max_results: number;
+    max_context_tokens: number;
+    index_sources: boolean;
+    rerank: boolean;
+  };
+}
+
 /**
  * The full merged settings object. The layered merge (`src/main/settings`) fills
  * every section from defaults, so a consumer always receives a fully-populated
@@ -105,11 +123,14 @@ export interface EffectiveSettings {
   mcp: McpServerConfig[];
   notifications: NotificationSettings;
   appearance: AppearanceSettings;
+  /** `[knowledge]` — project wiki, opt-in and local-first. */
+  knowledge: KnowledgeSettings;
 }
 
 /**
  * The four settings layers, in precedence order (low → high). `default` is the
- * schema's built-in defaults; the other three are the on-disk TOML files. Used as
+ * schema's built-in defaults; project-shared is stored in SQLite, while user and
+ * project-local remain TOML layers. Used as
  * the provenance tag (which layer supplied a leaf) and as the write target for
  * `settings:set` (`default` is NOT writable).
  */

@@ -1,0 +1,45 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/sebastian.romero/src/Serolo/Harness/.codex/hooks/block-on-main.sh'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/sebastian.romero/src/Serolo/Harness/.codex/hooks/security-guard.sh'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/sebastian.romero/src/Serolo/Harness/.codex/hooks/post-edit-checks.sh'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/sebastian.romero/src/Serolo/Harness/.codex/hooks/stop-validate.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

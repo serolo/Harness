@@ -11,13 +11,15 @@ import { OnboardingWizard } from './OnboardingWizard';
 import type { OnboardingState } from '@shared/ipc';
 import { createQueryClient } from '@renderer/app/providers';
 
-const ACK_KEY = 'harness.onboarding.acknowledged';
-
 function installApi(state: OnboardingState | undefined): {
   invoke: ReturnType<typeof vi.fn>;
 } {
   const invoke = vi.fn((channel: string) => {
     if (channel === 'onboarding:state') return Promise.resolve(state);
+    if (channel === 'knowledge:installQmd') {
+      return Promise.resolve({ installed: true, version: 'qmd 2.1.0' });
+    }
+    if (channel === 'onboarding:acknowledge') return Promise.resolve();
     if (channel === 'settings:getEffective') {
       return Promise.resolve({
         appearance: { theme: 'dark' },
@@ -26,6 +28,12 @@ function installApi(state: OnboardingState | undefined): {
     }
     if (channel === 'settings:getProvenance') return Promise.resolve({});
     if (channel === 'settings:getIssues') return Promise.resolve([]);
+    if (channel === 'settings:set') {
+      return Promise.resolve({
+        appearance: { theme: 'light' },
+        notifications: { completionSound: 'none' },
+      });
+    }
     return Promise.resolve(undefined);
   });
   (window as unknown as { api: unknown }).api = {
@@ -48,12 +56,13 @@ const INCOMPLETE: OnboardingState = {
   harnessReady: true,
   githubConnected: false,
   hasProjects: false,
+  qmdInstalled: false,
+  acknowledged: false,
   complete: false,
 };
 
 afterEach(() => {
   vi.restoreAllMocks();
-  window.localStorage.clear();
   delete (window as unknown as { api?: unknown }).api;
 });
 
@@ -71,11 +80,12 @@ describe('OnboardingWizard', () => {
   });
 
   it('does not fetch or show once already acknowledged', () => {
-    window.localStorage.setItem(ACK_KEY, '1');
-    const { invoke } = installApi(INCOMPLETE);
+    const { invoke } = installApi({ ...INCOMPLETE, acknowledged: true });
     renderWizard();
-    expect(screen.queryByTestId('onboarding-wizard')).toBeNull();
-    expect(invoke).not.toHaveBeenCalled();
+    return waitFor(() => {
+      expect(screen.queryByTestId('onboarding-wizard')).toBeNull();
+      expect(invoke).toHaveBeenCalledWith('onboarding:state', undefined);
+    });
   });
 
   it('shows setup steps + the unsandboxed-exec disclosure', async () => {
@@ -94,14 +104,51 @@ describe('OnboardingWizard', () => {
       'false',
     );
     expect(screen.queryByTestId('onboarding-step-project')).toBeNull();
+    expect(screen.getByTestId('onboarding-step-qmd')).toHaveAttribute(
+      'data-done',
+      'false',
+    );
     expect(screen.queryByText('Linear')).toBeNull();
-    expect(screen.queryByText('Theme')).toBeNull();
+    expect(screen.getByText('Theme')).toBeInTheDocument();
+    expect(screen.getByTestId('onboarding-theme')).toHaveValue('dark');
     expect(screen.getByText('Completion sound')).toBeInTheDocument();
 
     // The disclosure is present and names the key security facts.
     const disclosure = screen.getByTestId('onboarding-disclosure');
     expect(disclosure).toHaveTextContent(/not sandboxed/i);
     expect(disclosure).toHaveTextContent(/user account’s privileges/i);
+  });
+
+  it('persists the selected theme through user settings', async () => {
+    const { invoke } = installApi(INCOMPLETE);
+    renderWizard();
+
+    fireEvent.change(await screen.findByTestId('onboarding-theme'), {
+      target: { value: 'light' },
+    });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('settings:set', {
+        layer: 'user',
+        keyPath: 'appearance.theme',
+        value: 'light',
+      }),
+    );
+  });
+
+  it('offers an optional QMD installation', async () => {
+    const { invoke } = installApi(INCOMPLETE);
+    renderWizard();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Install QMD' }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('knowledge:installQmd', undefined),
+    );
+    expect(screen.getByTestId('onboarding-step-qmd')).toHaveAttribute(
+      'data-done',
+      'true',
+    );
   });
 
   it('gates "Get started" on the acknowledgement, then persists + hides', async () => {
@@ -121,6 +168,9 @@ describe('OnboardingWizard', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('onboarding-wizard')).toBeNull(),
     );
-    expect(window.localStorage.getItem(ACK_KEY)).toBe('1');
+    expect(window.api.invoke).toHaveBeenCalledWith(
+      'onboarding:acknowledge',
+      undefined,
+    );
   });
 });

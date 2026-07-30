@@ -7,7 +7,7 @@
 // time; the `TaskScheduler` (`src/main/scheduler`) fires timed tasks and drains queued
 // ones. The `todos` feature (harness.ts `Todo`) is unrelated and untouched.
 
-import type { AgentMode } from './harness';
+import type { AgentMode, HarnessId } from './harness';
 
 /**
  * The lifecycle state of a scheduled task (design doc §4.1 state machine).
@@ -44,6 +44,8 @@ export interface ScheduledTask {
   errorMessage: string | null;
   createdAt: number; // epoch millis
   updatedAt: number; // epoch millis
+  /** Optional execution harness selected with the provider model catalogue. */
+  harnessOverride: HarnessId | null;
 }
 
 /**
@@ -58,6 +60,8 @@ export interface CreateTaskReq {
   mode?: AgentMode;
   scheduledAt?: number;
   origin?: TaskOrigin; // defaults to 'user'
+  /** Execute with this harness instead of the workspace's configured harness. */
+  harnessOverride?: HarnessId;
 }
 
 /**
@@ -72,6 +76,8 @@ export interface UpdateTaskReq {
   model?: string | null;
   mode?: AgentMode | null;
   scheduledAt?: number | null;
+  /** Change or clear the task-specific execution harness. */
+  harnessOverride?: HarnessId | null;
 }
 
 /** Preset dropdown values — `claude --model` accepts these family aliases. */

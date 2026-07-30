@@ -25,6 +25,13 @@ describe('resolveDeepLink — valid routes', () => {
     });
   });
 
+  it('resolves a workspace + knowledge pane', () => {
+    expect(resolveDeepLink('harness://workspace/ws-123/knowledge')).toEqual({
+      workspaceId: 'ws-123',
+      pane: 'knowledge',
+    });
+  });
+
   it('ignores a query string / fragment', () => {
     expect(resolveDeepLink('harness://workspace/ws-1?ref=notif#x')).toEqual({
       workspaceId: 'ws-1',

@@ -32,7 +32,7 @@ export const useWorkspaceCreationStore = create<WorkspaceCreationState>((set) =>
 export function createWorkspaceInBackground(
   request: CreateWorkspaceReq,
   onCreated: (workspaceId: string) => void,
-): void {
+): string {
   const runId = globalThis.crypto.randomUUID();
   useWorkspaceCreationStore.setState({
     current: {
@@ -94,4 +94,5 @@ export function createWorkspaceInBackground(
         },
       });
     });
+  return runId;
 }

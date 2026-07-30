@@ -4,8 +4,8 @@
 // after the Electron `app` has initialized, so evaluating a path at import time (before
 // app-ready) would throw or resolve to the wrong place. See spec §2.3 for the layout.
 
-import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { app } from 'electron';
 
 /**
@@ -52,6 +52,50 @@ function ensureDir(dir: string): string {
   return dir;
 }
 
+const ROOT_DIRECTORY_FILE = 'root-directory.json';
+
+/** Default location for repositories, worktrees, and project-owned files. */
+export function defaultRootDirectory(): string {
+  // Keep path tests and isolated dev instances inside their explicit data root.
+  if (
+    userDataRootOverride !== undefined ||
+    (process.env.AGENTAPP_USER_DATA ?? '') !== ''
+  ) {
+    return join(userDataRoot(), 'harness');
+  }
+  return join(app.getPath('home'), 'harness');
+}
+
+/** Current managed-project root, falling back safely when the preference is absent. */
+export function rootDirectory(): string {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(join(userDataRoot(), ROOT_DIRECTORY_FILE), 'utf8'),
+    ) as { path?: unknown };
+    if (typeof parsed.path === 'string' && isAbsolute(parsed.path)) {
+      return ensureDir(parsed.path);
+    }
+  } catch {
+    // Missing or malformed preferences use the documented default.
+  }
+  return ensureDir(defaultRootDirectory());
+}
+
+/** Validate and persist the managed-project root. Existing files are never moved. */
+export function setRootDirectory(path: string): string {
+  if (!isAbsolute(path)) {
+    throw new Error('Root directory must be an absolute path.');
+  }
+  const normalized = resolve(path);
+  ensureDir(normalized);
+  writeFileSync(
+    join(userDataRoot(), ROOT_DIRECTORY_FILE),
+    `${JSON.stringify({ path: normalized }, null, 2)}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  return normalized;
+}
+
 // --- File paths (the parent dir is the userData root, created by Electron itself) ---
 
 /** `<userData>/app.db` — the SQLite database file. */
@@ -62,6 +106,11 @@ export function dbPath(): string {
 /** `<userData>/settings.toml` — user-level settings file. */
 export function settingsPath(): string {
   return join(userDataRoot(), 'settings.toml');
+}
+
+/** `<userData>/onboarding.json` — durable onboarding acknowledgement state. */
+export function onboardingStatePath(): string {
+  return join(userDataRoot(), 'onboarding.json');
 }
 
 // --- Directory paths (created on first access) ---
@@ -78,7 +127,7 @@ export function secretsDir(): string {
 
 /** `<userData>/projects/<id>/` — root for a single project's on-disk state. */
 export function projectDir(id: string): string {
-  return ensureDir(join(userDataRoot(), 'projects', id));
+  return ensureDir(join(rootDirectory(), 'projects', id));
 }
 
 /** `<userData>/projects/<id>/repo` — the base clone (default-branch checkout). */
@@ -94,4 +143,14 @@ export function worktreesDir(id: string): string {
 /** `<userData>/projects/<id>/worktrees/<name>` — one workspace's git worktree. */
 export function worktreeDir(id: string, name: string): string {
   return ensureDir(join(worktreesDir(id), name));
+}
+
+/** `<userData>/projects/<id>/knowledge` — canonical OKF v0.1 Git bundle. */
+export function knowledgeDir(id: string): string {
+  return ensureDir(join(projectDir(id), 'knowledge'));
+}
+
+/** `<userData>/projects/<id>/knowledge-proposals` — isolated review proposals. */
+export function knowledgeProposalsDir(id: string): string {
+  return ensureDir(join(projectDir(id), 'knowledge-proposals'));
 }

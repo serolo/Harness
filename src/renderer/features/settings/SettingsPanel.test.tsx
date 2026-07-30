@@ -51,6 +51,22 @@ const EFFECTIVE: EffectiveSettings = {
   appearance: {
     theme: 'dark',
   },
+  knowledge: {
+    enabled: false,
+    storage: 'local',
+    proposal_mode: 'review_required',
+    inject_context: true,
+    extract_after_turn: true,
+    show_notifications: true,
+    search: {
+      enabled: true,
+      provider: 'basic',
+      max_results: 12,
+      max_context_tokens: 12_000,
+      index_sources: false,
+      rerank: true,
+    },
+  },
 };
 
 const PROVENANCE: SettingsProvenance = {
@@ -66,7 +82,10 @@ interface Installed {
   unsubscribe: ReturnType<typeof vi.fn>;
 }
 
-function installApi(issues: SettingsIssue[] = []): Installed {
+function installApi(
+  issues: SettingsIssue[] = [],
+  projectEffective: EffectiveSettings = EFFECTIVE,
+): Installed {
   const listeners: Record<string, ((payload: unknown) => void)[]> = {};
   const unsubscribe = vi.fn();
 
@@ -92,10 +111,26 @@ function installApi(issues: SettingsIssue[] = []): Installed {
       case 'settings:getProject':
       case 'settings:setProject':
         return Promise.resolve({
-          settings: EFFECTIVE,
+          settings: projectEffective,
           provenance: PROVENANCE,
           issues: [],
         });
+      case 'knowledge:importZip':
+        return Promise.resolve({
+          imported: true,
+          fileCount: 3,
+          createdCount: 2,
+          updatedCount: 1,
+          commit: 'abc',
+        });
+      case 'knowledge:updateCatalog':
+        return Promise.resolve({
+          updated: true,
+          pageCount: 4,
+          commit: 'def',
+        });
+      case 'knowledge:qmdStatus':
+        return Promise.resolve({ installed: false });
       case 'git:sshKeys':
         return Promise.resolve([
           {
@@ -135,6 +170,19 @@ function installApi(issues: SettingsIssue[] = []): Installed {
         ]);
       case 'settings:set':
         return Promise.resolve(EFFECTIVE);
+      case 'app:getRootDirectory':
+        return Promise.resolve({
+          path: '/Users/test/harness',
+          defaultPath: '/Users/test/harness',
+        });
+      case 'app:isDevelopment':
+        return Promise.resolve(true);
+      case 'app:resetDevelopmentData':
+        return Promise.resolve(undefined);
+      case 'app:pickRootDirectory':
+        return Promise.resolve('/Volumes/Work/harness');
+      case 'app:setRootDirectory':
+        return Promise.resolve({ path: '/Volumes/Work/harness' });
       case 'notifications:previewSound':
         return Promise.resolve(undefined);
       default:
@@ -161,6 +209,44 @@ afterEach(() => {
 });
 
 describe('SettingsPanel rendering', () => {
+  it('shows and changes the Harness root directory', async () => {
+    const { api } = installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-advanced'));
+    expect(await screen.findByTestId('advanced-root-directory')).toHaveValue(
+      '/Users/test/harness',
+    );
+
+    fireEvent.click(screen.getByTestId('advanced-root-browse'));
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('app:setRootDirectory', {
+        path: '/Volumes/Work/harness',
+      }),
+    );
+    expect(screen.getByTestId('advanced-root-directory')).toHaveValue(
+      '/Volumes/Work/harness',
+    );
+  });
+
+  it('confirms and requests a development data reset', async () => {
+    const { api } = installApi();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-advanced'));
+    fireEvent.click(
+      await screen.findByTestId('advanced-reset-development-data'),
+    );
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith(
+        'app:resetDevelopmentData',
+        undefined,
+      ),
+    );
+  });
+
   it('renders values + provenance badges from getEffective/getProvenance', async () => {
     installApi();
     render(<SettingsPanel />);
@@ -233,11 +319,89 @@ describe('SettingsPanel rendering', () => {
 });
 
 describe('SettingsPanel writes', () => {
+  it('separates repository scripts from project knowledge with top tabs', async () => {
+    installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+
+    const scriptsTab = await screen.findByTestId('repo-settings-tab-scripts');
+    const knowledgeTab = screen.getByTestId('repo-settings-tab-knowledge');
+    expect(scriptsTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('repo-setup-script')).toBeTruthy();
+    expect(
+      screen.queryByRole('switch', { name: 'Enable project knowledge wiki' }),
+    ).toBeNull();
+
+    fireEvent.click(knowledgeTab);
+
+    expect(knowledgeTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByTestId('repo-setup-script')).toBeNull();
+    expect(
+      screen.getByRole('switch', { name: 'Enable project knowledge wiki' }),
+    ).toBeTruthy();
+  });
+
+  it('imports an existing knowledge ZIP from the project knowledge tab', async () => {
+    const projectEffective = structuredClone(EFFECTIVE);
+    projectEffective.knowledge.enabled = true;
+    const { api } = installApi([], projectEffective);
+    render(<SettingsPanel />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+    fireEvent.click(await screen.findByTestId('repo-settings-tab-knowledge'));
+    fireEvent.click(await screen.findByTestId('knowledge-import-zip'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('knowledge:importZip', {
+        projectId: 'project-1',
+      }),
+    );
+    expect(
+      await screen.findByTestId('knowledge-import-message'),
+    ).toHaveTextContent('Imported 3 files: 2 new, 1 updated.');
+  });
+
+  it('updates the knowledge catalog from project settings', async () => {
+    const projectEffective = structuredClone(EFFECTIVE);
+    projectEffective.knowledge.enabled = true;
+    const { api } = installApi([], projectEffective);
+    render(<SettingsPanel />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+    fireEvent.click(await screen.findByTestId('repo-settings-tab-knowledge'));
+    fireEvent.click(await screen.findByTestId('knowledge-update-catalog'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('knowledge:updateCatalog', {
+        projectId: 'project-1',
+      }),
+    );
+    expect(
+      await screen.findByTestId('knowledge-catalog-message'),
+    ).toHaveTextContent('Catalog updated with 4 pages.');
+  });
+
+  it('disables QMD selection when its CLI is not installed', async () => {
+    const projectEffective = structuredClone(EFFECTIVE);
+    projectEffective.knowledge.enabled = true;
+    installApi([], projectEffective);
+    render(<SettingsPanel />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+    fireEvent.click(await screen.findByTestId('repo-settings-tab-knowledge'));
+
+    const qmdOption = screen.getByRole('option', {
+      name: 'QMD (not installed)',
+    }) as HTMLOptionElement;
+    expect(qmdOption.disabled).toBe(true);
+  });
+
   it('lists projects and persists all repository script controls', async () => {
     const { api } = installApi();
     render(<SettingsPanel />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Repo' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
     expect(await screen.findByText('/src/harness')).toBeTruthy();
 
     const setup = await screen.findByTestId('repo-setup-script');

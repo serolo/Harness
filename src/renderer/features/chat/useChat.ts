@@ -13,7 +13,7 @@ import type {
 } from '@shared/harness';
 import type { ChatHistory } from '@shared/ipc';
 import { calculateTurnBilling } from '@shared/billing';
-import { invoke, subscribeStream } from '@renderer/ipc';
+import { invoke, onEvent, subscribeStream } from '@renderer/ipc';
 import { useChatStore, type RenderedTurn } from '@renderer/stores/chat';
 
 /** Stable empty-array reference so the `turns` selector doesn't loop on `?? []`. */
@@ -26,7 +26,17 @@ function historyToTurns(history: ChatHistory): RenderedTurn[] {
     status: t.status,
     mode: t.mode ?? undefined,
     sessionId: t.sessionId ?? undefined,
-    events: t.events.map((e) => e.event),
+    events: t.events
+      .map((e) => e.event)
+      .reduce<AgentEvent[]>((events, event) => {
+        const previous = events.at(-1);
+        if (previous?.kind === 'text' && event.kind === 'text') {
+          previous.delta += event.delta;
+        } else {
+          events.push(structuredClone(event));
+        }
+        return events;
+      }, []),
     startedAt: t.startedAt,
     endedAt: t.endedAt ?? undefined,
     harness: t.harness ?? undefined,
@@ -93,6 +103,21 @@ export function useChat(workspaceId: string | null): UseChat {
       active = false;
     };
   }, [workspaceId, hydrate]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    return onEvent(
+      'knowledge:proposalsCreated',
+      ({ workspaceId: eventWorkspaceId, projectId, proposalIds }) => {
+        if (eventWorkspaceId !== workspaceId) return;
+        appendEvent(workspaceId, {
+          kind: 'knowledge_proposal',
+          projectId,
+          proposalIds,
+        });
+      },
+    );
+  }, [workspaceId, appendEvent]);
 
   const sendTurn = useCallback(
     async (

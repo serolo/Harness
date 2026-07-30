@@ -32,6 +32,12 @@ export interface ProjectsTable {
   created_at: number; // INTEGER NOT NULL — epoch millis
 }
 
+export interface ProjectSettingsTable {
+  project_id: string;
+  settings_json: string;
+  updated_at: number;
+}
+
 /**
  * `workspaces` table (spec §3 DDL). Nullable columns per the DDL:
  * worktree_path, source_kind, source_ref, port, archived_at.
@@ -180,6 +186,7 @@ export interface ScheduledTasksTable {
   error_message: string | null; // TEXT — NULL unless firing/the turn failed
   created_at: number; // INTEGER NOT NULL — epoch millis
   updated_at: number; // INTEGER NOT NULL — epoch millis
+  harness_override: HarnessId | null; // TEXT — NULL = use workspace harness
 }
 
 /**
@@ -190,6 +197,7 @@ export interface ScheduledTasksTable {
  */
 export interface Database {
   projects: ProjectsTable;
+  project_settings: ProjectSettingsTable;
   workspaces: WorkspacesTable;
   turns: TurnsTable;
   events: EventsTable;

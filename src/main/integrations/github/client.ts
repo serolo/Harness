@@ -60,6 +60,7 @@ interface RestPull {
   title: string;
   draft?: boolean;
   state?: string;
+  merged_at?: string | null;
   mergeable_state?: string;
   user?: { login?: string } | null;
   updated_at?: string;
@@ -421,7 +422,7 @@ export class GithubClient {
       title: pr.title,
       draft: pr.draft ?? false,
       mergeableState: pr.mergeable_state ?? 'unknown',
-      state: pr.state,
+      state: pr.merged_at ? 'merged' : pr.state,
     };
   }
 

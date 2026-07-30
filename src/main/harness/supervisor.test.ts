@@ -213,6 +213,39 @@ describe('HarnessSupervisor turn lifecycle', () => {
     await waitForFinalized(h.recorder, h.workspace.id);
   });
 
+  it('persists the display prompt and selected knowledge separately', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const h = await makeHarness(db, new MockHarness());
+    const { sink, done, events } = collectSink();
+
+    await h.supervisor.startTurn(
+      h.workspace.id,
+      {
+        ...baseOpts,
+        prompt:
+          'hello\n\n<project_knowledge>private context</project_knowledge>',
+        displayPrompt: 'hello',
+        knowledgeSources: [{ path: 'index.md', title: 'Project knowledge' }],
+      },
+      sink,
+    );
+    await done;
+
+    const turns = await h.recorder.history(h.workspace.id);
+    expect(turns[0].events[0]?.event).toEqual({
+      kind: 'user_message',
+      text: 'hello',
+    });
+    expect(turns[0].events[1]?.event).toEqual({
+      kind: 'knowledge_context',
+      sources: [{ path: 'index.md', title: 'Project knowledge' }],
+    });
+    expect(events).toContainEqual({
+      kind: 'knowledge_context',
+      sources: [{ path: 'index.md', title: 'Project knowledge' }],
+    });
+  });
+
   it('interrupt records an interrupted turn and clears the registry', async () => {
     db = openDb(join(tmpDir, 'test.db'));
     const mock = new MockHarness({

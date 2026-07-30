@@ -39,13 +39,10 @@ export function ProjectGroup({
     }
   }, [data, project.id, setProjectWorkspaces]);
 
-  // `defaultExpanded` can become true after workspace queries restore the last
-  // selection. Open that project when it becomes current, but do not force it
-  // closed later or prevent the user from collapsing it manually.
+  // Keep the accordion aligned with the active project. Restoring or selecting a
+  // workspace opens its project and closes every sibling project.
   useEffect(() => {
-    if (defaultExpanded) {
-      setExpanded(true);
-    }
+    setExpanded(defaultExpanded);
   }, [defaultExpanded]);
 
   function selectSession(workspaceId: string): void {

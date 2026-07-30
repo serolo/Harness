@@ -16,7 +16,7 @@ import type { DeepLinkTarget } from '@shared/ipc';
 const SCHEME_PREFIX = 'harness://';
 
 /** The panes a deep link may target within a workspace. */
-const PANES = new Set(['diff', 'pr']);
+const PANES = new Set(['diff', 'pr', 'knowledge']);
 
 /**
  * Resolve an `harness://workspace/<id>[/diff|/pr]` URL into a nav target, or `null`

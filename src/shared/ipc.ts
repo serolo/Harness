@@ -58,6 +58,22 @@ import type {
 import type { SlashCommand } from './slash';
 import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
 import type { MonthlyUsage } from './billing';
+import type {
+  CreateWikiProposalInput,
+  KnowledgeConfig,
+  QmdStatus,
+  WikiHistoryEntry,
+  WikiImportResult,
+  WikiCatalogUpdateResult,
+  WikiLintResult,
+  WikiPage,
+  WikiPageSummary,
+  WikiProposal,
+  WikiSearchResult,
+  AgentMemoryDiscovery,
+  AgentMemoryProposalResult,
+  AgentMemoryProvider,
+} from './knowledge';
 
 /**
  * Main-side push handle produced by the stream helper `createStream()`
@@ -134,6 +150,21 @@ export interface Commands {
   // The actual chunks flow over the StreamChannels entry of the same name.
   'app:echoStream': { req: { text: string }; res: void };
 
+  /** Whether destructive fresh-install tooling is available in this process. */
+  'app:isDevelopment': { req: void; res: boolean };
+  /** Clear all Harness-owned state and restart. Rejected outside a development run. */
+  'app:resetDevelopmentData': { req: void; res: void };
+  /** Return the branch currently checked out in a project's primary checkout. */
+  'project:getCurrentBranch': {
+    req: { projectId: string };
+    res: { branch: string };
+  };
+  /** Suggest collision-safe initial names for the New Workspace form. */
+  'workspace:suggestNames': {
+    req: { projectId: string };
+    res: { workspaceName: string; worktreeName: string; branchName: string };
+  };
+
   // --- Phase 1: projects + workspaces (APPEND-ONLY) ---
   /** Register a local repo directory as a project (resolves its default branch). */
   'project:add': { req: { localPath: string }; res: Project };
@@ -142,10 +173,27 @@ export interface Commands {
   /** Fetch latest refs, then list branches available as workspace base refs. */
   'project:listBranches': {
     req: { projectId: string };
-    res: { defaultBranch: string; branches: string[] };
+    res: {
+      defaultBranch: string;
+      branches: string[];
+      /** Present when remote refresh failed and cached local refs were returned. */
+      fetchWarning?: string;
+    };
   };
   /** Open the OS directory picker; resolves the chosen path or null if cancelled. */
   'project:pickDirectory': { req: void; res: string | null };
+  /** Read the directory where Harness stores managed repositories and workspaces. */
+  'app:getRootDirectory': {
+    req: void;
+    res: { path: string; defaultPath: string };
+  };
+  /** Persist a new managed root. Existing files are intentionally not moved. */
+  'app:setRootDirectory': { req: { path: string }; res: { path: string } };
+  /** Choose a managed root with the native directory picker. */
+  'app:pickRootDirectory': {
+    req: { defaultPath?: string };
+    res: string | null;
+  };
   /** List a project's workspaces (archived filtered out unless `includeArchived`). */
   'workspace:list': {
     req: { projectId: string; includeArchived?: boolean };
@@ -323,7 +371,7 @@ export interface Commands {
     req: { projectId: string };
     res: ProjectSettingsSnapshot;
   };
-  /** Write a repository setting to its committed `.harness/settings.toml`. */
+  /** Write a repository setting to the app database. */
   'settings:setProject': {
     req: { projectId: string; keyPath: string; value: unknown };
     res: ProjectSettingsSnapshot;
@@ -349,6 +397,8 @@ export interface Commands {
   'update:install': { req: void; res: void };
   /** Compose the onboarding readiness state (harness / GitHub / projects) (spec §7). */
   'onboarding:state': { req: void; res: OnboardingState };
+  /** Persist completion of the current onboarding version in the main process. */
+  'onboarding:acknowledge': { req: void; res: void };
   /**
    * Layer validation issues from the most recent non-throwing settings load
    * (`loadResult` / hot-reload). Lets the Settings UI point at a bad file + key
@@ -425,6 +475,80 @@ export interface Commands {
   'task:runNow': { req: { id: string }; res: ScheduledTask };
   /** Mark a pending/scheduled/missed/error task done without running it. */
   'task:markDone': { req: { id: string }; res: ScheduledTask };
+
+  // --- Project Knowledge Wiki (APPEND-ONLY) ---
+  'knowledge:config': { req: { projectId: string }; res: KnowledgeConfig };
+  'knowledge:initialize': {
+    req: { projectId: string };
+    res: { commit: string };
+  };
+  'knowledge:listPages': {
+    req: { projectId: string };
+    res: WikiPageSummary[];
+  };
+  'knowledge:getPage': {
+    req: { projectId: string; path: string };
+    res: WikiPage;
+  };
+  'knowledge:search': {
+    req: { projectId: string; query: string; limit?: number };
+    res: WikiSearchResult[];
+  };
+  'knowledge:lint': { req: { projectId: string }; res: WikiLintResult };
+  'knowledge:createProposal': {
+    req: CreateWikiProposalInput;
+    res: WikiProposal;
+  };
+  'knowledge:listProposals': {
+    req: { projectId: string };
+    res: WikiProposal[];
+  };
+  'knowledge:acceptProposal': {
+    req: { projectId: string; proposalId: string };
+    res: WikiProposal;
+  };
+  'knowledge:rejectProposal': {
+    req: { projectId: string; proposalId: string; reason?: string };
+    res: WikiProposal;
+  };
+  'knowledge:history': {
+    req: { projectId: string };
+    res: WikiHistoryEntry[];
+  };
+  /** Rebuild index.md from the canonical OKF pages and commit changes. */
+  'knowledge:updateCatalog': {
+    req: { projectId: string };
+    res: WikiCatalogUpdateResult;
+  };
+  /** Detect the optional local QMD CLI used by the hybrid search provider. */
+  'knowledge:qmdStatus': { req: void; res: QmdStatus };
+  /** Install the optional QMD CLI after explicit user action. */
+  'knowledge:installQmd': { req: void; res: QmdStatus };
+  /** Pick an OKF ZIP bundle and create a secret-scanned review proposal. */
+  'knowledge:importZip': {
+    req: { projectId: string };
+    res: WikiImportResult;
+  };
+  /** Discover project-associated Claude Code or Codex memory for explicit review. */
+  'knowledge:discoverAgentMemory': {
+    req: { projectId: string; provider: AgentMemoryProvider };
+    res: AgentMemoryDiscovery;
+  };
+  /** Convert selected discovered memories into a pending wiki proposal. */
+  'knowledge:createAgentMemoryProposal': {
+    req: {
+      projectId: string;
+      provider: AgentMemoryProvider;
+      discoveryId: string;
+      sourceIds: string[];
+    };
+    res: AgentMemoryProposalResult;
+  };
+  /** Fetch the live GitHub state for the pull request linked to a workspace. */
+  'github:getWorkspacePr': {
+    req: { workspaceId: string };
+    res: PrSummary | null;
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -462,6 +586,12 @@ export interface Events {
   'checks:updated': { workspaceId: string; checks: unknown };
   /** Reserved (Phase 6): effective settings changed (hot-reload). */
   'settings:changed': Record<string, never>;
+  'knowledge:proposalsCreated': {
+    workspaceId: string;
+    turnId: string;
+    projectId: string;
+    proposalIds: string[];
+  };
   /** Reserved (Phase 2/5): a workspace needs the user's attention. */
   'notify:needsAttention': { workspaceId: string; reason: string };
   /** A scheduled task changed and subscribers should refetch that workspace's list. */
@@ -683,7 +813,7 @@ export interface WorkspaceArchivePreview {
  */
 export interface DeepLinkTarget {
   workspaceId: string;
-  pane?: 'diff' | 'pr';
+  pane?: 'diff' | 'pr' | 'knowledge';
 }
 
 /**
@@ -715,5 +845,7 @@ export interface OnboardingState {
   harnessReady: boolean;
   githubConnected: boolean;
   hasProjects: boolean;
+  qmdInstalled: boolean;
+  acknowledged: boolean;
   complete: boolean;
 }

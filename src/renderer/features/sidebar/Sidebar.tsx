@@ -1,13 +1,14 @@
 // Persistent project tree: every project is visible and expands to its sessions.
 
 import { useEffect, useState } from 'react';
-import { FolderPlus } from 'lucide-react';
+import { AlertTriangle, FolderPlus, X } from 'lucide-react';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useUiStore } from '@renderer/stores/ui';
 import { useProjects, useWorkspaceEvents } from './hooks';
 import { AddProjectMenu } from './AddProjectMenu';
 import { NewWorkspaceDialog } from './NewWorkspaceDialog';
 import { ProjectGroup } from './ProjectGroup';
+import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
 
 export function Sidebar(): React.JSX.Element {
   useWorkspaceEvents();
@@ -20,6 +21,8 @@ export function Sidebar(): React.JSX.Element {
   const dialogOpen = useUiStore((s) => s.newWorkspaceOpen);
   const setDialogOpen = useUiStore((s) => s.setNewWorkspaceOpen);
   const [addProjectOpen, setAddProjectOpen] = useState(false);
+  const creation = useWorkspaceCreationStore((state) => state.current);
+  const clearCreation = useWorkspaceCreationStore((state) => state.clear);
 
   useEffect(() => {
     setProjects(projects);
@@ -83,6 +86,48 @@ export function Sidebar(): React.JSX.Element {
           ))
         )}
       </div>
+
+      {creation?.status === 'error' ? (
+        <div
+          role="alert"
+          className="shrink-0 rounded-2 border border-danger/30 bg-danger-muted p-3"
+          data-testid="workspace-creation-error"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle
+              className="mt-0.5 h-4 w-4 shrink-0 text-danger"
+              aria-hidden
+            />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-danger">
+                Workspace creation failed
+              </p>
+              <p className="mt-1 break-words text-xs text-fg-2">
+                {creation.error ?? 'An unknown error occurred.'}
+              </p>
+              <button
+                type="button"
+                className="mt-2 text-xs font-medium text-accent hover:underline"
+                onClick={() => {
+                  clearCreation();
+                  selectProject(creation.projectId);
+                  setDialogOpen(true);
+                }}
+              >
+                Try again
+              </button>
+            </div>
+            <button
+              type="button"
+              aria-label="Dismiss workspace creation error"
+              className="rounded-1 p-1 text-fg-3 hover:bg-bg-3 hover:text-fg-1"
+              onClick={clearCreation}
+            >
+              <X className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {dialogOpen && (
         <NewWorkspaceDialog

@@ -150,6 +150,35 @@ describe('AppLayout deep-link navigation', () => {
 });
 
 describe('AppLayout terminal section', () => {
+  it('keeps visited workspace terminals mounted while switching workspaces', async () => {
+    installApi();
+    useWorkspacesStore.setState({
+      selectedWorkspaceId: 'ws-a',
+      selectedProjectId: 'project-1',
+    });
+    const { container } = render(
+      <Providers>
+        <AppLayout />
+      </Providers>,
+    );
+
+    await waitFor(() =>
+      expect(
+        container.querySelectorAll('[data-testid^="terminal-surface-"]'),
+      ).toHaveLength(1),
+    );
+
+    act(() => {
+      useWorkspacesStore.setState({ selectedWorkspaceId: 'ws-b' });
+    });
+
+    await waitFor(() =>
+      expect(
+        container.querySelectorAll('[data-testid^="terminal-surface-"]'),
+      ).toHaveLength(2),
+    );
+  });
+
   it('collapses the terminal row and gives the space back to git changes', async () => {
     const { listeners } = installApi();
     render(

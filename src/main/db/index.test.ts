@@ -78,16 +78,16 @@ const UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe('migration runner (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 10 (latest) and core tables + indexes exist', () => {
+  it('applies all migrations: user_version becomes 12 and the task harness column exists', () => {
     db = openDb(dbFile);
     expect(existsSync(dbFile)).toBe(true);
 
     // Inspect the raw file with a fresh handle (asserts persisted state, not the Kysely cache).
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      // A fresh database applies every registered migration through 0010.
+      // A fresh database applies every registered migration through 0012.
       const version = raw.pragma('user_version', { simple: true });
-      expect(version).toBe(10);
+      expect(version).toBe(12);
 
       const tables = raw
         .prepare(
@@ -104,6 +104,10 @@ describe('migration runner (fresh temp DB)', () => {
         .map((r) => (r as { name: string }).name);
       expect(indexes).toContain('idx_workspaces_project_id');
       expect(indexes).toContain('uidx_workspaces_project_id_name');
+      const taskColumns = (
+        raw.pragma('table_info(scheduled_tasks)') as Array<{ name: string }>
+      ).map((column) => column.name);
+      expect(taskColumns).toContain('harness_override');
     } finally {
       raw.close();
     }
@@ -134,7 +138,7 @@ describe('migration runner (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(10);
+      expect(raw.pragma('user_version', { simple: true })).toBe(12);
       // Exactly one projects table — a double-apply would have thrown "table already exists".
       const count = raw
         .prepare(

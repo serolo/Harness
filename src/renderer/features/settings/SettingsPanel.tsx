@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   Bot,
   CheckCircle2,
+  Folder,
   ExternalLink,
   GitBranch,
   FolderGit2,
@@ -17,7 +18,10 @@ import {
   Palette,
   RefreshCw,
   Settings2,
+  SlidersHorizontal,
   TerminalSquare,
+  Trash2,
+  Upload,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -25,6 +29,7 @@ import type { GithubAccount, GithubCliAuthStatus } from '@shared/github';
 import type { HarnessId } from '@shared/harness';
 import type { HarnessInfo } from '@shared/ipc';
 import type { Project } from '@shared/models';
+import type { QmdStatus } from '@shared/knowledge';
 import {
   isCompletionSound,
   type ProjectSettingsSnapshot,
@@ -47,6 +52,7 @@ import {
   resolveProviderModelId,
   visibleProviderModelGroups,
 } from '../chat/modelCatalog';
+import { AgentMemoryImport } from '../knowledge/AgentMemoryImport';
 
 export interface SettingsPanelProps {
   /** Close affordance for the overlay host (a header button). */
@@ -76,6 +82,7 @@ export function SettingsPanel({
   const [repoLoading, setRepoLoading] = useState(false);
   const [repoError, setRepoError] = useState<string | null>(null);
   const [agents, setAgents] = useState<HarnessInfo[]>([]);
+  const [qmdStatus, setQmdStatus] = useState<QmdStatus | null>(null);
 
   const updateSetting = (keyPath: string, value: unknown): void => {
     void set(keyPath, value)
@@ -91,6 +98,20 @@ export function SettingsPanel({
         // Writes are surfaced by useSettings; sound preview is best-effort.
       });
   };
+
+  useEffect(() => {
+    let active = true;
+    void invoke('knowledge:qmdStatus', undefined)
+      .then((status) => {
+        if (active) setQmdStatus(status);
+      })
+      .catch(() => {
+        if (active) setQmdStatus({ installed: false });
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -306,7 +327,7 @@ export function SettingsPanel({
               active={scope === 'repo'}
               onClick={() => setScope('repo')}
             >
-              Repo
+              Projects
             </ScopeTab>
           </div>
         </div>
@@ -349,6 +370,7 @@ export function SettingsPanel({
               loading={repoLoading}
               error={repoError}
               onSet={updateRepoSetting}
+              qmdStatus={qmdStatus}
             />
           ) : loading && effective === null ? (
             <div
@@ -445,12 +467,15 @@ export function SettingsPanel({
                 </SettingsSection>
               ) : null}
 
+              {activeSection === 'advanced' ? <AdvancedSettings /> : null}
+
               {activeSection !== 'general' &&
               activeSection !== 'models' &&
               activeSection !== 'agents' &&
               activeSection !== 'git' &&
               activeSection !== 'environment' &&
-              activeSection !== 'appearance' ? (
+              activeSection !== 'appearance' &&
+              activeSection !== 'advanced' ? (
                 <SettingsSection
                   title={SECTION_LABELS[activeSection]}
                   testId={`settings-section-${activeSection}`}
@@ -496,7 +521,13 @@ function isMissingIpcHandler(err: unknown): boolean {
 }
 
 type SettingsSectionId =
-  'general' | 'models' | 'agents' | 'environment' | 'git' | 'appearance';
+  | 'general'
+  | 'models'
+  | 'agents'
+  | 'environment'
+  | 'git'
+  | 'appearance'
+  | 'advanced';
 
 const SECTION_LABELS: Record<SettingsSectionId, string> = {
   general: 'General',
@@ -505,6 +536,7 @@ const SECTION_LABELS: Record<SettingsSectionId, string> = {
   environment: 'Environment',
   git: 'Git',
   appearance: 'Appearance',
+  advanced: 'Advanced',
 };
 
 const PRIMARY_NAV: Array<{
@@ -517,6 +549,7 @@ const PRIMARY_NAV: Array<{
   { id: 'environment', icon: Laptop },
   { id: 'git', icon: GitBranch },
   { id: 'appearance', icon: Palette },
+  { id: 'advanced', icon: SlidersHorizontal },
 ];
 
 function ScopeTab({
@@ -576,9 +609,6 @@ function ProjectSettingsNav({
 }): React.JSX.Element {
   return (
     <nav data-testid="repo-project-list">
-      <div className="px-3 pb-2 text-xs font-medium uppercase tracking-caps text-fg-3">
-        Projects
-      </div>
       <div className="space-y-1">
         {projects.map((project) => (
           <button
@@ -618,6 +648,7 @@ function RepoSettingsContent({
   loading,
   error,
   onSet,
+  qmdStatus,
 }: {
   projects: Project[];
   selectedProjectId: string | null;
@@ -625,8 +656,69 @@ function RepoSettingsContent({
   loading: boolean;
   error: string | null;
   onSet: (keyPath: string, value: unknown) => void;
+  qmdStatus: QmdStatus | null;
 }): React.JSX.Element {
+  const [activeProjectSection, setActiveProjectSection] = useState<
+    'scripts' | 'knowledge'
+  >('scripts');
+  const [knowledgeImporting, setKnowledgeImporting] = useState(false);
+  const [knowledgeImportMessage, setKnowledgeImportMessage] = useState<
+    string | null
+  >(null);
+  const [knowledgeCatalogUpdating, setKnowledgeCatalogUpdating] =
+    useState(false);
+  const [knowledgeCatalogMessage, setKnowledgeCatalogMessage] = useState<
+    string | null
+  >(null);
   const project = projects.find((item) => item.id === selectedProjectId);
+
+  const importKnowledgeZip = (): void => {
+    if (selectedProjectId === null) return;
+    setKnowledgeImporting(true);
+    setKnowledgeImportMessage(null);
+    void invoke('knowledge:importZip', { projectId: selectedProjectId })
+      .then((result) => {
+        if (result.proposalId) {
+          setKnowledgeImportMessage(
+            `Created a review proposal for ${result.fileCount} files: ${result.createdCount} new, ${result.updatedCount} updated.`,
+          );
+          return;
+        }
+        if (!result.imported) {
+          setKnowledgeImportMessage('Import canceled.');
+          return;
+        }
+        setKnowledgeImportMessage(
+          `Imported ${result.fileCount} files: ${result.createdCount} new, ${result.updatedCount} updated.`,
+        );
+      })
+      .catch((reason: unknown) =>
+        setKnowledgeImportMessage(
+          reason instanceof Error ? reason.message : String(reason),
+        ),
+      )
+      .finally(() => setKnowledgeImporting(false));
+  };
+
+  const updateKnowledgeCatalog = (): void => {
+    if (selectedProjectId === null) return;
+    setKnowledgeCatalogUpdating(true);
+    setKnowledgeCatalogMessage(null);
+    void invoke('knowledge:updateCatalog', { projectId: selectedProjectId })
+      .then((result) =>
+        setKnowledgeCatalogMessage(
+          result.updated
+            ? `Catalog updated with ${result.pageCount} pages.`
+            : `Catalog is already current with ${result.pageCount} pages.`,
+        ),
+      )
+      .catch((reason: unknown) =>
+        setKnowledgeCatalogMessage(
+          reason instanceof Error ? reason.message : String(reason),
+        ),
+      )
+      .finally(() => setKnowledgeCatalogUpdating(false));
+  };
 
   if (loading && snapshot === null) {
     return (
@@ -659,9 +751,43 @@ function RepoSettingsContent({
         <h1 className="font-display text-xl font-semibold text-fg-1">
           {project.name}
         </h1>
-        <p className="mt-1 truncate font-mono text-xs text-fg-3">
-          {project.repoPath}/.harness/settings.toml
+        <p className="mt-1 truncate text-xs text-fg-3">
+          Stored locally in the Harness database
         </p>
+      </div>
+      <div
+        className="mb-8 flex border-b border-border-1"
+        role="tablist"
+        aria-label="Project settings sections"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeProjectSection === 'scripts'}
+          data-testid="repo-settings-tab-scripts"
+          onClick={() => setActiveProjectSection('scripts')}
+          className={`border-b-2 px-4 py-3 text-sm font-semibold ${
+            activeProjectSection === 'scripts'
+              ? 'border-accent text-fg-1'
+              : 'border-transparent text-fg-3 hover:text-fg-1'
+          }`}
+        >
+          Scripts
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeProjectSection === 'knowledge'}
+          data-testid="repo-settings-tab-knowledge"
+          onClick={() => setActiveProjectSection('knowledge')}
+          className={`border-b-2 px-4 py-3 text-sm font-semibold ${
+            activeProjectSection === 'knowledge'
+              ? 'border-accent text-fg-1'
+              : 'border-transparent text-fg-3 hover:text-fg-1'
+          }`}
+        >
+          Project knowledge
+        </button>
       </div>
       {error ? (
         <div className="mb-5 rounded-2 border border-danger bg-danger-muted px-3 py-2 text-xs text-danger">
@@ -669,12 +795,229 @@ function RepoSettingsContent({
         </div>
       ) : null}
       <SettingsIssuesBanner issues={snapshot.issues} />
-      <RepoScriptsEditor scripts={snapshot.settings.scripts} onSet={onSet} />
+      {activeProjectSection === 'scripts' ? (
+        <div role="tabpanel" aria-label="Scripts">
+          <RepoScriptsEditor
+            scripts={snapshot.settings.scripts}
+            onSet={onSet}
+          />
+        </div>
+      ) : (
+        <div role="tabpanel" aria-label="Project knowledge">
+          <h2 className="font-display text-lg font-semibold text-fg-1">
+            Project knowledge
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-fg-3">
+            Maintain a local, Git-backed wiki as an Open Knowledge Format v0.1
+            bundle. Agent changes require human review before becoming
+            canonical.
+          </p>
+          <div className="mt-5 flex items-center justify-between rounded-2 border border-border-1 bg-surface-panel px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-fg-1">
+                Enable knowledge wiki
+              </div>
+              <div className="mt-0.5 text-xs text-fg-3">
+                Disabled projects perform no initialization, indexing, or
+                extraction.
+              </div>
+            </div>
+            <Switch
+              checked={snapshot.settings.knowledge.enabled}
+              onChange={(checked) => onSet('knowledge.enabled', checked)}
+              aria-label="Enable project knowledge wiki"
+            />
+          </div>
+          {snapshot.settings.knowledge.enabled ? (
+            <>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <KnowledgeToggle
+                  label="Inject knowledge context"
+                  description="Include a bounded catalog-first selection in agent prompts."
+                  checked={snapshot.settings.knowledge.inject_context}
+                  onChange={(checked) =>
+                    onSet('knowledge.inject_context', checked)
+                  }
+                />
+                <KnowledgeToggle
+                  label="Extract after each turn"
+                  description="Capture review proposals from durable turn outcomes."
+                  checked={snapshot.settings.knowledge.extract_after_turn}
+                  onChange={(checked) =>
+                    onSet('knowledge.extract_after_turn', checked)
+                  }
+                />
+                <KnowledgeToggle
+                  label="Enable retrieval"
+                  description="Search canonical pages after loading the catalog."
+                  checked={snapshot.settings.knowledge.search.enabled}
+                  onChange={(checked) =>
+                    onSet('knowledge.search.enabled', checked)
+                  }
+                />
+                <KnowledgeToggle
+                  label="Rerank QMD results"
+                  description="Use QMD reranking when that provider is selected."
+                  checked={snapshot.settings.knowledge.search.rerank}
+                  onChange={(checked) =>
+                    onSet('knowledge.search.rerank', checked)
+                  }
+                />
+              </div>
+              <div className="mt-3 flex items-center justify-between rounded-2 border border-border-1 bg-surface-panel px-4 py-3">
+                <div>
+                  <label
+                    htmlFor="knowledge-search-provider"
+                    className="text-sm font-medium text-fg-1"
+                  >
+                    Search provider
+                  </label>
+                  {snapshot.settings.knowledge.search.provider === 'qmd' ? (
+                    <div className="mt-0.5 text-xs text-fg-3">
+                      Requires the qmd CLI. The first query may download local
+                      embedding and reranking models.
+                    </div>
+                  ) : null}
+                </div>
+                <select
+                  id="knowledge-search-provider"
+                  value={snapshot.settings.knowledge.search.provider}
+                  onChange={(event) =>
+                    onSet('knowledge.search.provider', event.target.value)
+                  }
+                  className="rounded-2 border border-border-1 bg-bg-3 px-3 py-2 text-sm text-fg-1"
+                >
+                  <option value="basic">Basic local search</option>
+                  <option value="qmd" disabled={!qmdStatus?.installed}>
+                    QMD{qmdStatus?.installed ? '' : ' (not installed)'}
+                  </option>
+                  <option value="none">None</option>
+                </select>
+              </div>
+              <div className="mt-3 grid gap-3 rounded-2 border border-border-1 bg-surface-panel p-4 md:grid-cols-2">
+                <label className="text-sm text-fg-1">
+                  Maximum search results
+                  <input
+                    aria-label="Maximum knowledge search results"
+                    className="mt-2 w-full rounded-2 border border-border-1 bg-bg-3 px-3 py-2 text-sm"
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={snapshot.settings.knowledge.search.max_results}
+                    onChange={(event) =>
+                      onSet(
+                        'knowledge.search.max_results',
+                        Number(event.target.value),
+                      )
+                    }
+                  />
+                </label>
+                <label className="text-sm text-fg-1">
+                  Maximum context tokens
+                  <input
+                    aria-label="Maximum knowledge context tokens"
+                    className="mt-2 w-full rounded-2 border border-border-1 bg-bg-3 px-3 py-2 text-sm"
+                    type="number"
+                    min={256}
+                    value={
+                      snapshot.settings.knowledge.search.max_context_tokens
+                    }
+                    onChange={(event) =>
+                      onSet(
+                        'knowledge.search.max_context_tokens',
+                        Number(event.target.value),
+                      )
+                    }
+                  />
+                </label>
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-4 rounded-2 border border-border-1 bg-surface-panel px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium text-fg-1">
+                    Import existing knowledge
+                  </div>
+                  <div className="mt-0.5 text-xs text-fg-3">
+                    Scan a preexisting OKF ZIP bundle and create a review
+                    proposal. Accepted changes are preserved in Git history.
+                  </div>
+                  {knowledgeImportMessage ? (
+                    <div
+                      className="mt-2 text-xs text-fg-2"
+                      data-testid="knowledge-import-message"
+                    >
+                      {knowledgeImportMessage}
+                    </div>
+                  ) : null}
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={knowledgeImporting}
+                  data-testid="knowledge-import-zip"
+                  onClick={importKnowledgeZip}
+                >
+                  <Upload className="h-3.5 w-3.5" aria-hidden />
+                  {knowledgeImporting ? 'Importing…' : 'Import ZIP'}
+                </Button>
+              </div>
+              <AgentMemoryImport projectId={project.id} />
+              <div className="mt-3 flex items-center justify-between gap-4 rounded-2 border border-border-1 bg-surface-panel px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium text-fg-1">
+                    Knowledge catalog
+                  </div>
+                  <div className="mt-0.5 text-xs text-fg-3">
+                    Rebuild index.md from every canonical knowledge document.
+                  </div>
+                  {knowledgeCatalogMessage ? (
+                    <div
+                      className="mt-2 text-xs text-fg-2"
+                      data-testid="knowledge-catalog-message"
+                    >
+                      {knowledgeCatalogMessage}
+                    </div>
+                  ) : null}
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={knowledgeCatalogUpdating}
+                  data-testid="knowledge-update-catalog"
+                  onClick={updateKnowledgeCatalog}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                  {knowledgeCatalogUpdating ? 'Updating…' : 'Update catalog'}
+                </Button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
       <p className="mt-8 text-xs text-fg-3">
-        These settings are saved in{' '}
-        <span className="font-mono text-fg-2">.harness/settings.toml</span> so
-        they can be shared with the team.
+        These settings are stored locally in the Harness database.
       </p>
+    </div>
+  );
+}
+
+function KnowledgeToggle({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}): React.JSX.Element {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-2 border border-border-1 bg-surface-panel px-4 py-3">
+      <div>
+        <div className="text-sm font-medium text-fg-1">{label}</div>
+        <div className="mt-0.5 text-xs text-fg-3">{description}</div>
+      </div>
+      <Switch checked={checked} onChange={onChange} aria-label={label} />
     </div>
   );
 }
@@ -1015,6 +1358,176 @@ function SettingsSection({
       </h1>
       <div className="divide-y divide-border-1">{children}</div>
     </section>
+  );
+}
+
+function AdvancedSettings(): React.JSX.Element {
+  const [rootPath, setRootPath] = useState('');
+  const [savedPath, setSavedPath] = useState('');
+  const [defaultPath, setDefaultPath] = useState('');
+  const [busy, setBusy] = useState(true);
+  const [message, setMessage] = useState<string | null>(null);
+  const [isDevelopment, setIsDevelopment] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void invoke('app:getRootDirectory', undefined)
+      .then((result) => {
+        if (!active) return;
+        setRootPath(result.path);
+        setSavedPath(result.path);
+        setDefaultPath(result.defaultPath);
+        setMessage(null);
+      })
+      .catch((reason: unknown) => {
+        if (active)
+          setMessage(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (active) setBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void invoke('app:isDevelopment', undefined)
+      .then((value) => {
+        if (active) setIsDevelopment(value);
+      })
+      .catch(() => {
+        // Packaged/older main processes simply omit the development-only control.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const save = async (path: string): Promise<void> => {
+    const nextPath = path.trim();
+    if (nextPath === '' || nextPath === savedPath) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await invoke('app:setRootDirectory', { path: nextPath });
+      setRootPath(result.path);
+      setSavedPath(result.path);
+      setMessage(
+        'Root directory updated. Existing files were left in their previous location.',
+      );
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const browse = async (): Promise<void> => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const selected = await invoke('app:pickRootDirectory', {
+        defaultPath: rootPath || defaultPath,
+      });
+      if (selected !== null) await save(selected);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetDevelopmentData = async (): Promise<void> => {
+    const confirmed = window.confirm(
+      'Delete all Harness database records, settings, secrets, and managed repositories/worktrees? The app will restart as a fresh install. This cannot be undone.',
+    );
+    if (!confirmed) return;
+    setResetting(true);
+    setMessage(null);
+    try {
+      await invoke('app:resetDevelopmentData', undefined);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : String(reason));
+      setResetting(false);
+    }
+  };
+
+  return (
+    <SettingsSection title="Advanced" testId="settings-section-advanced">
+      <div className="py-6 first:pt-0">
+        <label
+          htmlFor="harness-root-directory"
+          className="text-sm font-semibold text-fg-1"
+        >
+          Harness root directory
+        </label>
+        <p className="mt-1 text-sm leading-6 text-fg-3">
+          Where Harness stores managed repositories and workspaces. The default
+          is {defaultPath || '$HOME/harness'}. Changing this location does not
+          move or delete existing files.
+        </p>
+        <div className="mt-4 flex w-full gap-3">
+          <Input
+            id="harness-root-directory"
+            data-testid="advanced-root-directory"
+            value={rootPath}
+            disabled={busy}
+            onChange={(event) => setRootPath(event.target.value)}
+            onBlur={() => void save(rootPath)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur();
+              }
+            }}
+            className="min-w-0 flex-1 font-mono"
+          />
+          <Button
+            type="button"
+            variant="secondary"
+            data-testid="advanced-root-browse"
+            disabled={busy}
+            onClick={() => void browse()}
+            className="shrink-0"
+          >
+            <Folder className="mr-2 h-4 w-4" aria-hidden />
+            Browse
+          </Button>
+        </div>
+        {message ? (
+          <p
+            className="mt-3 text-xs text-fg-3"
+            data-testid="advanced-root-message"
+          >
+            {message}
+          </p>
+        ) : null}
+      </div>
+      {isDevelopment ? (
+        <div className="py-6">
+          <h2 className="text-sm font-semibold text-danger">
+            Development data
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-fg-3">
+            Delete the database, settings, secrets, and all Harness-managed
+            repositories and worktrees, then restart into onboarding.
+          </p>
+          <Button
+            type="button"
+            variant="danger"
+            data-testid="advanced-reset-development-data"
+            disabled={resetting}
+            onClick={() => void resetDevelopmentData()}
+            className="mt-4"
+          >
+            <Trash2 className="mr-2 h-4 w-4" aria-hidden />
+            {resetting ? 'Resetting…' : 'Reset all development data'}
+          </Button>
+        </div>
+      ) : null}
+    </SettingsSection>
   );
 }
 

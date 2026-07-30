@@ -192,6 +192,27 @@ const appearanceSchema = z
   })
   .default({});
 
+const knowledgeSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    storage: z.enum(['local', 'github']).default('local'),
+    proposal_mode: z.literal('review_required').default('review_required'),
+    inject_context: z.boolean().default(true),
+    extract_after_turn: z.boolean().default(true),
+    show_notifications: z.boolean().default(true),
+    search: z
+      .object({
+        enabled: z.boolean().default(true),
+        provider: z.enum(['qmd', 'basic', 'none']).default('basic'),
+        max_results: z.number().int().min(1).max(100).default(12),
+        max_context_tokens: z.number().int().min(256).default(12_000),
+        index_sources: z.boolean().default(false),
+        rerank: z.boolean().default(true),
+      })
+      .default({}),
+  })
+  .default({});
+
 // --- Top-level EffectiveSettings ---------------------------------------------
 
 /**
@@ -212,6 +233,8 @@ export const EffectiveSettingsSchema = z
     notifications: notificationsSchema,
     /** `[appearance]` — renderer theme selection. */
     appearance: appearanceSchema,
+    /** `[knowledge]` — disabled by default; local OKF v0.1 bundle when enabled. */
+    knowledge: knowledgeSchema,
   })
   .default({});
 

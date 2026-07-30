@@ -56,3 +56,16 @@ body,
 .scrollbar-bare::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.42);
 }
+
+/* xterm requires a scrollable viewport for wheel/trackpad navigation, but its native
+   scrollbar reserves a visible gutter inside the terminal surface. Hide only the
+   scrollbar chrome; overflow and programmatic scrolling remain intact. */
+.terminal-surface .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.terminal-surface .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
+}

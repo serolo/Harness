@@ -29,6 +29,7 @@ import type { OnboardingService } from './onboarding';
 import type { UpdateService } from './update';
 import type { ScheduledTasksRepo } from './db/repos/tasks';
 import type { TaskScheduler } from './scheduler';
+import type { WikiService } from './knowledge';
 
 /**
  * Service singletons + the typed DB handle, shared across the main process.
@@ -76,4 +77,6 @@ export interface AppContext {
   tasks: ScheduledTasksRepo;
   /** Scheduled-task firing service: tick loop + boot reconcile + queue drain (Phase 12). */
   scheduler: TaskScheduler;
+  /** Local-first, Git-backed OKF v0.1 project knowledge wiki. */
+  knowledge: WikiService;
 }

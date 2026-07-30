@@ -220,6 +220,37 @@ describe('normalize — normalization table', () => {
     ]);
   });
 
+  it('captures per-call context usage from assistant messages', () => {
+    expect(
+      normalize({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'Done' }],
+          usage: {
+            input_tokens: 3,
+            cache_read_input_tokens: 100_000,
+            cache_creation_input_tokens: 2_000,
+            output_tokens: 400,
+          },
+        },
+      }),
+    ).toEqual([
+      { type: 'event', event: { kind: 'text', delta: 'Done' } },
+      {
+        type: 'event',
+        event: {
+          kind: 'context_usage',
+          usage: {
+            inputTokens: 102_003,
+            cachedInputTokens: 100_000,
+            cacheWriteInputTokens: 2_000,
+            outputTokens: 400,
+          },
+        },
+      },
+    ]);
+  });
+
   it('falls back to raw tool_use when a file-edit tool has no resolvable path', () => {
     expect(
       normalize({

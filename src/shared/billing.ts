@@ -242,6 +242,8 @@ export function calculateTurnBilling(
 }
 
 export function formatUsdMicros(costMicros: number): string {
+  if (costMicros === 0) return '$0';
+
   const dollars = costMicros / 1_000_000;
   return new Intl.NumberFormat(undefined, {
     style: 'currency',
@@ -249,4 +251,16 @@ export function formatUsdMicros(costMicros: number): string {
     minimumFractionDigits: dollars < 1 ? 4 : 2,
     maximumFractionDigits: dollars < 1 ? 4 : 2,
   }).format(dollars);
+}
+
+export function formatTokenCount(value: number): string {
+  const absolute = Math.abs(value);
+  const format = (divisor: number, suffix: string): string => {
+    const scaled = value / divisor;
+    const digits = Math.abs(scaled) >= 100 ? 0 : 1;
+    return `${scaled.toFixed(digits).replace(/\.0$/, '')}${suffix}`;
+  };
+  if (absolute >= 1_000_000) return format(1_000_000, 'M');
+  if (absolute >= 1_000) return format(1_000, 'k');
+  return new Intl.NumberFormat().format(value);
 }

@@ -15,14 +15,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import {
   Activity,
-  Bot,
-  Boxes,
   PanelLeft,
   PanelRight,
-  Rocket,
   Search,
   Settings as SettingsIcon,
-  TerminalSquare,
 } from 'lucide-react';
 import { invoke, onEvent } from '@renderer/ipc';
 import { Sidebar } from '@renderer/features/sidebar/Sidebar';
@@ -63,10 +59,6 @@ interface InspectFileRequest {
   mode: 'edit' | 'diff';
 }
 
-const PANE_LIMITS: Record<SidePane, { min: number; max: number }> = {
-  left: { min: 220, max: 480 },
-  right: { min: 260, max: 560 },
-};
 const DEFAULT_PANE_WIDTH: Record<SidePane, number> = {
   left: 280,
   right: 360,
@@ -79,34 +71,24 @@ const PANE_OPEN_STORAGE_KEY: Record<SidePane, string> = {
   left: 'harness.layout.leftPaneOpen',
   right: 'harness.layout.rightPaneOpen',
 };
-const WORK_PANE_LIMITS: Record<WorkPane, { min: number; max: number }> = {
-  tasks: { min: 120, max: 420 },
-  terminal: { min: 120, max: 520 },
-};
 const WORK_PANE_RESIZE_FALLBACK_HEIGHT: Record<WorkPane, number> = {
   tasks: 224,
   terminal: 224,
 };
 
-function clampPaneWidth(side: SidePane, width: number): number {
-  const { min, max } = PANE_LIMITS[side];
-  return Math.min(max, Math.max(min, width));
+function validSize(size: number): number {
+  return Math.max(0, size);
 }
 
 function readStoredPaneWidth(side: SidePane): number {
   const stored = Number(window.localStorage.getItem(PANE_STORAGE_KEY[side]));
   return Number.isFinite(stored) && stored > 0
-    ? clampPaneWidth(side, stored)
+    ? validSize(stored)
     : DEFAULT_PANE_WIDTH[side];
 }
 
 function readStoredPaneOpen(side: SidePane): boolean {
   return window.localStorage.getItem(PANE_OPEN_STORAGE_KEY[side]) !== 'false';
-}
-
-function clampWorkPaneHeight(pane: WorkPane, height: number): number {
-  const { min, max } = WORK_PANE_LIMITS[pane];
-  return Math.min(max, Math.max(min, height));
 }
 
 interface PaneResizeHandleProps {
@@ -122,23 +104,20 @@ function PaneResizeHandle({
   onResize,
 }: PaneResizeHandleProps): React.JSX.Element {
   const cleanupRef = useRef<(() => void) | null>(null);
-  const { min, max } = PANE_LIMITS[side];
 
   useEffect(() => () => cleanupRef.current?.(), []);
 
   const startResize = (event: React.MouseEvent<HTMLDivElement>): void => {
     event.preventDefault();
     cleanupRef.current?.();
-
     const startX = event.clientX;
     const startWidth = width;
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
-
     const handleMouseMove = (moveEvent: MouseEvent): void => {
       const pointerDelta = moveEvent.clientX - startX;
       const paneDelta = side === 'left' ? pointerDelta : -pointerDelta;
-      onResize(clampPaneWidth(side, startWidth + paneDelta));
+      onResize(validSize(startWidth + paneDelta));
     };
     const cleanup = (): void => {
       window.removeEventListener('mousemove', handleMouseMove);
@@ -147,7 +126,6 @@ function PaneResizeHandle({
       document.body.style.userSelect = previousUserSelect;
       cleanupRef.current = null;
     };
-
     cleanupRef.current = cleanup;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
@@ -160,7 +138,7 @@ function PaneResizeHandle({
     event.preventDefault();
     const pointerDelta = event.key === 'ArrowRight' ? 16 : -16;
     const paneDelta = side === 'left' ? pointerDelta : -pointerDelta;
-    onResize(clampPaneWidth(side, width + paneDelta));
+    onResize(validSize(width + paneDelta));
   };
 
   return (
@@ -168,8 +146,7 @@ function PaneResizeHandle({
       role="separator"
       aria-label={`Resize ${side} pane`}
       aria-orientation="vertical"
-      aria-valuemin={min}
-      aria-valuemax={max}
+      aria-valuemin={0}
       aria-valuenow={width}
       tabIndex={0}
       className="group relative z-10 w-px shrink-0 cursor-col-resize bg-border-1 outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
@@ -198,7 +175,6 @@ function WorkPaneResizeHandle({
   onResize,
 }: WorkPaneResizeHandleProps): React.JSX.Element {
   const cleanupRef = useRef<(() => void) | null>(null);
-  const { min, max } = WORK_PANE_LIMITS[pane];
 
   useEffect(() => () => cleanupRef.current?.(), []);
 
@@ -222,9 +198,7 @@ function WorkPaneResizeHandle({
     const previousUserSelect = document.body.style.userSelect;
 
     const handleMouseMove = (moveEvent: MouseEvent): void => {
-      onResize(
-        clampWorkPaneHeight(pane, startHeight + startY - moveEvent.clientY),
-      );
+      onResize(validSize(startHeight + startY - moveEvent.clientY));
     };
     const cleanup = (): void => {
       window.removeEventListener('mousemove', handleMouseMove);
@@ -245,7 +219,7 @@ function WorkPaneResizeHandle({
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
     event.preventDefault();
     const delta = event.key === 'ArrowUp' ? 16 : -16;
-    onResize(clampWorkPaneHeight(pane, currentHeight() + delta));
+    onResize(validSize(currentHeight() + delta));
   };
 
   return (
@@ -253,8 +227,7 @@ function WorkPaneResizeHandle({
       role="separator"
       aria-label={`Resize ${pane} pane`}
       aria-orientation="horizontal"
-      aria-valuemin={min}
-      aria-valuemax={max}
+      aria-valuemin={0}
       aria-valuenow={height ?? WORK_PANE_RESIZE_FALLBACK_HEIGHT[pane]}
       tabIndex={0}
       className="group relative z-10 h-px shrink-0 cursor-row-resize bg-border-1 outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
@@ -273,6 +246,7 @@ function WorkPaneResizeHandle({
 /** The top-level adjustable 3-pane shell: [rail | content | context]. */
 export function AppLayout(): React.JSX.Element {
   const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
+  const selectedProjectId = useWorkspacesStore((s) => s.selectedProjectId);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -293,8 +267,12 @@ export function AppLayout(): React.JSX.Element {
   const [terminalPaneHeight, setTerminalPaneHeight] = useState<number | null>(
     null,
   );
+  const [terminalWorkspaceIds, setTerminalWorkspaceIds] = useState<string[]>(
+    () => (selectedWorkspaceId ? [selectedWorkspaceId] : []),
+  );
   const [inspectFileRequest, setInspectFileRequest] =
     useState<InspectFileRequest | null>(null);
+  const [knowledgeReviewRequestId, setKnowledgeReviewRequestId] = useState(0);
 
   const navTarget = useNavStore((s) => s.target);
   const navigate = useNavStore((s) => s.navigate);
@@ -302,6 +280,13 @@ export function AppLayout(): React.JSX.Element {
 
   const togglePalette = useUiStore((s) => s.togglePalette);
   const setNewWorkspaceOpen = useUiStore((s) => s.setNewWorkspaceOpen);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId) return;
+    setTerminalWorkspaceIds((ids) =>
+      ids.includes(selectedWorkspaceId) ? ids : [...ids, selectedWorkspaceId],
+    );
+  }, [selectedWorkspaceId]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -365,8 +350,15 @@ export function AppLayout(): React.JSX.Element {
   useEffect(() => {
     if (navTarget === null) return;
     selectWorkspace(navTarget.workspaceId);
-    if (navTarget.pane === 'diff' || navTarget.pane === 'pr') {
+    if (
+      navTarget.pane === 'diff' ||
+      navTarget.pane === 'pr' ||
+      navTarget.pane === 'knowledge'
+    ) {
       setRightPaneOpen(true);
+    }
+    if (navTarget.pane === 'knowledge') {
+      setKnowledgeReviewRequestId((id) => id + 1);
     }
     consumeNav();
   }, [navTarget, selectWorkspace, consumeNav]);
@@ -476,10 +468,12 @@ export function AppLayout(): React.JSX.Element {
                 <div className="flex-1" />
                 {leftPaneToggle}
               </header>
-              <nav className="shrink-0 space-y-1 border-b border-border-1 px-3 py-4 text-sm">
-                <div className="mb-3 flex items-center gap-2.5 px-2">
+              <div className="shrink-0 border-b border-border-1 px-3 py-4">
+                <div className="flex items-center gap-2.5 px-2">
                   <img
-                    src={new URL('../../../build/icon.png', import.meta.url).href}
+                    src={
+                      new URL('../../../build/icon.png', import.meta.url).href
+                    }
                     alt=""
                     className="h-10 w-10 shrink-0 rounded-2"
                     data-testid="sidebar-app-icon"
@@ -493,19 +487,7 @@ export function AppLayout(): React.JSX.Element {
                     </div>
                   </div>
                 </div>
-                <button className="flex w-full items-center gap-3 rounded-2 px-2.5 py-2 text-left text-fg-2 hover:bg-bg-3 hover:text-fg-1">
-                  <Boxes className="h-4 w-4" aria-hidden="true" /> Workspaces
-                </button>
-                <button className="flex w-full items-center gap-3 rounded-2 border-l-2 border-accent bg-accent-muted px-2.5 py-2 text-left font-medium text-accent">
-                  <Bot className="h-4 w-4" aria-hidden="true" /> Active agents
-                </button>
-                <button className="flex w-full items-center gap-3 rounded-2 px-2.5 py-2 text-left text-fg-2 hover:bg-bg-3 hover:text-fg-1">
-                  <Rocket className="h-4 w-4" aria-hidden="true" /> Deployment
-                </button>
-                <button className="flex w-full items-center gap-3 rounded-2 px-2.5 py-2 text-left text-fg-2 hover:bg-bg-3 hover:text-fg-1">
-                  <TerminalSquare className="h-4 w-4" aria-hidden="true" /> Terminal hub
-                </button>
-              </nav>
+              </div>
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <Sidebar />
               </div>
@@ -627,7 +609,11 @@ export function AppLayout(): React.JSX.Element {
                   }
                   data-testid="right-tasks-pane"
                 >
-                  <TasksPanel workspaceId={selectedWorkspaceId} />
+                  <TasksPanel
+                    workspaceId={selectedWorkspaceId}
+                    projectId={selectedProjectId}
+                    knowledgeReviewRequestId={knowledgeReviewRequestId}
+                  />
                 </section>
                 {!terminalCollapsed ? (
                   <WorkPaneResizeHandle
@@ -639,7 +625,7 @@ export function AppLayout(): React.JSX.Element {
                 <section
                   className={
                     terminalCollapsed
-                      ? 'shrink-0 border-t border-border-1'
+                      ? 'shrink-0 border-0'
                       : terminalPaneHeight === null
                         ? 'min-h-0 flex-1 basis-0'
                         : 'shrink-0'
@@ -651,13 +637,33 @@ export function AppLayout(): React.JSX.Element {
                   }
                   data-testid="right-terminal-pane"
                 >
-                  <TerminalPanel
-                    workspaceId={selectedWorkspaceId}
-                    collapsed={terminalCollapsed}
-                    onToggleCollapsed={() =>
-                      setTerminalCollapsed((collapsed) => !collapsed)
-                    }
-                  />
+                  {terminalWorkspaceIds.length === 0 ? (
+                    <TerminalPanel
+                      workspaceId={null}
+                      collapsed={terminalCollapsed}
+                      onToggleCollapsed={() =>
+                        setTerminalCollapsed((collapsed) => !collapsed)
+                      }
+                    />
+                  ) : null}
+                  {terminalWorkspaceIds.map((workspaceId) => (
+                    <div
+                      key={workspaceId}
+                      className={
+                        workspaceId === selectedWorkspaceId
+                          ? 'h-full'
+                          : 'hidden'
+                      }
+                    >
+                      <TerminalPanel
+                        workspaceId={workspaceId}
+                        collapsed={terminalCollapsed}
+                        onToggleCollapsed={() =>
+                          setTerminalCollapsed((collapsed) => !collapsed)
+                        }
+                      />
+                    </div>
+                  ))}
                 </section>
               </div>
             </aside>
@@ -686,7 +692,6 @@ export function AppLayout(): React.JSX.Element {
           <UsagePanel onClose={() => setUsageOpen(false)} />
         </Dialog>
       ) : null}
-
       {/* ⌘K command palette (Phase 6, Track H2) — renders only when open (ui store). */}
       <CommandPalette actions={actions} />
     </div>

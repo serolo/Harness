@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Brain, Clock, FileText } from 'lucide-react';
 import type { AgentEvent, Usage } from '@shared/harness';
+import { formatTokenCount } from '@shared/billing';
 import type { TurnStatus } from '@shared/models';
 
 export interface TurnActivityProps {
@@ -84,8 +85,11 @@ function latestActivity(events: AgentEvent[]): {
 }
 
 function tokensLabel(usage: Usage | undefined): string | null {
-  if (!usage || (usage.inputTokens == null && usage.outputTokens == null)) return null;
-  return `${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out`;
+  if (!usage || (usage.inputTokens == null && usage.outputTokens == null))
+    return null;
+  return `${formatTokenCount(usage.inputTokens ?? 0)} in / ${formatTokenCount(
+    usage.outputTokens ?? 0,
+  )} out`;
 }
 
 export function TurnActivity({
@@ -123,7 +127,9 @@ export function TurnActivity({
 
       <div className="flex min-w-0 items-center gap-3">
         <Brain className="h-4 w-4 shrink-0 text-fg-3" aria-hidden />
-        <span className={`shrink-0 text-base font-medium ${STATUS_CLASS[status]}`}>
+        <span
+          className={`shrink-0 text-base font-medium ${STATUS_CLASS[status]}`}
+        >
           {STATUS_LABEL[status]}
         </span>
         <span className="min-w-0 truncate bg-bg-3 px-2 py-0.5 font-mono text-sm text-fg-3">

@@ -122,6 +122,12 @@ describe('AppLayout structure', () => {
     fireEvent.mouseMove(window, { clientX: 340 });
     fireEvent.mouseUp(window);
     expect(screen.getByTestId('left-pane')).toHaveStyle({ width: '340px' });
+    fireEvent.mouseDown(screen.getByTestId('left-resize-handle'), {
+      clientX: 340,
+    });
+    fireEvent.mouseMove(window, { clientX: 700 });
+    fireEvent.mouseUp(window);
+    expect(screen.getByTestId('left-pane')).toHaveStyle({ width: '700px' });
 
     expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '360px' });
     fireEvent.keyDown(screen.getByTestId('right-resize-handle'), {
@@ -137,7 +143,10 @@ describe('AppLayout structure', () => {
       </Providers>,
     );
 
-    expect(screen.getByTestId('right-git-pane')).toHaveClass('flex-1', 'basis-0');
+    expect(screen.getByTestId('right-git-pane')).toHaveClass(
+      'flex-1',
+      'basis-0',
+    );
     expect(screen.getByTestId('right-tasks-pane')).toHaveClass(
       'flex-1',
       'basis-0',
@@ -159,6 +168,14 @@ describe('AppLayout structure', () => {
     fireEvent.mouseUp(window);
     expect(screen.getByTestId('right-tasks-pane')).toHaveStyle({
       height: '280px',
+    });
+    fireEvent.mouseDown(screen.getByTestId('tasks-resize-handle'), {
+      clientY: 280,
+    });
+    fireEvent.mouseMove(window, { clientY: -320 });
+    fireEvent.mouseUp(window);
+    expect(screen.getByTestId('right-tasks-pane')).toHaveStyle({
+      height: '880px',
     });
 
     fireEvent.keyDown(screen.getByTestId('terminal-resize-handle'), {

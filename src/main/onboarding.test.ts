@@ -18,11 +18,15 @@ function make(opts: {
   harnesses?: HarnessInfo[];
   github?: number;
   projects?: number;
+  qmd?: boolean;
 }): OnboardingService {
   return new OnboardingService({
     listHarnesses: () => Promise.resolve(opts.harnesses ?? []),
     countGithubAccounts: () => Promise.resolve(opts.github ?? 0),
     countProjects: () => Promise.resolve(opts.projects ?? 0),
+    qmdInstalled: () => Promise.resolve(opts.qmd ?? false),
+    isAcknowledged: () => Promise.resolve(false),
+    acknowledge: () => Promise.resolve(),
   });
 }
 
@@ -37,6 +41,8 @@ describe('OnboardingService.getState', () => {
       harnessReady: true,
       githubConnected: false,
       hasProjects: true,
+      qmdInstalled: false,
+      acknowledged: false,
       complete: true,
     });
   });
@@ -65,6 +71,8 @@ describe('OnboardingService.getState', () => {
       harnessReady: false,
       githubConnected: false,
       hasProjects: false,
+      qmdInstalled: false,
+      acknowledged: false,
       complete: false,
     });
   });

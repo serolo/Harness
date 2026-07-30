@@ -24,6 +24,15 @@ export interface Harness {
 export interface StartTurnOpts {
   workspaceDir: string;
   prompt: string;
+  /** Original user-authored text, excluding app-injected model context. */
+  displayPrompt?: string;
+  /** Knowledge pages selected while preparing this turn. */
+  knowledgeSources?: {
+    path: string;
+    title: string;
+    /** Approximate tokens contributed by this source's injected section. APPEND-ONLY. */
+    estimatedTokens?: number;
+  }[];
   attachments: Attachment[]; // files, images, diff comments
   sessionId?: string; // resume previous session
   mode?: AgentMode; // "plan" | "default" | "auto_accept"
@@ -41,12 +50,28 @@ export interface TurnHandle {
 export type AgentEvent =
   /** Harness metadata used by main-process persistence; not rendered as transcript content. */
   | { kind: 'model_info'; model: string }
+  /** Latest provider request's context snapshot; distinct from cumulative turn billing. */
+  | { kind: 'context_usage'; usage: Usage }
   | { kind: 'text'; delta: string }
   | { kind: 'activity'; title: string; detail?: string }
   | { kind: 'tool_use'; name: string; input: unknown }
   | { kind: 'tool_result'; output: unknown }
   | { kind: 'file_edit'; path: string; op: 'create' | 'modify' | 'delete' }
   | { kind: 'todo_update'; todos: Todo[] }
+  | {
+      kind: 'knowledge_proposal';
+      projectId: string;
+      proposalIds: string[];
+    }
+  | {
+      kind: 'knowledge_context';
+      sources: {
+        path: string;
+        title: string;
+        /** Approximate tokens contributed by this source's injected section. APPEND-ONLY. */
+        estimatedTokens?: number;
+      }[];
+    }
   | { kind: 'turn_end'; usage?: Usage }
   | { kind: 'error'; message: string }
   /** App-originated prompt persisted beside harness events for chat reconstruction. */

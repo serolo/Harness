@@ -16,6 +16,7 @@
 
 import { join } from 'node:path';
 import { closeSync, fstatSync, openSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 
 import {
   app,
@@ -29,6 +30,7 @@ import {
 
 import { openDb } from './db';
 import { SettingsService } from './settings';
+import { loadStoredProjectSettings } from './settings/projectStore';
 import { GitService } from './git';
 import { WorkspaceManager } from './workspace';
 import { HarnessSupervisor } from './harness/supervisor';
@@ -55,7 +57,11 @@ import { ChecksService } from './checks';
 import { IntegrationService } from './integrations';
 import { LinearService } from './integrations/linear';
 import { OnboardingService } from './onboarding';
+import { qmdStatus } from './knowledge/qmd';
+import { readFile, writeFile } from 'node:fs/promises';
+import { onboardingStatePath, rootDirectory } from './paths';
 import { UpdateService } from './update';
+import { WikiService } from './knowledge';
 import { SecretStore } from './integrations/secrets';
 import { PrWorkflow } from './integrations/github/pr';
 import { IntegrationsRepo } from './db/repos/integrations';
@@ -67,7 +73,11 @@ import { runSetup } from './workspace/setup';
 import { emitAll } from './ipc/events';
 import type { EventChannel, EventPayload } from '@shared/ipc';
 import type { AppContext } from './context';
-import { registerIpc, focusRefreshWorkspaceIds } from './ipc/register';
+import {
+  consumeDevelopmentResetRequest,
+  registerIpc,
+  focusRefreshWorkspaceIds,
+} from './ipc/register';
 import { resolveDeepLink } from './deeplink';
 import {
   NATIVE_VIEW_ROLES,
@@ -263,6 +273,23 @@ function createAppContext(): AppContext {
   const workspacesRepo = new WorkspacesRepo(db);
   const git = new GitService();
 
+  // One-time compatibility import: preserve every valid legacy project settings
+  // file in SQLite before removing the file from the repository checkout.
+  void projectsRepo
+    .list()
+    .then((projects) =>
+      Promise.all(
+        projects.map((project) => loadStoredProjectSettings(db, project)),
+      ),
+    )
+    .catch((error: unknown) => {
+      logger.warn(
+        `[settings] legacy project settings migration failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+
   // Broadcast an event to every open window (destroyed WebContents are skipped in emitAll).
   const emit = <K extends EventChannel>(
     event: K,
@@ -296,9 +323,13 @@ function createAppContext(): AppContext {
     naming,
     ports,
     settings,
-    settingsForProject: (projectPath) => {
+    settingsForProject: async (project) => {
+      const stored = await loadStoredProjectSettings(db, project);
       const scoped = new SettingsService();
-      return scoped.loadResult({ projectDir: projectPath }).settings;
+      return scoped.loadResult({
+        projectDir: project.repoPath,
+        projectSettings: stored.value,
+      }).settings;
     },
     runSetup,
     stopWorkspaceProcesses,
@@ -329,6 +360,7 @@ function createAppContext(): AppContext {
     turns: turnsRepo,
   });
   const todos = new TodosRepo(db);
+  const knowledge = new WikiService(db);
 
   // Native turn notifications; clicks route the workspace deep link (log-only nav).
   const notifications = new NotificationService({
@@ -438,14 +470,63 @@ function createAppContext(): AppContext {
             `[turn-end] checks refresh for ${workspaceId} failed: ${String(err)}`,
           );
         }
+        try {
+          const workspace = await workspaces.get(workspaceId);
+          const turns = await recorder.history(workspaceId);
+          const turn = turns.find((candidate) => candidate.id === turnId);
+          if (workspace !== null && turn !== undefined) {
+            const knowledgeConfig = await knowledge.getConfig(
+              workspace.projectId,
+            );
+            if (!knowledgeConfig.enabled || !knowledgeConfig.extractAfterTurn) {
+              return;
+            }
+            const responseText = turn.events
+              .filter(
+                (
+                  event,
+                ): event is typeof event & {
+                  event: { kind: 'text'; delta: string };
+                } => event.event.kind === 'text',
+              )
+              .map((event) => event.event.delta)
+              .join('');
+            const proposals = await knowledge.reconcileTurn({
+              projectId: workspace.projectId,
+              workspaceId,
+              turnId,
+              responseText,
+            });
+            if (proposals.length === 0) {
+              return;
+            }
+            const proposalIds = proposals.map((proposal) => proposal.id);
+            const event = {
+              kind: 'knowledge_proposal' as const,
+              projectId: workspace.projectId,
+              proposalIds,
+            };
+            await recorder.record(turnId, event);
+            emit('knowledge:proposalsCreated', {
+              workspaceId,
+              turnId,
+              projectId: workspace.projectId,
+              proposalIds,
+            });
+          }
+        } catch (err) {
+          logger.error(
+            `[turn-end] knowledge reconciliation for ${workspaceId} failed: ${String(err)}`,
+          );
+        }
       })();
     },
   });
 
   // Phase 12: scheduled tasks — the repo + the firing service. The scheduler goes
-  // ENTIRELY through the supervisor (persistence/status/notifications come free), resolves
-  // the workspace's last session id as the resume mechanism, and mirrors each fired turn's
-  // events to the reserved `turn:event` broadcast. `start()`/`stop()` are wired in
+  // ENTIRELY through the supervisor (persistence/status/notifications come free), starts
+  // every task with fresh provider context, and mirrors each fired turn's events to the
+  // reserved `turn:event` broadcast. `start()`/`stop()` are wired in
   // `whenReady`/`before-quit` below.
   const tasks = new ScheduledTasksRepo(db);
   scheduler = new TaskScheduler({
@@ -453,7 +534,6 @@ function createAppContext(): AppContext {
     harness,
     getWorkspace: (id) => workspaces.get(id),
     settings: { get: () => settings.get() },
-    latestSessionId: (workspaceId) => recorder.latestSessionId(workspaceId),
     emit,
   });
 
@@ -498,6 +578,24 @@ function createAppContext(): AppContext {
     listHarnesses: () => harness.listHarnesses(),
     countGithubAccounts: async () => (await integrations.list('github')).length,
     countProjects: async () => (await projectsRepo.list()).length,
+    qmdInstalled: async () => (await qmdStatus()).installed,
+    isAcknowledged: async () => {
+      try {
+        const saved = JSON.parse(
+          await readFile(onboardingStatePath(), 'utf8'),
+        ) as { version?: unknown; acknowledged?: unknown };
+        return saved.version === 2 && saved.acknowledged === true;
+      } catch {
+        return false;
+      }
+    },
+    acknowledge: async () => {
+      await writeFile(
+        onboardingStatePath(),
+        JSON.stringify({ version: 2, acknowledged: true }, null, 2),
+        'utf8',
+      );
+    },
   });
 
   // Phase 6: auto-update (README §6.5). DESCOPED for this checkout — there is no release
@@ -513,7 +611,6 @@ function createAppContext(): AppContext {
     autoUpdater: undefined,
     log: (message) => logger.info(message),
   });
-
   const ctx: AppContext = {
     db,
     settings,
@@ -537,6 +634,7 @@ function createAppContext(): AppContext {
     updater,
     tasks,
     scheduler,
+    knowledge,
   };
 
   return ctx;
@@ -863,7 +961,23 @@ if (!gotSingleInstanceLock) {
       )
       .finally(() => {
         logger.info('[shutdown] agents interrupted + process trees torn down');
-        app.quit();
+        const reset = consumeDevelopmentResetRequest();
+        void ctx.db
+          .destroy()
+          .catch((err) =>
+            logger.error(`[shutdown] database teardown failed: ${String(err)}`),
+          )
+          .then(async () => {
+            if (!reset) return;
+            const managedProjects = join(rootDirectory(), 'projects');
+            await session.defaultSession.clearStorageData();
+            await rm(managedProjects, { recursive: true, force: true });
+            await rm(app.getPath('userData'), { recursive: true, force: true });
+          })
+          .catch((err) =>
+            logger.error(`[shutdown] development reset failed: ${String(err)}`),
+          )
+          .finally(() => app.quit());
       });
   });
 }

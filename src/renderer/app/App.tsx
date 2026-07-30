@@ -2,12 +2,14 @@
 
 import { Providers } from '@renderer/app/providers';
 import { AppLayout } from '@renderer/app/AppLayout';
+import { OnboardingWizard } from '@renderer/features/onboarding/OnboardingWizard';
 
 /** The application root rendered into `#root` by main.tsx. */
 export function App(): React.JSX.Element {
   return (
     <Providers>
       <AppLayout />
+      <OnboardingWizard />
     </Providers>
   );
 }

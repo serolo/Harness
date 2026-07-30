@@ -18,19 +18,19 @@ const WORKSPACE: Workspace = {
   sourceKind: 'none',
   sourceRef: null,
   harness: 'claude_code',
-  port: null,
+  port: 3001,
   createdAt: 1,
   archivedAt: null,
   prNumber: null,
   location: 'worktree',
 };
 
-function renderItem(): void {
+function renderItem(workspace: Workspace = WORKSPACE): void {
   render(
     <QueryClientProvider client={createQueryClient()}>
       <ul>
         <WorkspaceItem
-          workspace={WORKSPACE}
+          workspace={workspace}
           isSelected={false}
           onSelect={() => {}}
         />
@@ -66,6 +66,86 @@ function installWorkspaceUpdateApi(): ReturnType<typeof vi.fn> {
 }
 
 describe('WorkspaceItem context menu', () => {
+  it('shows only the workspace name and status in the list row', () => {
+    renderItem();
+
+    expect(screen.getByText('paris')).toBeInTheDocument();
+    expect(screen.getByText('idle')).toBeInTheDocument();
+    expect(screen.queryByText('agent/paris')).not.toBeInTheDocument();
+    expect(screen.queryByText('Claude Code')).not.toBeInTheDocument();
+    expect(screen.queryByText(':3001')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['open', false, 'Pull request #42 is open'],
+    ['open', true, 'Pull request #42 is draft'],
+    ['closed', false, 'Pull request #42 is closed'],
+    ['merged', false, 'Pull request #42 is merged'],
+  ])(
+    'shows the linked pull request icon for %s (draft: %s)',
+    async (state, draft, accessibleName) => {
+      const invoke = vi.fn((channel: string) =>
+        Promise.resolve(
+          channel === 'github:getWorkspacePr'
+            ? {
+                number: 42,
+                url: 'https://github.com/acme/repo/pull/42',
+                title: 'Improve workspace list',
+                draft,
+                mergeableState: 'unknown',
+                state,
+              }
+            : undefined,
+        ),
+      );
+      (window as unknown as { api: unknown }).api = {
+        invoke,
+        on: vi.fn(),
+        stream: vi.fn(),
+      };
+
+      renderItem({ ...WORKSPACE, prNumber: 42 });
+
+      expect(
+        await screen.findByLabelText(accessibleName),
+      ).toBeInTheDocument();
+      expect(invoke).toHaveBeenCalledWith('github:getWorkspacePr', {
+        workspaceId: WORKSPACE.id,
+      });
+    },
+  );
+
+  it('discovers a pull request from the workspace branch without a stored PR number', async () => {
+    const invoke = vi.fn((channel: string) =>
+      Promise.resolve(
+        channel === 'github:getWorkspacePr'
+          ? {
+              number: 43,
+              url: 'https://github.com/acme/repo/pull/43',
+              title: 'Branch-discovered PR',
+              draft: false,
+              mergeableState: 'clean',
+              state: 'open',
+            }
+          : undefined,
+      ),
+    );
+    (window as unknown as { api: unknown }).api = {
+      invoke,
+      on: vi.fn(),
+      stream: vi.fn(),
+    };
+
+    renderItem();
+
+    expect(
+      await screen.findByLabelText('Pull request #43 is open'),
+    ).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith('github:getWorkspacePr', {
+      workspaceId: WORKSPACE.id,
+    });
+  });
+
   it('shows background lifecycle progress on the matching workspace row', () => {
     useWorkspaceArchiveStore.setState({
       current: {
@@ -80,9 +160,9 @@ describe('WorkspaceItem context menu', () => {
 
     renderItem();
 
-    expect(screen.getByTestId('workspace-operation-progress')).toHaveTextContent(
-      'archiving',
-    );
+    expect(
+      screen.getByTestId('workspace-operation-progress'),
+    ).toHaveTextContent('archiving');
     expect(screen.queryByTestId('archive-btn')).not.toBeInTheDocument();
   });
 
@@ -138,7 +218,9 @@ describe('WorkspaceItem context menu', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     const input = screen.getByTestId('workspace-rename-input');
     fireEvent.change(input, { target: { value: 'Fix workspace menu' } });
-    expect(screen.getByTestId('workspace-rename-branch-checkbox')).not.toBeChecked();
+    expect(
+      screen.getByTestId('workspace-rename-branch-checkbox'),
+    ).not.toBeChecked();
     fireEvent.click(screen.getByText('Rename'));
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('workspace:update', {

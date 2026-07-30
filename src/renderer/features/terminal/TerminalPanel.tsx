@@ -57,13 +57,13 @@ export function TerminalPanel({
 
   return (
     <div
-      className={`flex flex-col bg-surface-panel ${collapsed ? '' : 'h-full'}`}
+      className={`flex flex-col border-0 bg-surface-panel outline-none ${collapsed ? '' : 'h-full'}`}
       data-testid="terminal-panel"
       data-collapsed={collapsed}
     >
       {/* Compact tab bar: tabs, add terminal, and collapse/expand. */}
       <div
-        className="flex h-10 shrink-0 items-center gap-1 border-b border-border-1 bg-surface-panel px-2"
+        className="flex h-10 shrink-0 items-center gap-1 border-0 bg-surface-panel px-2"
         data-testid="terminal-tabs"
       >
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -127,7 +127,7 @@ export function TerminalPanel({
 
       {/* Keep surfaces mounted while collapsed so live shells survive expansion. */}
       <div
-        className={`relative min-h-0 flex-1 ${collapsed ? 'hidden' : ''}`}
+        className={`relative min-h-0 flex-1 border-0 outline-none ${collapsed ? 'hidden' : ''}`}
         data-testid="terminal-surfaces"
       >
         {tabs.length === 0 ? (

@@ -71,6 +71,7 @@ describe('ScheduledTasksRepo.create — state derivation', () => {
       model: 'sonnet',
       mode: 'plan',
       scheduledAt: at,
+      harnessOverride: 'codex',
     });
     expect(task).toMatchObject({
       workspaceId,
@@ -82,6 +83,7 @@ describe('ScheduledTasksRepo.create — state derivation', () => {
       origin: 'user',
       turnId: null,
       errorMessage: null,
+      harnessOverride: 'codex',
     });
     expect(await repo.get(task.id)).toEqual(task);
   });
@@ -94,6 +96,7 @@ describe('ScheduledTasksRepo.create — state derivation', () => {
       mode: null,
       scheduledAt: null,
       origin: 'user',
+      harnessOverride: null,
     });
   });
 
@@ -145,6 +148,21 @@ describe('ScheduledTasksRepo.update — patch + state re-derivation', () => {
     });
     const updated = await repo.update(task.id, { scheduledAt: null });
     expect(updated).toMatchObject({ state: 'pending', scheduledAt: null });
+  });
+
+  it('sets and clears a harness override', async () => {
+    const task = await repo.create({ workspaceId, prompt: 'a' });
+
+    expect(
+      (await repo.update(task.id, { harnessOverride: 'codex' }))
+        .harnessOverride,
+    ).toBe('codex');
+    expect((await repo.get(task.id)).harnessOverride).toBe('codex');
+
+    expect(
+      (await repo.update(task.id, { harnessOverride: null })).harnessOverride,
+    ).toBeNull();
+    expect((await repo.get(task.id)).harnessOverride).toBeNull();
   });
 
   it('rejects an update while running with conflict', async () => {

@@ -124,6 +124,22 @@ function makeSettings(setupScript: string): EffectiveSettings {
     appearance: {
       theme: 'dark',
     },
+    knowledge: {
+      enabled: false,
+      storage: 'local',
+      proposal_mode: 'review_required',
+      inject_context: true,
+      extract_after_turn: true,
+      show_notifications: true,
+      search: {
+        enabled: true,
+        provider: 'basic',
+        max_results: 12,
+        max_context_tokens: 12_000,
+        index_sources: false,
+        rerank: true,
+      },
+    },
   };
 }
 
@@ -216,10 +232,10 @@ describe('WorkspaceManager.create', () => {
     expect(existsSync(ws.worktreePath!)).toBe(true);
   });
 
-  it('branch is <branchPrefix>/<cityName>', async () => {
+  it('uses the workspace name directly as the branch name', async () => {
     const manager = buildManager('echo setup-ran');
     const ws = await manager.create({ projectId });
-    expect(ws.branch).toMatch(/^agent\/.+$/);
+    expect(ws.branch).toBe(ws.name);
   });
 
   it('emits workspace:created after DB row is committed', async () => {
@@ -283,15 +299,86 @@ describe('WorkspaceManager.create', () => {
     expect(ws.name).toBe('current');
   });
 
-  it('uses an explicit safe worktree name and rejects traversal names', async () => {
+  it('uses an explicit safe workspace name and rejects worktree traversal names', async () => {
     const manager = buildManager('echo ok');
     const ws = await manager.create({ projectId, name: 'feature-search' });
     expect(ws.name).toBe('feature-search');
-    expect(ws.branch).toBe('agent/feature-search');
+    expect(ws.branch).toBe('feature-search');
 
     await expect(
-      manager.create({ projectId, name: '../outside' }),
+      manager.create({
+        projectId,
+        name: 'Outside',
+        worktreeName: '../outside',
+      }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('uses an explicit branch name and rejects invalid Git branch names', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({
+      projectId,
+      name: 'search-workspace',
+      branch: 'feature/search',
+    });
+    expect(ws.branch).toBe('feature/search');
+
+    await expect(
+      manager.create({
+        projectId,
+        name: 'invalid-branch-workspace',
+        branch: '../outside',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('uses a worktree directory name independently from workspace and branch names', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({
+      projectId,
+      name: 'search-workspace',
+      worktreeName: 'search-checkout',
+      branch: 'feature/search',
+    });
+
+    expect(ws.name).toBe('search-workspace');
+    expect(ws.branch).toBe('feature/search');
+    expect(ws.worktreePath).toBe(
+      join(
+        userDataRoot,
+        'harness',
+        'projects',
+        projectId,
+        'worktrees',
+        'search-checkout',
+      ),
+    );
+  });
+
+  it('allows a human-readable workspace name when path and branch names are separate', async () => {
+    const manager = buildManager('echo ok');
+    const ws = await manager.create({
+      projectId,
+      name: 'Search workspace — July',
+      worktreeName: 'search-july',
+      branch: 'feature/search-july',
+    });
+
+    expect(ws.name).toBe('Search workspace — July');
+    expect(ws.branch).toBe('feature/search-july');
+  });
+
+  it('allows long formatted text as a workspace display name', async () => {
+    const manager = buildManager('echo ok');
+    const displayName = `✨ Design / QA Iteration ${'x'.repeat(100)}`;
+    const ws = await manager.create({
+      projectId,
+      name: displayName,
+      worktreeName: 'design-qa',
+      branch: 'feature/design-qa',
+    });
+
+    expect(ws.name).toBe(displayName);
   });
 
   it('adopts an exact worktree orphan left by a failed DB insert', async () => {
@@ -303,25 +390,19 @@ describe('WorkspaceManager.create', () => {
       'worktrees',
       'orphan',
     );
-    await git.addWorktree(
-      sourceRepoPath,
-      orphanPath,
-      'agent/orphan',
-      'main',
-      true,
-    );
+    await git.addWorktree(sourceRepoPath, orphanPath, 'orphan', 'main', true);
 
     const manager = buildManager('echo ok');
     const ws = await manager.create({ projectId, name: 'orphan' });
 
     expect(ws).toMatchObject({
       name: 'orphan',
-      branch: 'agent/orphan',
+      branch: 'orphan',
       worktreePath: orphanPath,
     });
     expect(
       (await git.worktreeList(sourceRepoPath)).filter(
-        (entry) => entry.branch === 'agent/orphan',
+        (entry) => entry.branch === 'orphan',
       ),
     ).toHaveLength(1);
   });
@@ -339,7 +420,7 @@ describe('WorkspaceManager.create', () => {
     expect(createSpy).toHaveBeenCalledOnce();
     expect(
       (await new GitService().worktreeList(sourceRepoPath)).some(
-        (entry) => entry.branch === 'agent/failed-insert',
+        (entry) => entry.branch === 'failed-insert',
       ),
     ).toBe(false);
   });
@@ -624,7 +705,7 @@ describe('WorkspaceManager.update', () => {
 
     expect(updated).toMatchObject({
       name: 'Fix context menu',
-      branch: 'agent/fix-context-menu',
+      branch: 'fix-context-menu',
       worktreePath,
     });
     await expect(
@@ -634,7 +715,7 @@ describe('WorkspaceManager.update', () => {
         'show-ref',
         '--verify',
         '--quiet',
-        'refs/heads/agent/fix-context-menu',
+        'refs/heads/fix-context-menu',
       ]),
     ).resolves.toBeTruthy();
   });
@@ -650,7 +731,7 @@ describe('WorkspaceManager.update', () => {
 
     expect(updated).toMatchObject({
       name: 'W2BT-21830/prev-stay-room (#42)',
-      branch: 'agent/w2bt-21830-prev-stay-room-42',
+      branch: 'w2bt-21830-prev-stay-room-42',
       worktreePath: workspace.worktreePath,
     });
   });
@@ -665,7 +746,7 @@ describe('WorkspaceManager.update', () => {
 
     expect(updated).toMatchObject({
       name: 'W2BT-21830/prev-stay-room (#42)',
-      branch: 'agent/original',
+      branch: 'original',
       worktreePath: workspace.worktreePath,
     });
   });
@@ -673,7 +754,7 @@ describe('WorkspaceManager.update', () => {
   it('rejects branch rename when the derived branch already exists', async () => {
     const manager = buildManager('echo ok');
     const workspace = await manager.create({ projectId, name: 'original' });
-    await execa('git', ['-C', sourceRepoPath, 'branch', 'agent/conflict']);
+    await execa('git', ['-C', sourceRepoPath, 'branch', 'conflict']);
 
     await expect(
       manager.update(workspace.id, {

@@ -34,6 +34,10 @@ export interface OnboardingServiceDeps {
   countGithubAccounts: () => Promise<number>;
   /** Count of registered projects (`ProjectsRepo.list().length`). */
   countProjects: () => Promise<number>;
+  /** Whether the optional QMD knowledge search CLI is installed. */
+  qmdInstalled: () => Promise<boolean>;
+  isAcknowledged: () => Promise<boolean>;
+  acknowledge: () => Promise<void>;
 }
 
 /**
@@ -55,10 +59,23 @@ export class OnboardingService {
 
     const githubConnected = (await this.deps.countGithubAccounts()) > 0;
     const hasProjects = (await this.deps.countProjects()) > 0;
+    const qmdInstalled = await this.deps.qmdInstalled();
+    const acknowledged = await this.deps.isAcknowledged();
 
     // Essential steps: a usable harness + at least one project. GitHub is optional.
     const complete = harnessReady && hasProjects;
 
-    return { harnessReady, githubConnected, hasProjects, complete };
+    return {
+      harnessReady,
+      githubConnected,
+      hasProjects,
+      qmdInstalled,
+      acknowledged,
+      complete,
+    };
+  }
+
+  async acknowledge(): Promise<void> {
+    await this.deps.acknowledge();
   }
 }

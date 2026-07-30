@@ -6,8 +6,8 @@
 // Covers: a due task fires → done; a busy workspace queues; `onWorkspaceTurnEnd` drains
 // FIFO; `AppError('conflict')` from startTurn re-queues; an error terminal → error +
 // message; `turn:event` ordering (incl. buffered-until-turnId); boot reconcile → missed;
-// stop() halts ticking; and opts assembly (mode default, model passthrough, resume
-// sessionId).
+// stop() halts ticking; and opts assembly (fresh sessions with mode/model/harness
+// passthrough).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -41,6 +41,7 @@ class FakeHarness {
     opts: StartTurnOpts;
     sink: StreamSink<AgentEvent>;
   }[] = [];
+  harnessOverrides: Array<string | undefined> = [];
   nextTurnId = 'turn-1';
   conflictOnce = false;
   /** When set, called synchronously inside startTurn (to test buffered-until-turnId). */
@@ -58,6 +59,7 @@ class FakeHarness {
     workspaceId: string,
     opts: StartTurnOpts,
     sink: StreamSink<AgentEvent>,
+    harnessOverride?: string,
   ): Promise<{ sessionId: string; interrupt: () => Promise<void> }> {
     if (this.conflictOnce) {
       this.conflictOnce = false;
@@ -67,6 +69,7 @@ class FakeHarness {
     this.activeTurnId.set(workspaceId, turnId);
     this.active.add(workspaceId);
     this.calls.push({ workspaceId, opts, sink });
+    this.harnessOverrides.push(harnessOverride);
     this.onStart?.(sink);
     return { sessionId: opts.sessionId ?? 'sess', interrupt: async () => {} };
   }
@@ -92,7 +95,6 @@ function makeScheduler(overrides?: Partial<TaskSchedulerDeps>): TaskScheduler {
         ? ({ id, worktreePath, harness: 'claude_code' } as unknown as Workspace)
         : null,
     settings: { get: () => SETTINGS },
-    latestSessionId: async () => 'sess-123',
     emit: (event, payload) => emitted.push({ event, payload }),
     now: () => NOW,
     tickIntervalMs: 10_000,
@@ -202,20 +204,99 @@ describe('TaskScheduler.runNow — fire path', () => {
 });
 
 describe('TaskScheduler — opts assembly', () => {
-  it('threads the resume sessionId, model, and the settings default mode', async () => {
+  it('starts run-now tasks fresh while preserving model, harness, and settings mode', async () => {
     const task = await repo.create({
       workspaceId,
       prompt: 'go',
       model: 'sonnet',
+      harnessOverride: 'codex',
     });
     await scheduler.runNow(task.id);
 
     const opts = harness.calls[0].opts;
-    expect(opts.sessionId).toBe('sess-123'); // the resume mechanism
+    expect(opts.sessionId).toBeUndefined();
     expect(opts.model).toBe('sonnet');
     expect(opts.mode).toBe('default'); // task.mode null → settings default
     expect(opts.prompt).toBe('go');
     expect(opts.workspaceDir).toBe(worktreePath);
+    expect(harness.harnessOverrides).toEqual(['codex']);
+  });
+
+  it('starts due tasks fresh even when the workspace has a latest session', async () => {
+    await new TurnsRepo(db).setSessionId(fakeTurnId, 'existing-session');
+    const task = await repo.create({
+      workspaceId,
+      prompt: 'due',
+      scheduledAt: NOW,
+      model: 'opus',
+      mode: 'plan',
+      harnessOverride: 'cursor',
+    });
+
+    await (scheduler as unknown as { tick: () => Promise<void> }).tick();
+    await vi.waitFor(() => expect(harness.calls).toHaveLength(1));
+
+    expect(harness.calls[0].opts).toMatchObject({
+      prompt: 'due',
+      sessionId: undefined,
+      model: 'opus',
+      mode: 'plan',
+    });
+    expect(harness.harnessOverrides).toEqual(['cursor']);
+    expect((await repo.get(task.id)).state).toBe('running');
+  });
+
+  it('starts each sequential queued task with fresh provider context', async () => {
+    await new TurnsRepo(db).setSessionId(fakeTurnId, 'existing-session');
+    const first = await repo.create({
+      workspaceId,
+      prompt: 'first',
+      model: 'sonnet',
+      mode: 'plan',
+      harnessOverride: 'codex',
+    });
+    const second = await repo.create({
+      workspaceId,
+      prompt: 'second',
+      model: 'opus',
+      mode: 'auto_accept',
+      harnessOverride: 'cursor',
+    });
+    await repo.setState(first.id, 'queued');
+    await repo.setState(second.id, 'queued');
+
+    scheduler.onWorkspaceTurnEnd(workspaceId);
+    await vi.waitFor(() => expect(harness.calls).toHaveLength(1));
+    harness.calls[0].sink.push({ kind: 'turn_end' });
+    await vi.waitFor(async () =>
+      expect((await repo.get(first.id)).state).toBe('done'),
+    );
+    harness.active.delete(workspaceId);
+    scheduler.onWorkspaceTurnEnd(workspaceId);
+    await vi.waitFor(() => expect(harness.calls).toHaveLength(2));
+
+    expect(
+      harness.calls.map(({ opts }) => ({
+        prompt: opts.prompt,
+        sessionId: opts.sessionId,
+        model: opts.model,
+        mode: opts.mode,
+      })),
+    ).toEqual([
+      {
+        prompt: 'first',
+        sessionId: undefined,
+        model: 'sonnet',
+        mode: 'plan',
+      },
+      {
+        prompt: 'second',
+        sessionId: undefined,
+        model: 'opus',
+        mode: 'auto_accept',
+      },
+    ]);
+    expect(harness.harnessOverrides).toEqual(['codex', 'cursor']);
   });
 });
 

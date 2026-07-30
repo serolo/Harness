@@ -20,12 +20,16 @@ export function TerminalTab({
   useTerminal(workspaceId, tabId, containerRef);
   return (
     <div
-      ref={containerRef}
       data-testid="terminal-surface"
       data-active={active}
-      className={`absolute inset-0 overflow-hidden bg-surface-well p-1 ${
+      className={`terminal-surface absolute inset-0 overflow-hidden border-0 bg-[var(--terminal-bg)] p-2 pb-6 outline-none ${
         active ? '' : 'hidden'
       }`}
-    />
+    >
+      <div
+        ref={containerRef}
+        className="h-full w-full overflow-hidden bg-[var(--terminal-bg)] [&_.xterm-helper-textarea]:outline-none [&_.xterm-screen]:border-0 [&_.xterm-viewport]:border-0 [&_.xterm]:border-0 [&_.xterm]:outline-none [&_.xterm]:shadow-none"
+      />
+    </div>
   );
 }

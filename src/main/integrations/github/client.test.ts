@@ -271,6 +271,24 @@ describe('GithubClient PRs', () => {
       }),
     );
   });
+
+  it('reports a closed pull request with merged_at as merged', async () => {
+    const octokit = fakeOctokit();
+    octokit.request.mockResolvedValueOnce(
+      ok(
+        restPull({
+          state: 'closed',
+          merged_at: '2026-01-02T00:00:00Z',
+        }),
+      ),
+    );
+    const client = makeClient(octokit);
+
+    await expect(client.getPrByNumber(42)).resolves.toMatchObject({
+      number: 42,
+      state: 'merged',
+    });
+  });
 });
 
 describe('GithubClient issues', () => {

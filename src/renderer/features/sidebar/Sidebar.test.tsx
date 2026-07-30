@@ -4,6 +4,8 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { createQueryClient } from '@renderer/app/providers';
 import { Sidebar } from './Sidebar';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
+import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
+import { useUiStore } from '@renderer/stores/ui';
 import type { Project, Workspace } from '@shared/models';
 
 interface ApiStub {
@@ -104,6 +106,8 @@ function resetStore(): void {
     selectedWorkspaceId: null,
     selectedProjectId: null,
   });
+  useWorkspaceCreationStore.setState({ current: null });
+  useUiStore.setState({ newWorkspaceOpen: false });
 }
 
 beforeEach(resetStore);
@@ -149,6 +153,28 @@ describe('Sidebar project tree', () => {
       'aria-expanded',
       'true',
     );
+    expect(screen.getAllByTestId('project-toggle')[0]).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByText('paris')).not.toBeInTheDocument();
+  });
+
+  it('closes the previous project when another project is opened', async () => {
+    installApi([PROJECT_ONE, PROJECT_TWO], [WORKSPACE_ONE, WORKSPACE_TWO]);
+    renderSidebar();
+
+    expect(await screen.findByText('paris')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByTestId('project-toggle')[1]);
+
+    expect(await screen.findByText('tokyo')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByTestId('project-toggle')[0]).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      ),
+    );
+    expect(screen.queryByText('paris')).not.toBeInTheDocument();
   });
 
   it('omits archived workspaces from the project list', async () => {
@@ -222,5 +248,30 @@ describe('Sidebar project tree', () => {
     expect(await screen.findByText('my-repo')).toBeInTheDocument();
     expect(screen.getByText('Loading sessions…')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+  });
+
+  it('surfaces a creation failure that happens before a workspace exists', async () => {
+    installApi([PROJECT_ONE], []);
+    useWorkspaceCreationStore.setState({
+      current: {
+        runId: 'run-1',
+        projectId: PROJECT_ONE.id,
+        workspaceId: null,
+        phase: 'Workspace creation failed',
+        lines: [],
+        status: 'error',
+        error: 'Could not create worktree: branch already exists',
+      },
+    });
+    renderSidebar();
+
+    const alert = await screen.findByTestId('workspace-creation-error');
+    expect(alert).toHaveTextContent(
+      'Could not create worktree: branch already exists',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(useUiStore.getState().newWorkspaceOpen).toBe(true);
+    expect(useWorkspaceCreationStore.getState().current).toBeNull();
   });
 });

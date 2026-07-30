@@ -6,40 +6,18 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { OnboardingState } from '@shared/ipc';
 import {
+  APPEARANCE_THEMES,
   COMPLETION_SOUNDS,
+  isAppearanceTheme,
   isCompletionSound,
+  type AppearanceTheme,
   type CompletionSound,
 } from '@shared/settings';
 import { invoke } from '@renderer/ipc';
 import { useSettings } from '@renderer/features/settings/useSettings';
 
-/** localStorage key recording that the user acknowledged the v1 execution-model disclosure. */
-const ACK_KEY = 'harness.onboarding.acknowledged';
-const FORCE_SHOW_ONBOARDING = import.meta.env.MODE !== 'test';
-
-/** Read the persisted acknowledgement flag (sandbox-safe: localStorage may be unavailable). */
-function readAck(): boolean {
-  try {
-    return window.localStorage.getItem(ACK_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-/** Persist the acknowledgement flag (best-effort). */
-function writeAck(): void {
-  try {
-    window.localStorage.setItem(ACK_KEY, '1');
-  } catch {
-    /* best-effort — a failed persist just re-shows the wizard next launch. */
-  }
-}
-
 export function OnboardingWizard(): React.JSX.Element | null {
   const [state, setState] = useState<OnboardingState | null>(null);
-  const [acknowledged, setAcknowledged] = useState<boolean>(
-    FORCE_SHOW_ONBOARDING ? false : readAck,
-  );
   const [ackChecked, setAckChecked] = useState(false);
 
   const loadState = useCallback((): void => {
@@ -51,7 +29,6 @@ export function OnboardingWizard(): React.JSX.Element | null {
   }, []);
 
   useEffect(() => {
-    if (acknowledged) return;
     let active = true;
     void invoke('onboarding:state', undefined)
       .then((s) => {
@@ -63,14 +40,17 @@ export function OnboardingWizard(): React.JSX.Element | null {
     return () => {
       active = false;
     };
-  }, [acknowledged]);
+  }, []);
 
-  if (acknowledged || state == null) return null;
+  if (state == null || state.acknowledged) return null;
 
   const acknowledge = (): void => {
     if (!ackChecked) return;
-    writeAck();
-    setAcknowledged(true);
+    void invoke('onboarding:acknowledge', undefined)
+      .then(() => setState({ ...state, acknowledged: true }))
+      .catch(() => {
+        // Keep the wizard visible if durable persistence fails.
+      });
   };
 
   return (
@@ -102,10 +82,11 @@ function OnboardingWizardContent({
 }): React.JSX.Element {
   const { effective, set: setSetting } = useSettings();
   const [busyAction, setBusyAction] = useState<
-    'github' | 'refresh' | null
+    'github' | 'refresh' | 'qmd' | null
   >(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const completionSound = effective?.notifications.completionSound ?? 'none';
+  const appearanceTheme = effective?.appearance.theme ?? 'dark';
 
   const refreshState = (): void => {
     setBusyAction('refresh');
@@ -131,12 +112,31 @@ function OnboardingWizardContent({
     }
   };
 
+  const installQmd = async (): Promise<void> => {
+    setBusyAction('qmd');
+    setActionError(null);
+    try {
+      const status = await invoke('knowledge:installQmd', undefined);
+      setState({ ...state, qmdInstalled: status.installed });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const updateCompletionSound = (next: CompletionSound): void => {
     void setSetting('notifications.completionSound', next)
       .then(() => invoke('notifications:previewSound', { sound: next }))
       .catch((err: unknown) => {
         setActionError(err instanceof Error ? err.message : String(err));
       });
+  };
+
+  const updateTheme = (next: AppearanceTheme): void => {
+    void setSetting('appearance.theme', next).catch((err: unknown) => {
+      setActionError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   return (
@@ -186,6 +186,17 @@ function OnboardingWizardContent({
               busy={busyAction === 'refresh'}
               status={state.harnessReady ? undefined : 'Required'}
             />
+            <ProviderCard
+              testId="onboarding-step-qmd"
+              done={state.qmdInstalled}
+              icon={<QmdMark />}
+              title="QMD search"
+              description="Local hybrid search for project knowledge."
+              action={state.qmdInstalled ? 'QMD installed' : 'Install QMD'}
+              onAction={() => void installQmd()}
+              busy={busyAction === 'qmd'}
+              status={state.qmdInstalled ? undefined : 'Optional'}
+            />
           </ol>
 
           {actionError ? (
@@ -231,6 +242,30 @@ function OnboardingWizardContent({
                   run with my user privileges.
                 </span>
               </label>
+            </div>
+
+            <SettingCopy
+              title="Theme"
+              description="Choose how Harness looks. You can change this later in Settings."
+            />
+            <div className="flex items-center justify-end self-start">
+              <select
+                className="h-9 w-[206px] rounded-md border border-border-2 bg-surface-well px-3 text-sm font-medium text-fg-1 outline-none"
+                value={appearanceTheme}
+                onChange={(e) => {
+                  if (isAppearanceTheme(e.target.value)) {
+                    updateTheme(e.target.value);
+                  }
+                }}
+                aria-label="Theme"
+                data-testid="onboarding-theme"
+              >
+                {APPEARANCE_THEMES.map((theme) => (
+                  <option key={theme} value={theme}>
+                    {theme.charAt(0).toUpperCase() + theme.slice(1)}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <SettingCopy
@@ -317,9 +352,7 @@ function ProviderCard({
           {icon}
           <div className="text-[17px] font-semibold text-fg-1">{title}</div>
         </div>
-        <div className="mt-2 text-sm font-medium text-fg-2">
-          {description}
-        </div>
+        <div className="mt-2 text-sm font-medium text-fg-2">{description}</div>
       </div>
       <div className="flex h-12 items-center justify-between border-t border-border-1 bg-surface-panel px-4">
         <button
@@ -382,6 +415,14 @@ function HarnessMark(): React.JSX.Element {
   return (
     <span className="flex h-6 w-6 items-center justify-center rounded-full border border-fg-2 text-[13px] font-bold text-fg-1">
       H
+    </span>
+  );
+}
+
+function QmdMark(): React.JSX.Element {
+  return (
+    <span className="flex h-6 w-6 items-center justify-center rounded-full border border-fg-2 text-[10px] font-bold text-fg-1">
+      QMD
     </span>
   );
 }

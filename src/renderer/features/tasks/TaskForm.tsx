@@ -7,10 +7,12 @@
 
 import { useState } from 'react';
 import type { AgentMode } from '@shared/harness';
+import type { HarnessId } from '@shared/harness';
 import type { ScheduledTask } from '@shared/tasks';
 import { MODEL_PATTERN } from '@shared/tasks';
 import { Dialog, Button, Textarea, Select } from '@renderer/components/ui';
 import { ModelPicker } from './ModelPicker';
+import type { Project, Workspace } from '@shared/models';
 
 /** The values a submit yields. `null` clears a nullable field (edit); create maps to undefined. */
 export interface TaskFormValues {
@@ -18,6 +20,8 @@ export interface TaskFormValues {
   model: string | null;
   mode: AgentMode | null;
   scheduledAt: number | null;
+  workspaceId: string;
+  harnessOverride: HarnessId | null;
 }
 
 export interface TaskFormProps {
@@ -27,6 +31,9 @@ export interface TaskFormProps {
   focusSchedule?: boolean;
   /** The effective `agent.mode` (for the "Workspace default (…)" label). */
   defaultAgentMode?: AgentMode;
+  workspaceId: string;
+  workspaces: Workspace[];
+  projects: Project[];
   onSubmit: (values: TaskFormValues) => Promise<void>;
   onClose: () => void;
 }
@@ -48,11 +55,18 @@ export function TaskForm({
   initial,
   focusSchedule,
   defaultAgentMode,
+  workspaceId,
+  workspaces,
+  projects,
   onSubmit,
   onClose,
 }: TaskFormProps): React.JSX.Element {
   const [prompt, setPrompt] = useState(initial?.prompt ?? '');
   const [model, setModel] = useState<string | null>(initial?.model ?? null);
+  const [harnessOverride, setHarnessOverride] = useState<HarnessId | null>(
+    initial?.harnessOverride ?? null,
+  );
+  const [targetWorkspaceId, setTargetWorkspaceId] = useState(workspaceId);
   const [taskMode, setTaskMode] = useState<AgentMode | null>(
     initial?.mode ?? null,
   );
@@ -97,6 +111,8 @@ export function TaskForm({
         model: normalizedModel,
         mode: taskMode,
         scheduledAt,
+        workspaceId: targetWorkspaceId,
+        harnessOverride,
       });
       onClose();
     } catch (e) {
@@ -128,6 +144,22 @@ export function TaskForm({
       }
     >
       <div className="flex flex-col gap-4">
+        {mode === 'create' ? (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-fg-2">Workspace</span>
+            <Select
+              value={targetWorkspaceId}
+              data-testid="task-workspace-select"
+              options={workspaces
+                .filter((workspace) => workspace.status !== 'archived')
+                .map((workspace) => ({
+                  value: workspace.id,
+                  label: `${projects.find((project) => project.id === workspace.projectId)?.name ?? 'Unknown project'} — ${workspace.name}`,
+                }))}
+              onChange={(event) => setTargetWorkspaceId(event.target.value)}
+            />
+          </label>
+        ) : null}
         <label className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-fg-2">Prompt</span>
           <Textarea
@@ -141,7 +173,14 @@ export function TaskForm({
 
         <label className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-fg-2">Model</span>
-          <ModelPicker value={model} onChange={setModel} />
+          <ModelPicker
+            model={model}
+            harnessOverride={harnessOverride}
+            onChange={(value) => {
+              setModel(value.model);
+              setHarnessOverride(value.harnessOverride);
+            }}
+          />
         </label>
 
         <label className="flex flex-col gap-1.5">

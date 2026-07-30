@@ -3,7 +3,15 @@
 // user has scrolled up (so reading history isn't yanked back down).
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { AgentEvent, AgentQuestion } from '@shared/harness';
+import {
+  FolderGit2,
+  GitBranch,
+  GitFork,
+  GitPullRequest,
+  MapPin,
+} from 'lucide-react';
+import type { AgentEvent, AgentQuestion, Usage } from '@shared/harness';
+import type { Project, Workspace } from '@shared/models';
 import type { RenderedTurn } from '@renderer/stores/chat';
 import { TextMessage } from './TextMessage';
 import { ToolCard } from './ToolCard';
@@ -22,6 +30,31 @@ import { ActivityChip } from './ActivityChip';
 import { PlanApproval } from './PlanApproval';
 import { Markdown } from './markdown';
 import { invoke } from '@renderer/ipc';
+import { KnowledgeProposalCard } from './KnowledgeProposalCard';
+import { KnowledgeContextCard } from './KnowledgeContextCard';
+
+function visibleUserText(text: string): string {
+  const marker = text.indexOf('\n\n<project_knowledge>');
+  return marker >= 0 ? text.slice(0, marker).trimEnd() : text;
+}
+
+function visibleModelText(text: string): string {
+  return text
+    .replace(
+      /<harness_knowledge_proposal>[\s\S]*?<\/harness_knowledge_proposal>/g,
+      '',
+    )
+    .replace(/<harness_knowledge_proposal>[\s\S]*$/g, '')
+    .trimEnd();
+}
+
+function contextUsage(events: AgentEvent[]): Usage | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.kind === 'context_usage') return event.usage;
+  }
+  return undefined;
+}
 
 export interface TranscriptProps {
   turns: RenderedTurn[];
@@ -31,6 +64,121 @@ export interface TranscriptProps {
   onApprovePlan?: () => void;
   onAnswerQuestion?: (answer: string) => void;
   isBusy?: boolean;
+  workspace?: Workspace;
+  project?: Project;
+}
+
+function NewChatWorkspaceContext({
+  workspace,
+  project,
+}: {
+  workspace: Workspace;
+  project?: Project;
+}): React.JSX.Element {
+  const source =
+    workspace.prNumber !== null
+      ? `PR #${workspace.prNumber}`
+      : workspace.sourceKind === 'github_issue' && workspace.sourceRef
+        ? `Issue #${workspace.sourceRef}`
+        : workspace.sourceKind === 'linear_issue' && workspace.sourceRef
+          ? workspace.sourceRef
+          : null;
+  const checkoutLabel =
+    workspace.location === 'project' ? 'Project checkout' : 'Worktree';
+  const checkoutName =
+    workspace.worktreePath
+      ?.split(/[\\/]/)
+      .filter(Boolean)
+      .at(-1) ?? 'Checkout unavailable';
+
+  return (
+    <section
+      className="mx-auto mt-8 w-full max-w-2xl rounded-4 border border-border-1 bg-surface-panel p-5 shadow-2"
+      data-testid="new-chat-workspace-context"
+    >
+      <p className="text-xs font-medium uppercase tracking-wide text-fg-3">
+        New chat in
+      </p>
+      <h2 className="mt-1 truncate text-lg font-semibold text-fg-1">
+        {workspace.name}
+      </h2>
+      <p className="mt-1 text-sm text-fg-3">
+        This chat starts with a fresh model context for the current workspace.
+      </p>
+
+      <dl className="mt-5 grid gap-3 sm:grid-cols-2">
+        <div className="flex min-w-0 items-start gap-2">
+          <GitBranch
+            className="mt-0.5 h-4 w-4 shrink-0 text-accent"
+            aria-hidden
+          />
+          <div className="min-w-0">
+            <dt className="text-xs text-fg-3">Branch</dt>
+            <dd
+              className="truncate font-mono text-sm text-fg-1"
+              title={workspace.branch}
+            >
+              {workspace.branch}
+            </dd>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-start gap-2">
+          <GitFork
+            className="mt-0.5 h-4 w-4 shrink-0 text-fg-3"
+            aria-hidden
+          />
+          <div className="min-w-0">
+            <dt className="text-xs text-fg-3">Base branch</dt>
+            <dd
+              className="truncate font-mono text-sm text-fg-2"
+              title={workspace.baseBranch}
+            >
+              {workspace.baseBranch}
+            </dd>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-start gap-2">
+          <FolderGit2
+            className="mt-0.5 h-4 w-4 shrink-0 text-fg-3"
+            aria-hidden
+          />
+          <div className="min-w-0">
+            <dt className="text-xs text-fg-3">Project</dt>
+            <dd className="truncate text-sm text-fg-2">
+              {project?.name ?? 'Current project'}
+            </dd>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-start gap-2">
+          <MapPin
+            className="mt-0.5 h-4 w-4 shrink-0 text-fg-3"
+            aria-hidden
+          />
+          <div className="min-w-0">
+            <dt className="text-xs text-fg-3">{checkoutLabel}</dt>
+            <dd
+              className="truncate font-mono text-sm text-fg-2"
+              title={workspace.worktreePath ?? undefined}
+            >
+              {checkoutName}
+            </dd>
+          </div>
+        </div>
+        {source ? (
+          <div className="flex min-w-0 items-start gap-2">
+            <GitPullRequest
+              className="mt-0.5 h-4 w-4 shrink-0 text-success"
+              aria-hidden
+            />
+            <div className="min-w-0">
+              <dt className="text-xs text-fg-3">Linked source</dt>
+              <dd className="truncate text-sm text-fg-2">{source}</dd>
+            </div>
+          </div>
+        ) : null}
+      </dl>
+    </section>
+  );
 }
 
 function transcriptScrollKey(turns: RenderedTurn[]): string {
@@ -75,7 +223,7 @@ function renderEvent(
 ): React.JSX.Element | null {
   switch (event.kind) {
     case 'user_message':
-      return <UserMessage key={key} text={event.text} />;
+      return <UserMessage key={key} text={visibleUserText(event.text)} />;
     case 'question_request':
       return (
         <QuestionCard
@@ -97,7 +245,9 @@ function renderEvent(
       );
     case 'text':
       {
-        const directQuestion = directQuestionFallback(event.delta);
+        const visibleText = visibleModelText(event.delta);
+        if (visibleText.trim() === '') return null;
+        const directQuestion = directQuestionFallback(visibleText);
         if (directQuestion) {
           return (
             <QuestionCard
@@ -108,11 +258,11 @@ function renderEvent(
             />
           );
         }
-        const proseQuestions = proseQuestionFallback(event.delta);
+        const proseQuestions = proseQuestionFallback(visibleText);
         if (proseQuestions) {
           return (
             <div key={key} className="space-y-3">
-              <TextMessage delta={event.delta} onOpenFile={onOpenFile} />
+              <TextMessage delta={visibleText} onOpenFile={onOpenFile} />
               <QuestionCard
                 questions={proseQuestions}
                 disabled={questionDisabled}
@@ -123,7 +273,11 @@ function renderEvent(
         }
       }
       return (
-        <TextMessage key={key} delta={event.delta} onOpenFile={onOpenFile} />
+        <TextMessage
+          key={key}
+          delta={visibleModelText(event.delta)}
+          onOpenFile={onOpenFile}
+        />
       );
     case 'activity':
       return (
@@ -156,6 +310,17 @@ function renderEvent(
       );
     case 'todo_update':
       return <TodoList key={key} todos={event.todos} />;
+    case 'knowledge_proposal':
+      return workspaceId ? (
+        <KnowledgeProposalCard
+          key={key}
+          workspaceId={workspaceId}
+          projectId={event.projectId}
+          count={event.proposalIds.length}
+        />
+      ) : null;
+    case 'knowledge_context':
+      return <KnowledgeContextCard key={key} sources={event.sources} />;
     case 'error':
       return (
         <div key={key}>
@@ -293,7 +458,9 @@ function endsWithUserResponseRequest(events: AgentEvent[]): boolean {
   const tail = finalText.delta.trim().slice(-600);
   return (
     /\b(?:tell me|let me know|reply with|respond with)\b/i.test(tail) ||
-    /\bplease\s+(?:answer|choose|confirm|clarify|provide|select)\b/i.test(tail) ||
+    /\bplease\s+(?:answer|choose|confirm|clarify|provide|select)\b/i.test(
+      tail,
+    ) ||
     /\bI need to know\b/i.test(tail)
   );
 }
@@ -301,9 +468,10 @@ function endsWithUserResponseRequest(events: AgentEvent[]): boolean {
 function savedPlanPath(events: AgentEvent[]): string | null {
   for (const event of events.slice().reverse()) {
     if (event.kind !== 'text') continue;
-    const match = /(?:`|^|\s)(\/[^\s`]*\/\.claude\/plans\/[^\s`]+\.md)(?:`|$|\s)/m.exec(
-      event.delta,
-    );
+    const match =
+      /(?:`|^|\s)(\/[^\s`]*\/\.claude\/plans\/[^\s`]+\.md)(?:`|$|\s)/m.exec(
+        event.delta,
+      );
     if (match?.[1]) return match[1];
   }
   return null;
@@ -373,6 +541,15 @@ function isToolActivity(event: AgentEvent): boolean {
 }
 
 /**
+ * Provider metadata is persisted in event order but has no transcript UI of its own.
+ * It must not split a continuous model-activity segment when providers emit a fresh
+ * context snapshot or model identity between tool calls.
+ */
+function isActivityMetadata(event: AgentEvent): boolean {
+  return event.kind === 'context_usage' || event.kind === 'model_info';
+}
+
+/**
  * The provider-neutral event contract does not carry tool-call ids, but both CLI
  * streams preserve call/result order. Pair successful results FIFO within one model
  * activity leg, consuming file/todo results without attaching them to a generic tool.
@@ -401,6 +578,7 @@ function pairToolResults(events: AgentEvent[]): Map<number, unknown> {
       }
       return;
     }
+    if (isActivityMetadata(event)) return;
     if (event.kind === 'text' || !isActivityEvent(event)) {
       pending.length = 0;
     }
@@ -451,19 +629,22 @@ function renderEvents(
     }
 
     const latestTextIndex = textIndexes[textIndexes.length - 1];
-    const earlierEvents = segment.slice(0, latestTextIndex);
-    const messageCount = earlierEvents.filter(
+    const collapsedEvents = segment.filter(
+      (_event, index) => index !== latestTextIndex,
+    );
+    const messageCount = collapsedEvents.filter(
       (event) => event.kind === 'text',
     ).length;
-    const toolCount = earlierEvents.filter(isToolActivity).length;
-    const toolNames = earlierEvents.flatMap((event) => {
+    const toolCount = collapsedEvents.filter(isToolActivity).length;
+    const toolNames = collapsedEvents.flatMap((event) => {
       if (event.kind === 'tool_use') return [event.name];
       if (event.kind === 'activity') return [event.title];
       if (event.kind === 'file_edit') return ['Edit'];
       if (event.kind === 'todo_update') return ['TodoWrite'];
       return [];
     });
-    const children = earlierEvents.flatMap((event, index) => {
+    const children = segment.flatMap((event, index) => {
+      if (index === latestTextIndex) return [];
       const absoluteIndex = start + index;
       const item = renderEvent(
         event,
@@ -488,21 +669,22 @@ function renderEvents(
       </ModelActivity>,
     );
 
-    segment.slice(latestTextIndex).forEach((event, index) => {
-      const absoluteIndex = start + latestTextIndex + index;
-      const item = renderEvent(
-        event,
-        `${keyPrefix}-${absoluteIndex}`,
-        workspaceId,
-        toolResults.get(absoluteIndex),
-        onOpenFile,
-      );
-      if (item) rendered.push(item);
-    });
+    const latestText = segment[latestTextIndex];
+    const absoluteIndex = start + latestTextIndex;
+    const item = renderEvent(
+      latestText,
+      `${keyPrefix}-${absoluteIndex}`,
+      workspaceId,
+      toolResults.get(absoluteIndex),
+      onOpenFile,
+      onAnswerQuestion,
+      questionDisabled,
+    );
+    if (item) rendered.push(item);
   }
 
   events.forEach((event, index) => {
-    if (isActivityEvent(event)) return;
+    if (isActivityEvent(event) || isActivityMetadata(event)) return;
     renderActivitySegment(segmentStart, index);
     const item = renderEvent(
       event,
@@ -528,6 +710,8 @@ export function Transcript({
   onApprovePlan,
   onAnswerQuestion,
   isBusy = false,
+  workspace,
+  project,
 }: TranscriptProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
@@ -563,6 +747,9 @@ export function Transcript({
       data-testid="transcript"
     >
       <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8">
+        {turns.length === 0 && workspace ? (
+          <NewChatWorkspaceContext workspace={workspace} project={project} />
+        ) : null}
         {turns.map((turn, index) => (
           <div
             key={turn.turnId}
@@ -602,7 +789,7 @@ export function Transcript({
             ) : (
               <TurnDivider
                 status={turn.status}
-                usage={turn.usage}
+                usage={contextUsage(turn.events) ?? turn.usage}
                 model={turn.model}
                 costMicros={turn.costMicros}
               />

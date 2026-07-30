@@ -15,6 +15,7 @@ import { ChatPanel } from './ChatPanel';
 import { useChatStore } from '@renderer/stores/chat';
 import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
 import { useWorkspaceArchiveStore } from '@renderer/stores/workspaceArchive';
+import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import {
   DEFAULT_MODEL_PREFERENCES,
   writeModelPreferences,
@@ -115,6 +116,12 @@ beforeEach(() => {
   useChatStore.setState({ byWorkspace: {}, busyByWorkspace: {} });
   useWorkspaceCreationStore.setState({ current: null });
   useWorkspaceArchiveStore.setState({ current: null });
+  useWorkspacesStore.setState({
+    projects: [],
+    workspaces: [],
+    selectedWorkspaceId: null,
+    selectedProjectId: null,
+  });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -122,6 +129,56 @@ afterEach(() => {
 });
 
 describe('ChatPanel reconstruction', () => {
+  it('shows workspace context at the start of a new chat', async () => {
+    installApi({});
+    useWorkspacesStore.setState({
+      projects: [
+        {
+          id: 'project-1',
+          name: 'w2-platform',
+          originUrl: 'git@github.com:acme/w2-platform.git',
+          defaultBranch: 'main',
+          repoPath: '/src/w2-platform',
+          createdAt: 1,
+        },
+      ],
+      workspaces: [
+        {
+          id: 'ws1',
+          projectId: 'project-1',
+          name: 'FeatureFlag Context',
+          branch: 'feature/featureflag-context',
+          baseBranch: 'main',
+          worktreePath: '/src/worktrees/featureflag-context',
+          status: 'idle',
+          sourceKind: 'pr',
+          sourceRef: '42',
+          harness: 'claude_code',
+          port: 3001,
+          createdAt: 1,
+          archivedAt: null,
+          prNumber: 42,
+          location: 'worktree',
+        },
+      ],
+      selectedWorkspaceId: 'ws1',
+      selectedProjectId: 'project-1',
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const context = await screen.findByTestId('new-chat-workspace-context');
+    expect(context).toHaveTextContent('FeatureFlag Context');
+    expect(context).toHaveTextContent('feature/featureflag-context');
+    expect(context).toHaveTextContent('Base branchmain');
+    expect(context).toHaveTextContent('w2-platform');
+    expect(context).toHaveTextContent('Worktreefeatureflag-context');
+    expect(context).not.toHaveTextContent(
+      '/src/worktrees/featureflag-context',
+    );
+    expect(context).toHaveTextContent('PR #42');
+  });
+
   it('shows workspace creation progress in a chat terminal', async () => {
     installApi({});
     useWorkspaceCreationStore.setState({
@@ -147,6 +204,34 @@ describe('ChatPanel reconstruction', () => {
     expect(
       screen.queryByTestId('workspace-creation-terminal'),
     ).not.toBeInTheDocument();
+  });
+
+  it('dismisses completed workspace creation output after five seconds', async () => {
+    vi.useFakeTimers();
+    installApi({});
+    useWorkspaceCreationStore.setState({
+      current: {
+        runId: 'create-complete',
+        projectId: 'project-1',
+        workspaceId: 'ws1',
+        phase: 'Workspace ready',
+        lines: ['Workspace ready'],
+        status: 'complete',
+        error: null,
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    expect(screen.getByTestId('workspace-creation-terminal')).toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(4_999));
+    expect(screen.getByTestId('workspace-creation-terminal')).toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(
+      screen.queryByTestId('workspace-creation-terminal'),
+    ).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 
   it('shows workspace archive progress and script output in chat', async () => {
@@ -189,6 +274,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: 10,
           outputTokens: 20,
+          costMicros: 123_400,
           events: [
             {
               id: 'e0',
@@ -240,12 +326,27 @@ describe('ChatPanel reconstruction', () => {
     const divider = screen.getByTestId('turn-divider');
     expect(divider).toHaveAttribute('data-status', 'completed');
 
-    fireEvent.click(screen.getByTestId('composer-context'));
-    expect(screen.getByTestId('composer-context-popover')).toHaveTextContent(
+    fireEvent.mouseEnter(screen.getByTestId('composer-context'));
+    const contextPopover = screen.getByTestId('composer-context-popover');
+    expect(contextPopover).toHaveTextContent(
       '30/200.0k',
     );
+    fireEvent.mouseEnter(contextPopover);
+    fireEvent.mouseLeave(contextPopover);
+    expect(
+      screen.queryByTestId('composer-context-popover'),
+    ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('composer-context'));
+    fireEvent.mouseEnter(screen.getByTestId('composer-cost'));
+    const costPopover = screen.getByTestId('composer-cost-popover');
+    expect(costPopover).toHaveTextContent('$0.1234');
+    expect(costPopover).toHaveTextContent('Priced turns1');
+    fireEvent.mouseEnter(costPopover);
+    fireEvent.mouseLeave(costPopover);
+    expect(
+      screen.queryByTestId('composer-cost-popover'),
+    ).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByTestId('composer-model'));
     fireEvent.click(
       await screen.findByTestId('composer-model-option-claude-sonnet-5-1m'),
@@ -255,9 +356,7 @@ describe('ChatPanel reconstruction', () => {
     ).toHaveTextContent(
       'When you switch models mid-chat, your next response may be slower and use more tokens.',
     );
-    fireEvent.click(
-      screen.getByTestId('composer-model-switch-notice-dismiss'),
-    );
+    fireEvent.click(screen.getByTestId('composer-model-switch-notice-dismiss'));
     expect(
       screen.queryByTestId('composer-model-switch-notice'),
     ).not.toBeInTheDocument();
@@ -297,8 +396,51 @@ describe('ChatPanel reconstruction', () => {
     expect(screen.getByTestId('composer-context-popover')).toHaveTextContent(
       '170/200.0k',
     );
-    expect(screen.getByTestId('composer-context-popover')).not.toHaveTextContent(
-      '280/200.0k',
+    expect(
+      screen.getByTestId('composer-context-popover'),
+    ).not.toHaveTextContent('280/200.0k');
+  });
+
+  it('uses the latest per-call context snapshot instead of cumulative Claude turn usage', async () => {
+    installApi({
+      history: {
+        turns: [
+          {
+            id: 't-context',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'sess-context',
+            mode: 'default',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: 317_297,
+            outputTokens: 1_297,
+            events: [
+              {
+                id: 'context-usage',
+                turnId: 't-context',
+                kind: 'context_usage',
+                ts: 1,
+                event: {
+                  kind: 'context_usage',
+                  usage: { inputTokens: 107_000, outputTokens: 500 },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-context'));
+    expect(screen.getByTestId('composer-context-popover')).toHaveTextContent(
+      '107.5k/200.0k',
+    );
+    expect(screen.getByTestId('turn-divider')).toHaveTextContent(
+      '107k in / 500 out',
     );
   });
 
@@ -597,14 +739,18 @@ describe('ChatPanel reconstruction', () => {
 
     render(<ChatPanel workspaceId="ws1" />);
 
-    expect(await screen.findByText(/Tell me \(a\/b\/c\/d\)/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Tell me \(a\/b\/c\/d\)/),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId('plan-approval')).not.toBeInTheDocument();
   });
 
   it('shows a saved plan inline and opens its path in a file tab', async () => {
     const planPath = '/Users/test/.claude/plans/reconciliation.md';
     const api = installApi({
-      plans: { [planPath]: '# Reconciliation plan\n\n1. Merge the persistence fix.' },
+      plans: {
+        [planPath]: '# Reconciliation plan\n\n1. Merge the persistence fix.',
+      },
       history: {
         turns: [
           {
@@ -697,7 +843,9 @@ describe('ChatPanel reconstruction', () => {
     render(<ChatPanel workspaceId="ws1" />);
 
     const card = await screen.findByTestId('question-card');
-    fireEvent.click(screen.getByRole('button', { name: /b - A plan to reconcile/i }));
+    fireEvent.click(
+      screen.getByRole('button', { name: /b - A plan to reconcile/i }),
+    );
     fireEvent.change(
       screen.getByLabelText(
         'Should the email reflect invite-level auto-action?',
@@ -794,6 +942,16 @@ describe('ChatPanel reconstruction', () => {
               event: { kind: 'text', delta: 'I will inspect the renderer.' },
             },
             {
+              id: 'usage-1',
+              turnId: 't-model-activity',
+              kind: 'context_usage',
+              ts: 1,
+              event: {
+                kind: 'context_usage',
+                usage: { inputTokens: 100, outputTokens: 10 },
+              },
+            },
+            {
               id: 'tool-1',
               turnId: 't-model-activity',
               kind: 'tool_use',
@@ -805,11 +963,29 @@ describe('ChatPanel reconstruction', () => {
               },
             },
             {
+              id: 'model-1',
+              turnId: 't-model-activity',
+              kind: 'model_info',
+              ts: 2,
+              event: { kind: 'model_info', model: 'claude-sonnet-5' },
+            },
+            {
               id: 'm2',
               turnId: 't-model-activity',
               kind: 'text',
               ts: 3,
               event: { kind: 'text', delta: 'The renderer is now updated.' },
+            },
+            {
+              id: 'tool-2',
+              turnId: 't-model-activity',
+              kind: 'tool_use',
+              ts: 4,
+              event: {
+                kind: 'tool_use',
+                name: 'Bash',
+                input: { command: 'npm test' },
+              },
             },
           ],
         },
@@ -820,21 +996,24 @@ describe('ChatPanel reconstruction', () => {
     render(<ChatPanel workspaceId="ws1" />);
 
     const activity = await screen.findByTestId('model-activity');
-    expect(activity).toHaveTextContent('1 tool call, 1 message');
+    expect(activity).toHaveTextContent('2 tool calls, 1 message');
     expect(
       screen.queryByText('I will inspect the renderer.'),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText('npm test')).not.toBeInTheDocument();
     expect(
       screen.getByText('The renderer is now updated.'),
     ).toBeInTheDocument();
+    expect(screen.queryByText('100')).not.toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole('button', { name: /1 tool call, 1 message/i }),
+      screen.getByRole('button', { name: /2 tool calls, 1 message/i }),
     );
     expect(
       screen.getByText('I will inspect the renderer.'),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('tool-card')).toBeInTheDocument();
+    expect(screen.getAllByTestId('tool-card')).toHaveLength(2);
+    expect(screen.getByText('npm test')).toBeInTheDocument();
   });
 
   it('does not add a disclosure around a single model message', async () => {
@@ -958,6 +1137,29 @@ describe('ChatPanel reconstruction', () => {
       workspaceId: 'ws2',
       path: 'src/old.ts',
     });
+  });
+
+  it('renders Markdown files as human-readable documents', async () => {
+    installApi({
+      files: {
+        'docs/README.md':
+          '# Getting started\n\nThis is **important**.\n\n- First step\n- Second step',
+      },
+    });
+    const request = {
+      id: 3,
+      workspaceId: 'ws1',
+      path: 'docs/README.md',
+      mode: 'edit' as const,
+    };
+
+    render(<ChatPanel workspaceId="ws1" inspectFileRequest={request} />);
+
+    const document = await screen.findByTestId('chat-markdown-viewer');
+    expect(document).toHaveTextContent('Getting started');
+    expect(document).toHaveTextContent('This is important.');
+    expect(document.querySelector('h1')).toHaveTextContent('Getting started');
+    expect(document.querySelectorAll('li')).toHaveLength(2);
   });
 
   it('does not reopen a closed file when returning to its workspace', async () => {
@@ -1462,7 +1664,7 @@ describe('ChatPanel streaming', () => {
     expect(screen.queryByTestId('composer-plus-menu')).toBeNull();
   });
 
-  it('keeps native tooltips on composer controls', async () => {
+  it('provides tooltip labels on composer controls', async () => {
     installApi({});
 
     render(<ChatPanel workspaceId="ws1" />);
@@ -1479,6 +1681,25 @@ describe('ChatPanel streaming', () => {
       'title',
       'Send',
     );
+    for (const testId of [
+      'composer-model',
+      'composer-effort',
+      'composer-plan',
+      'composer-plus',
+      'composer-send',
+    ]) {
+      expect(screen.getByTestId(testId).parentElement).toHaveAttribute(
+        'data-state',
+        'closed',
+      );
+    }
+    expect(screen.getByTestId('composer-context').parentElement).not.toHaveAttribute(
+      'data-state',
+    );
+    expect(screen.getByTestId('composer-cost').parentElement).not.toHaveAttribute(
+      'data-state',
+    );
+    expect(screen.getByTestId('composer-context')).not.toHaveAttribute('title');
   });
 
   it('expands slash commands with args before starting a turn', async () => {

@@ -58,6 +58,7 @@ function installApi(opts?: {
   issueReject?: boolean;
   githubCliAuthenticated?: boolean;
   createdId?: string;
+  fetchWarning?: string;
 }): ApiStub {
   const createdId = opts?.createdId ?? 'ws-new';
   // GitHub starts unconnected iff either GitHub list should reject; a successful
@@ -67,7 +68,21 @@ function installApi(opts?: {
 
   const invoke = vi.fn((channel: string) => {
     if (channel === 'project:listBranches') {
-      return Promise.resolve({ defaultBranch: 'main', branches: BRANCHES });
+      return Promise.resolve({
+        defaultBranch: 'main',
+        branches: BRANCHES,
+        ...(opts?.fetchWarning ? { fetchWarning: opts.fetchWarning } : {}),
+      });
+    }
+    if (channel === 'project:getCurrentBranch') {
+      return Promise.resolve({ branch: 'feature/current-work' });
+    }
+    if (channel === 'workspace:suggestNames') {
+      return Promise.resolve({
+        workspaceName: 'paris',
+        worktreeName: 'paris',
+        branchName: 'paris',
+      });
     }
     if (channel === 'github:accounts') {
       return Promise.resolve(
@@ -152,13 +167,120 @@ afterEach(() => {
 });
 
 describe('NewWorkspaceDialog — Branch tab', () => {
-  it('closes immediately while workspace creation continues in the background', async () => {
-    const api = installApi();
-    api.stream.mockImplementation(() => new Promise<void>(() => {}));
-    const onClose = vi.fn();
-    render(
-      <NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />,
+  it('shows editable generated names without workspace/worktree naming modes', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    expect(await screen.findByTestId('workspace-name-input')).toHaveValue(
+      'paris',
     );
+    expect(screen.getByTestId('worktree-name-input')).toHaveValue('paris');
+    expect(screen.getByTestId('branch-name-input')).toHaveValue('paris');
+    expect(screen.queryByTestId('workspace-name-automatic')).toBeNull();
+    expect(screen.queryByTestId('worktree-name-automatic')).toBeNull();
+  });
+
+  it('can use the selected existing branch instead of creating a new one', async () => {
+    const api = installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByTestId('branch-mode-existing'));
+    const release = (await screen.findAllByTestId('branch-item')).find(
+      (item) => item.getAttribute('data-branch-ref') === 'origin/release',
+    );
+    fireEvent.click(release as HTMLElement);
+
+    expect(screen.getByTestId('existing-branch-name')).toHaveTextContent(
+      'release',
+    );
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    expect(
+      api.stream.mock.calls.find((call) => call[0] === 'workspace:create')?.[1],
+    ).toMatchObject({
+      baseBranch: 'origin/release',
+      branch: 'release',
+      sourceKind: 'branch',
+    });
+  });
+
+  it('keeps the branch results area at a fixed scrollable height', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    await screen.findAllByTestId('branch-item');
+    expect(screen.getByTestId('branch-results')).toHaveClass(
+      'h-64',
+      'overflow-y-auto',
+    );
+    expect(screen.getByTestId('new-workspace-overlay')).toHaveClass(
+      'fixed',
+      'inset-0',
+      'z-[100]',
+    );
+    expect(screen.getByTestId('new-workspace-dialog')).toHaveClass('z-[110]');
+    expect(screen.getByTestId('new-workspace-dialog').parentElement).toBe(
+      document.body,
+    );
+  });
+
+  it('closes when clicking outside the modal panel', async () => {
+    installApi();
+    const onClose = vi.fn();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />);
+
+    fireEvent.click(screen.getByTestId('new-workspace-dialog'));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('stays open when clicking inside the modal panel', async () => {
+    installApi();
+    const onClose = vi.fn();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />);
+
+    fireEvent.click(screen.getByText('New Workspace'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps PR and issue results at the same fixed scrollable height', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('source-tab-pr'));
+    await screen.findAllByTestId('pr-item');
+    expect(screen.getByTestId('pr-list')).toHaveClass(
+      'h-64',
+      'overflow-y-auto',
+    );
+
+    fireEvent.click(screen.getByTestId('source-tab-issue'));
+    await screen.findAllByTestId('issue-item');
+    expect(screen.getByTestId('issue-list')).toHaveClass(
+      'h-64',
+      'overflow-y-auto',
+    );
+  });
+
+  it('keeps cached branches usable when the remote refresh fails', async () => {
+    installApi({
+      fetchWarning:
+        'Could not refresh the remote. Showing cached local branches.',
+    });
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={vi.fn()} />);
+
+    expect(await screen.findByTestId('branch-list-warning')).toHaveTextContent(
+      'Showing cached local branches',
+    );
+    expect(screen.getAllByTestId('branch-item')).toHaveLength(3);
+    fireEvent.click(screen.getAllByTestId('branch-item')[0]);
+    expect(screen.getByTestId('create-workspace-submit')).toBeEnabled();
+  });
+
+  it('closes as soon as the workspace is created and selected', async () => {
+    const api = installApi();
+    const onClose = vi.fn();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />);
 
     await waitFor(() =>
       expect(screen.getAllByTestId('branch-item')).not.toHaveLength(0),
@@ -241,10 +363,11 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     expect(screen.queryByText('Harness')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('location-project'));
 
-    await waitFor(() => {
-      expect(screen.getAllByTestId('branch-item').length).toBe(3);
-    });
-    fireEvent.click(screen.getAllByTestId('branch-item')[0]);
+    expect(
+      await screen.findByTestId('current-workspace-branch'),
+    ).toHaveTextContent('feature/current-work');
+    expect(screen.queryByTestId('source-section')).toBeNull();
+    expect(screen.getByTestId('create-workspace-submit')).toBeEnabled();
     fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
     await waitFor(() => expect(api.stream).toHaveBeenCalled());
@@ -253,6 +376,7 @@ describe('NewWorkspaceDialog — Branch tab', () => {
       sourceKind: 'branch',
       location: 'project',
     });
+    expect(call?.[1]).not.toHaveProperty('baseBranch');
     expect(call?.[1]).not.toHaveProperty('harness');
   });
 
@@ -260,7 +384,6 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     const api = installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
 
-    fireEvent.click(screen.getByTestId('worktree-name-custom'));
     fireEvent.change(screen.getByTestId('worktree-name-input'), {
       target: { value: 'feature-search' },
     });
@@ -274,15 +397,65 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     const call = api.stream.mock.calls.find((c) => c[0] === 'workspace:create');
     expect(call?.[1]).toMatchObject({
       location: 'worktree',
-      name: 'feature-search',
+      worktreeName: 'feature-search',
     });
+  });
+
+  it('sends separate custom workspace and branch names', async () => {
+    const api = installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.change(screen.getByTestId('workspace-name-input'), {
+      target: { value: 'search-workspace' },
+    });
+    fireEvent.change(screen.getByTestId('branch-name-input'), {
+      target: { value: 'feature/search' },
+    });
+    await waitFor(() =>
+      expect(screen.getAllByTestId('branch-item')).not.toHaveLength(0),
+    );
+    fireEvent.click(screen.getAllByTestId('branch-item')[0]);
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    expect(api.stream.mock.calls.find((call) => call[0] === 'workspace:create')?.[1])
+      .toMatchObject({
+        name: 'search-workspace',
+        branch: 'feature/search',
+      });
+  });
+
+  it('accepts a human-readable workspace name', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    const input = await screen.findByTestId('workspace-name-input');
+    fireEvent.change(input, {
+      target: { value: 'Search workspace — July' },
+    });
+
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+  });
+
+  it('blocks invalid custom branch names', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+
+    fireEvent.change(screen.getByTestId('branch-name-input'), {
+      target: { value: 'feature bad' },
+    });
+
+    expect(screen.getByTestId('branch-name-input')).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    expect(screen.getByTestId('create-workspace-submit')).toBeDisabled();
   });
 
   it('keeps location and worktree naming above and independent from source selection', async () => {
     installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
 
-    fireEvent.click(screen.getByTestId('worktree-name-custom'));
     fireEvent.change(screen.getByTestId('worktree-name-input'), {
       target: { value: 'persistent-name' },
     });
@@ -307,14 +480,12 @@ describe('NewWorkspaceDialog — Branch tab', () => {
       'aria-pressed',
       'true',
     );
-    expect(screen.getByTestId('worktree-name-custom')).toBeChecked();
     expect(screen.getByTestId('worktree-name-input')).toHaveValue(
       'persistent-name',
     );
 
     fireEvent.click(screen.getByTestId('source-tab-issue'));
     await screen.findAllByTestId('issue-item');
-    expect(screen.getByTestId('worktree-name-custom')).toBeChecked();
     expect(screen.getByTestId('worktree-name-input')).toHaveValue(
       'persistent-name',
     );
@@ -359,21 +530,27 @@ describe('NewWorkspaceDialog — From PR tab', () => {
     expect(arg.location).toBe('worktree');
   });
 
-  it('does not replace a current-checkout location when the source changes', async () => {
+  it('hides sources for the current checkout and restores the prior tab for worktrees', async () => {
     installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
 
-    fireEvent.click(screen.getByTestId('location-project'));
     fireEvent.click(screen.getByTestId('source-tab-pr'));
+    await screen.findAllByTestId('pr-item');
+    fireEvent.click(screen.getByTestId('location-project'));
 
     expect(screen.getByTestId('location-project')).toHaveAttribute(
       'aria-pressed',
       'true',
     );
-    expect(
-      await screen.findByTestId('pr-location-warning'),
-    ).toBeInTheDocument();
-    expect((await screen.findAllByTestId('pr-item'))[0]).toBeDisabled();
+    expect(screen.queryByTestId('source-section')).toBeNull();
+    expect(screen.getByTestId('create-workspace-submit')).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId('location-worktree'));
+    expect(screen.getByTestId('source-tab-pr')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(await screen.findAllByTestId('pr-item')).not.toHaveLength(0);
   });
 });
 

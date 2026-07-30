@@ -16,6 +16,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useTheme } from '@renderer/app/providers';
+import { terminalKeyboardAction } from './terminalKeyboard';
 
 function cssVar(style: CSSStyleDeclaration, name: string, fallback: string): string {
   return style.getPropertyValue(name).trim() || fallback;
@@ -110,19 +111,13 @@ export function useTerminal(
     const observer = new ResizeObserver(() => safeFit());
     observer.observe(el);
 
-    // Copy/paste: Cmd/Ctrl+C copies the selection (only when there IS one, so Ctrl+C
-    // still sends SIGINT otherwise); Cmd/Ctrl+V pastes the clipboard into the shell.
+    // Cmd/Ctrl+C copies a selection (and still sends SIGINT when there is no selection).
+    // Paste stays with xterm's native textarea path, which emits it once through onData.
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== 'keydown') return true;
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key === 'c' && term.hasSelection()) {
+      if (
+        terminalKeyboardAction(e, term.hasSelection()) === 'copy-selection'
+      ) {
         void navigator.clipboard.writeText(term.getSelection());
-        return false;
-      }
-      if (mod && e.key === 'v') {
-        void navigator.clipboard.readText().then((text) => {
-          if (ptyId && text) void invoke('pty:write', { ptyId, data: text });
-        });
         return false;
       }
       return true;

@@ -211,8 +211,14 @@ export class HarnessSupervisor {
       // reopened workspace renders the same right-aligned message shown live.
       await this.deps.recorder.record(turnId, {
         kind: 'user_message',
-        text: opts.prompt,
+        text: opts.displayPrompt ?? opts.prompt,
       });
+      if (opts.knowledgeSources?.length) {
+        wrapped.push({
+          kind: 'knowledge_context',
+          sources: opts.knowledgeSources,
+        });
+      }
       handle = await adapter.startTurn(opts, wrapped);
     } catch (err) {
       // Spawn/start failure before any event: finalize as an error and clear.

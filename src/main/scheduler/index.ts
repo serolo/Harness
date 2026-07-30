@@ -12,9 +12,9 @@
 //     prevent double-fires; a supervisor `conflict` (a user turn raced us) re-queues.
 //   - `missed` is assigned ONLY at boot reconciliation (repo.reconcileOnBoot). A late tick
 //     while the app is running (laptop sleep/wake) still fires the task.
-//   - The resume mechanism is `latestSessionId(workspaceId)` → `opts.sessionId`: a fired
-//     turn continues the workspace's last harness session, which is the whole "resume when
-//     the limit resets" behaviour — no extra work.
+//   - Every scheduler-originated execution starts with an empty provider context. Tasks
+//     are independent work items even when they share a workspace, so `opts.sessionId`
+//     is always undefined. Ordinary chat turns own their separate resume semantics.
 
 import type { AgentEvent, StartTurnOpts } from '@shared/harness';
 import type { EventChannel, EventPayload, StreamSink } from '@shared/ipc';
@@ -40,8 +40,6 @@ export interface TaskSchedulerDeps {
   getWorkspace: (id: string) => Promise<Workspace | null>;
   /** Read-only settings snapshot (mode/mcp/permissionPolicy defaults). */
   settings: { get: () => EffectiveSettings };
-  /** The workspace's last captured harness session id — this IS the resume mechanism. */
-  latestSessionId: (workspaceId: string) => Promise<string | undefined>;
   /** Broadcast a typed event to the renderer(s). */
   emit: <K extends EventChannel>(event: K, payload: EventPayload<K>) => void;
   /** Injectable clock for tests. Defaults to `Date.now`. */
@@ -169,8 +167,8 @@ export class TaskScheduler {
   /**
    * Turn one task into an agent turn through the supervisor (mirrors the `turn:start`
    * producer, register.ts:322-399, minus the scoped stream). Sets `running` BEFORE starting
-   * (double-fire guard), resolves opts the same way the producer does (including the resume
-   * `sessionId`), buffers sink events until the turnId is known, then mirrors each as a
+   * (double-fire guard), resolves task settings with a fresh provider session, buffers sink
+   * events until the turnId is known, then mirrors each as a
    * `turn:event` broadcast. Terminal events advance the task row; a `conflict` re-queues.
    */
   private async runTask(task: ScheduledTask): Promise<void> {
@@ -191,14 +189,14 @@ export class TaskScheduler {
       return;
     }
 
-    // 3) build StartTurnOpts exactly like the producer (settings + resume sessionId).
+    // 3) Build task-specific opts. Scheduler executions are isolated work items, so they
+    // never inherit the workspace's latest provider session.
     const settings = this.deps.settings.get();
-    const sessionId = await this.deps.latestSessionId(workspaceId);
     const opts: StartTurnOpts = {
       workspaceDir: workspace.worktreePath,
       prompt: task.prompt,
       attachments: [],
-      sessionId,
+      sessionId: undefined,
       mode: task.mode ?? settings.agent.mode,
       mcpConfig: settings.mcp,
       permissionPolicy: settings.agent.permissionPolicy,
@@ -274,7 +272,12 @@ export class TaskScheduler {
 
     // 5) start the turn through the supervisor; conflict → re-queue; other throw → error.
     try {
-      await harness.startTurn(workspaceId, opts, sink);
+      await harness.startTurn(
+        workspaceId,
+        opts,
+        sink,
+        task.harnessOverride ?? undefined,
+      );
       turnId = harness.getActiveTurnId(workspaceId) ?? undefined;
       if (turnId !== undefined && !terminalHandled) {
         // Record the turn id so boot reconcile can join it; state stays `running`.

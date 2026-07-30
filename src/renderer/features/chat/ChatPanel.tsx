@@ -10,8 +10,10 @@ import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { useChat } from './useChat';
 import { FileReferencePill } from './FileReferencePill';
+import { Markdown } from './markdown';
 import { WorkspaceCreationTerminal } from './WorkspaceCreationTerminal';
 import { WorkspaceArchiveTerminal } from './WorkspaceArchiveTerminal';
+import { useWorkspacesStore } from '@renderer/stores/workspaces';
 
 export interface ChatPanelProps {
   workspaceId: string | null;
@@ -174,6 +176,7 @@ function FileViewer({
   file: FileTab;
   onModeChange: (mode: FileTab['mode']) => void;
 }): React.JSX.Element {
+  const isMarkdown = /\.(?:md|markdown)$/i.test(file.path);
   const lines = (file.content ?? '').split('\n');
   if (lines.at(-1) === '') lines.pop();
 
@@ -264,6 +267,15 @@ function FileViewer({
           <div className="m-5 rounded-2 border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
             {file.error}
           </div>
+        ) : isMarkdown ? (
+          <article
+            className="min-h-0 flex-1 overflow-auto bg-surface-app px-6 py-6 sm:px-10"
+            data-testid="chat-markdown-viewer"
+          >
+            <div className="mx-auto w-full max-w-3xl">
+              <Markdown text={file.content ?? ''} />
+            </div>
+          </article>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto bg-[#100d0d] py-3 font-mono text-[15px] leading-7 text-[#f3f0eb]">
             {lines.map((line, index) => (
@@ -291,6 +303,12 @@ export function ChatPanel({
   inspectFileRequest,
 }: ChatPanelProps): React.JSX.Element {
   const { turns, isBusy, sendTurn, interrupt, clear } = useChat(workspaceId);
+  const workspace = useWorkspacesStore((state) =>
+    state.workspaces.find((candidate) => candidate.id === workspaceId),
+  );
+  const project = useWorkspacesStore((state) =>
+    state.projects.find((candidate) => candidate.id === workspace?.projectId),
+  );
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
   const [chatContexts, setChatContexts] = useState<ChatContext[]>([
     { id: 'chat', label: 'Untitled', turnIds: [] },
@@ -687,6 +705,8 @@ export function ChatPanel({
           <Transcript
             turns={contextTurns}
             workspaceId={workspaceId}
+            workspace={workspace}
+            project={project}
             onOpenFile={openFile}
             isBusy={isBusy}
             onAnswerQuestion={(answer) =>

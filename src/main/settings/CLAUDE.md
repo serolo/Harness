@@ -1,4 +1,4 @@
-# src/main/settings — layered TOML settings (read, write, provenance, hot-reload)
+# src/main/settings — layered settings (database + TOML, provenance, hot-reload)
 
 **Purpose:** merge the settings layers into one effective object, tell the UI *which layer* supplied
 each value, write edits back to the *right* layer, and hot-reload on external edits. Heightened-scrutiny
@@ -10,7 +10,7 @@ each value, write edits back to the *right* layer, and hot-reload on external ed
 
 - `defaults` — the zod schema's `.default(...)` values (`schema.ts`). Never a file; never writable.
 - `user` — `paths.settingsPath()` (`<userData>/settings.toml`).
-- `project-shared` — `<projectDir>/.harness/settings.toml` (committed).
+- `project-shared` — the `project_settings` SQLite row for the registered project.
 - `project-local` — `<projectDir>/.harness/settings.local.toml` (gitignored).
 
 Later layers deep-merge over earlier ones. **Arrays are ATOMIC** — a higher layer's `mcp` / `scripts.run`
@@ -18,7 +18,7 @@ replaces the lower one wholesale (no concat), and provenance for an array is the
 
 ## The write-per-layer invariant (don't break this)
 
-`write.ts#setSetting` reads the target layer's **raw single-layer** object, sets one key path, validates
+The file-backed write path reads the target layer's **raw single-layer** object, sets one key path, validates
 the **re-merged effective** result through `EffectiveSettingsSchema`, then serialises **only that layer's
 object** back. **Never write the merged blob** — it would flatten provenance and leak higher layers'
 values down into a lower file. The key path is guarded against traversal (`..`, empty segments) and
@@ -38,7 +38,7 @@ the merge (not a fragile post-pass diff) and then attributes any un-set leaf to 
 
 ## Hot-reload race rule
 
-`watch(cb)` (chokidar, debounced — `watch.ts`) re-merges on file change and emits `settings:changed`.
+`watch(cb)` (chokidar, debounced — `watch.ts`) re-merges user/local file changes and emits `settings:changed`.
 Handlers read `ctx.settings.get()` **fresh**, so the watcher only refreshes the snapshot + notifies —
 it does **not** mutate an in-flight turn. A turn snapshots its settings at `turn:start`; leave that.
 The watcher's chokidar handle is torn down in `before-quit` (mirrors the diff watcher).

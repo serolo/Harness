@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { CheckCircle2, LoaderCircle, TerminalSquare, XCircle } from 'lucide-react';
 
 import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
@@ -9,6 +10,21 @@ export function WorkspaceCreationTerminal({
 }): React.JSX.Element | null {
   const creation = useWorkspaceCreationStore((state) => state.current);
   const clear = useWorkspaceCreationStore((state) => state.clear);
+
+  useEffect(() => {
+    if (creation?.status !== 'complete') return;
+    const completedRunId = creation.runId;
+    const timer = window.setTimeout(() => {
+      const current = useWorkspaceCreationStore.getState().current;
+      if (
+        current?.runId === completedRunId &&
+        current.status === 'complete'
+      ) {
+        clear();
+      }
+    }, 5_000);
+    return () => window.clearTimeout(timer);
+  }, [clear, creation?.runId, creation?.status]);
 
   if (
     creation === null ||

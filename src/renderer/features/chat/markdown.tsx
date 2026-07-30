@@ -19,7 +19,10 @@ export interface MarkdownProps {
 }
 
 /** Render agent markdown text as safe React elements. */
-export function Markdown({ text, onOpenFile }: MarkdownProps): React.JSX.Element {
+export function Markdown({
+  text,
+  onOpenFile,
+}: MarkdownProps): React.JSX.Element {
   return <>{renderBlocks(text, onOpenFile)}</>;
 }
 
@@ -63,71 +66,167 @@ function CodeBlock({ code }: { code: string }): React.JSX.Element {
   );
 }
 
-/** Render a prose region: paragraphs + simple lists with inline formatting. */
+/** Render a prose region as line-oriented Markdown blocks. */
 function renderProse(
   prose: string,
   baseKey: number,
   onOpenFile?: (path: string) => void,
 ): React.ReactNode[] {
-  const blocks = prose.split(/\n{2,}/);
   const out: React.ReactNode[] = [];
-  blocks.forEach((block, i) => {
-    const trimmed = block.trim();
-    if (trimmed === '') return;
-    const lines = trimmed.split('\n');
-    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+  const lines = prose.split('\n');
+  let index = 0;
+  let key = baseKey;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.trim() === '') {
+      index += 1;
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line.trim());
     if (heading) {
       const level = heading[1].length;
       const className =
         level === 1
-          ? 'mb-3 mt-6 text-lg font-bold leading-tight text-fg-1'
+          ? 'mb-3 mt-5 text-xl font-bold leading-tight text-fg-1'
           : level === 2
             ? 'mb-2 mt-5 text-[18px] font-bold leading-tight text-fg-1'
             : 'mb-2 mt-4 text-[16px] font-semibold leading-snug text-fg-1';
       out.push(
-        <h2 key={`${baseKey}-h-${i}`} className={className}>
-          {renderInline(heading[2], onOpenFile)}
-        </h2>,
+        React.createElement(
+          `h${level}`,
+          { key: `${baseKey}-h-${key}`, className },
+          renderInline(heading[2], onOpenFile),
+        ),
       );
-      return;
+      key += 1;
+      index += 1;
+      continue;
     }
-    const isList = lines.every((l) => /^\s*([-*]|\d+\.)\s+/.test(l));
-    if (isList) {
-      const ordered = /^\s*\d+\.\s+/.test(lines[0]);
-      const items = lines.map((l, j) => (
-        <li key={j}>
-          {renderInline(l.replace(/^\s*([-*]|\d+\.)\s+/, ''), onOpenFile)}
-        </li>
-      ));
+
+    const listMatch = /^\s*([-*+]|\d+\.)\s+(.+)$/.exec(line);
+    if (listMatch) {
+      const ordered = /^\d+\.$/.test(listMatch[1]);
+      const items: React.ReactNode[] = [];
+      while (index < lines.length) {
+        const item = /^\s*([-*+]|\d+\.)\s+(.+)$/.exec(lines[index]);
+        if (!item || /^\d+\.$/.test(item[1]) !== ordered) break;
+        items.push(
+          <li key={items.length}>{renderInline(item[2], onOpenFile)}</li>,
+        );
+        index += 1;
+      }
       out.push(
         ordered ? (
           <ol
-            key={`${baseKey}-ol-${i}`}
+            key={`${baseKey}-ol-${key}`}
             className="my-3 list-decimal space-y-1.5 pl-6 text-md leading-relaxed text-fg-1"
           >
             {items}
           </ol>
         ) : (
           <ul
-            key={`${baseKey}-ul-${i}`}
+            key={`${baseKey}-ul-${key}`}
             className="my-3 list-disc space-y-1.5 pl-6 text-md leading-relaxed text-fg-1"
           >
             {items}
           </ul>
         ),
       );
-    } else {
-      out.push(
-        <p
-          key={`${baseKey}-p-${i}`}
-          className="my-3 whitespace-pre-wrap text-md leading-relaxed text-fg-1"
-        >
-          {renderInline(trimmed, onOpenFile)}
-        </p>,
-      );
+      key += 1;
+      continue;
     }
-  });
+
+    if (
+      line.includes('|') &&
+      index + 1 < lines.length &&
+      isTableDivider(lines[index + 1])
+    ) {
+      const headers = tableCells(line);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && lines[index].includes('|')) {
+        rows.push(tableCells(lines[index]));
+        index += 1;
+      }
+      out.push(
+        <div
+          key={`${baseKey}-table-${key}`}
+          className="my-4 overflow-x-auto rounded-2 border border-border-1"
+        >
+          <table className="w-full border-collapse text-left text-sm text-fg-1">
+            <thead className="bg-bg-3">
+              <tr>
+                {headers.map((cell, cellIndex) => (
+                  <th
+                    key={cellIndex}
+                    className="border-b border-border-1 px-3 py-2 font-semibold"
+                  >
+                    {renderInline(cell, onOpenFile)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr
+                  key={rowIndex}
+                  className="border-b border-border-1 last:border-0"
+                >
+                  {headers.map((_, cellIndex) => (
+                    <td key={cellIndex} className="px-3 py-2 align-top">
+                      {renderInline(row[cellIndex] ?? '', onOpenFile)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      key += 1;
+      continue;
+    }
+
+    const paragraph: string[] = [];
+    while (index < lines.length && lines[index].trim() !== '') {
+      if (
+        paragraph.length > 0 &&
+        (/^(#{1,6})\s+/.test(lines[index].trim()) ||
+          /^\s*([-*+]|\d+\.)\s+/.test(lines[index]))
+      ) {
+        break;
+      }
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+    out.push(
+      <p
+        key={`${baseKey}-p-${key}`}
+        className="my-3 whitespace-pre-wrap text-md leading-relaxed text-fg-1"
+      >
+        {renderInline(paragraph.join('\n'), onOpenFile)}
+      </p>,
+    );
+    key += 1;
+  }
+
   return out;
+}
+
+function tableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+function isTableDivider(line: string): boolean {
+  const cells = tableCells(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 }
 
 /**
@@ -147,7 +246,11 @@ function renderInline(
   while ((match = re.exec(text)) !== null) {
     if (match.index > lastIndex) {
       nodes.push(
-        ...renderFileReferences(text.slice(lastIndex, match.index), key, onOpenFile),
+        ...renderFileReferences(
+          text.slice(lastIndex, match.index),
+          key,
+          onOpenFile,
+        ),
       );
     }
     const token = match[0];
@@ -214,11 +317,7 @@ function renderInlineCode(
   const path = fileReferenceFromText(text, { allowBareFile: true });
   if (path && onOpenFile) {
     return (
-      <FileReferenceButton
-        key={key}
-        path={path}
-        onOpenFile={onOpenFile}
-      />
+      <FileReferenceButton key={key} path={path} onOpenFile={onOpenFile} />
     );
   }
   return (

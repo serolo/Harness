@@ -25,3 +25,5 @@ export { Textarea } from './Textarea';
 export type { TextareaProps } from './Textarea';
 export { Card } from './Card';
 export type { CardProps } from './Card';
+export { Tooltip } from './Tooltip';
+export type { TooltipProps } from './Tooltip';

@@ -11,9 +11,10 @@ demand), without ever bypassing the `HarnessSupervisor`. One `TaskScheduler` is 
   `queued`; otherwise it fires. A `ticking` re-entrancy flag prevents overlapping ticks; a per-tick
   de-dupe fires each workspace at most once (later due tasks for it queue).
 - **Firing** (`runTask`): sets the row `running` **before** `startTurn` (double-fire guard), resolves
-  `StartTurnOpts` exactly like the `turn:start` producer — crucially `sessionId =
-  latestSessionId(workspaceId)`, which is what makes a resume task continue the interrupted session —
-  and drives `harness.startTurn`. The sink buffers events until the turnId is known, then mirrors each
+  task settings while explicitly leaving `StartTurnOpts.sessionId` undefined, and drives
+  `harness.startTurn`. Every scheduler execution therefore starts with empty provider context,
+  including due, run-now, and queued-drain paths. Ordinary chat turns retain their independent
+  resume semantics. The sink buffers events until the turnId is known, then mirrors each
   as a `turn:event` broadcast. Terminal events advance the row (`turn_end` → `done`; `error` →
   `error` + message).
 - **Queue drain** (`onWorkspaceTurnEnd`, called from the supervisor's `onTurnEnd` hook wired in

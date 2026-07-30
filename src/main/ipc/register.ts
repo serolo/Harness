@@ -19,7 +19,11 @@
 // (Streams differ: they use `webContents.send`, which clones intact — see stream.ts.)
 
 import { app, dialog, BrowserWindow, ipcMain, nativeImage } from 'electron';
-import type { IpcMainInvokeEvent, WebContents } from 'electron';
+import type {
+  IpcMainInvokeEvent,
+  OpenDialogOptions,
+  WebContents,
+} from 'electron';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn as spawnChild } from 'node:child_process';
@@ -51,6 +55,8 @@ import { toAppError } from '../error';
 import { AppError, encodeAppErrorMessage } from '@shared/errors';
 import { logger } from '../logging';
 import { ProjectsRepo } from '../db/repos/projects';
+import { WorkspacesRepo } from '../db/repos/workspaces';
+import { allocate as allocateWorkspaceName } from '../workspace/naming';
 import { TodosRepo } from '../db/repos/todos';
 import { UsageRepo } from '../db/repos/usage';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
@@ -63,9 +69,19 @@ import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
 import type { DiffQuery, DiffScope } from '@shared/review';
 import type { GitDiff } from '../git';
-import { repoDir } from '../paths';
+import {
+  defaultRootDirectory,
+  repoDir,
+  rootDirectory,
+  setRootDirectory,
+} from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
 import { SettingsService } from '../settings';
+import { KNOWLEDGE_RECONCILIATION_INSTRUCTION } from '../knowledge';
+import {
+  loadStoredProjectSettings,
+  saveStoredProjectSetting,
+} from '../settings/projectStore';
 import { isCompletionSound } from '@shared/settings';
 import { playCompletionSound } from '../harness/notifications';
 import { discoverNativeSlashCommands } from '../slash/native';
@@ -78,6 +94,7 @@ import {
   STREAM_CANCEL_CHANNEL,
 } from './stream';
 import { emitAll } from './events';
+import { installQmd, qmdStatus } from '../knowledge/qmd';
 
 /** Control channel the renderer invokes to begin a scoped stream. */
 const STREAM_START_CHANNEL = 'stream:start';
@@ -129,6 +146,14 @@ const RUNNABLE_TASK_STATES = new Set<TaskState>([
   'error',
 ]);
 const CHAT_FILE_PREVIEW_MAX_BYTES = 512 * 1024;
+let developmentResetRequested = false;
+
+/** Consumed by the main-process shutdown path after all DB/process handles are closed. */
+export function consumeDevelopmentResetRequest(): boolean {
+  const requested = developmentResetRequested;
+  developmentResetRequested = false;
+  return requested;
+}
 
 /** Record a workspace id so a later window focus recomputes its checks (Phase 5). */
 function trackForFocusRefresh(workspaceId: string): void {
@@ -143,6 +168,18 @@ function assertWorkspaceId(
   }
 }
 
+function assertProjectId(projectId: unknown): asserts projectId is string {
+  if (typeof projectId !== 'string' || projectId.trim() === '') {
+    throw new AppError('invalid_input', 'projectId is required');
+  }
+}
+
+function assertProposalId(proposalId: unknown): asserts proposalId is string {
+  if (typeof proposalId !== 'string' || proposalId.trim() === '') {
+    throw new AppError('invalid_input', 'proposalId is required');
+  }
+}
+
 async function settingsForProject(
   ctx: AppContext,
   projectId: string,
@@ -151,8 +188,12 @@ async function settingsForProject(
   if (project === null) {
     throw new AppError('not_found', 'project not found', { projectId });
   }
+  const stored = await loadStoredProjectSettings(ctx.db, project);
   const settings = new SettingsService();
-  settings.loadResult({ projectDir: project.repoPath });
+  settings.loadResult({
+    projectDir: project.repoPath,
+    projectSettings: stored.value,
+  });
   return settings.get();
 }
 
@@ -249,6 +290,12 @@ function assertTaskMode(mode: unknown): asserts mode is AgentMode {
 function assertTaskModel(model: unknown): asserts model is string {
   if (typeof model !== 'string' || !MODEL_PATTERN.test(model)) {
     throw new AppError('invalid_input', 'invalid model');
+  }
+}
+
+function assertTaskHarness(harness: unknown): asserts harness is HarnessId {
+  if (!['claude_code', 'codex', 'cursor'].includes(harness as HarnessId)) {
+    throw new AppError('invalid_input', 'invalid harness override');
   }
 }
 
@@ -724,7 +771,12 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         );
         sink.end();
       } catch (e) {
-        sink.error(toAppError(e));
+        const error = toAppError(e);
+        logger.error(
+          `[workspace:create] ${error.code}: ${error.message}`,
+          error.details,
+        );
+        sink.error(error);
       }
     })();
   },
@@ -792,6 +844,13 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
 
         const settings = await settingsForProject(ctx, workspace.projectId);
+        const knowledgeSelection = settings.knowledge.inject_context
+          ? await ctx.knowledge.contextSelectionForPrompt(
+              workspace.projectId,
+              arg.prompt,
+              settings.knowledge.search.max_context_tokens,
+            )
+          : { context: '', sources: [] };
         const hasExplicitSession = Object.prototype.hasOwnProperty.call(
           arg,
           'sessionId',
@@ -806,7 +865,17 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
             : undefined;
         const opts: StartTurnOpts = {
           workspaceDir: workspace.worktreePath,
-          prompt: arg.prompt,
+          displayPrompt: arg.prompt,
+          knowledgeSources: knowledgeSelection.sources,
+          prompt: [
+            arg.prompt,
+            knowledgeSelection.context,
+            settings.knowledge.enabled && settings.knowledge.extract_after_turn
+              ? KNOWLEDGE_RECONCILIATION_INSTRUCTION
+              : '',
+          ]
+            .filter((part) => part !== '')
+            .join('\n\n'),
           attachments,
           sessionId,
           mode: arg.mode ?? settings.agent.mode,
@@ -1144,6 +1213,20 @@ export function registerIpc(ctx: AppContext): void {
     electron: process.versions.electron,
   }));
 
+  handle('app:isDevelopment', async () => !app.isPackaged);
+
+  handle('app:resetDevelopmentData', async () => {
+    if (app.isPackaged) {
+      throw new AppError(
+        'invalid_input',
+        'Fresh-install reset is only available in development builds.',
+      );
+    }
+    developmentResetRequested = true;
+    app.relaunch();
+    setImmediate(() => app.quit());
+  });
+
   // app:echoStream — the request/response half of the demo. The actual chunks flow
   // over the `app:echoStream` StreamChannel (started via `stream:start`); this command
   // exists so the contract has the { req; res } pair and so a caller can trigger a
@@ -1162,6 +1245,39 @@ export function registerIpc(ctx: AppContext): void {
     const result = win
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
       : await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  handle('app:getRootDirectory', async () => ({
+    path: rootDirectory(),
+    defaultPath: defaultRootDirectory(),
+  }));
+
+  handle('app:setRootDirectory', async (req) => {
+    if (typeof req.path !== 'string' || req.path.trim() === '') {
+      throw new AppError('invalid_input', 'Root directory is required.');
+    }
+    try {
+      return { path: setRootDirectory(req.path.trim()) };
+    } catch (error) {
+      throw new AppError(
+        'invalid_input',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  });
+
+  handle('app:pickRootDirectory', async (req) => {
+    const options: OpenDialogOptions = {
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath:
+        typeof req.defaultPath === 'string' ? req.defaultPath : undefined,
+    };
+    const win = BrowserWindow.getFocusedWindow();
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
   });
@@ -1194,11 +1310,58 @@ export function registerIpc(ctx: AppContext): void {
         projectId: req.projectId,
       });
     }
+    let fetchWarning: string | undefined;
     if (project.originUrl !== '') {
-      await ctx.git.fetch(project.repoPath);
+      try {
+        await ctx.git.fetch(project.repoPath);
+      } catch (error) {
+        fetchWarning =
+          'Could not refresh the remote. Showing cached local branches.';
+        logger.warn(
+          `[workspace] branch refresh failed for project ${project.id}; using cached refs: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
     const branches = await ctx.git.listBranches(project.repoPath);
-    return { defaultBranch: project.defaultBranch, branches };
+    return {
+      defaultBranch: project.defaultBranch,
+      branches,
+      ...(fetchWarning ? { fetchWarning } : {}),
+    };
+  });
+
+  handle('project:getCurrentBranch', async (req) => {
+    assertProjectId(req.projectId);
+    const project = await new ProjectsRepo(ctx.db).getById(req.projectId);
+    if (project === null) {
+      throw new AppError('not_found', 'project not found', {
+        projectId: req.projectId,
+      });
+    }
+    return { branch: await ctx.git.currentBranch(project.repoPath) };
+  });
+
+  handle('workspace:suggestNames', async (req) => {
+    assertProjectId(req.projectId);
+    const project = await new ProjectsRepo(ctx.db).getById(req.projectId);
+    if (project === null) {
+      throw new AppError('not_found', 'project not found', {
+        projectId: req.projectId,
+      });
+    }
+    const existing = await new WorkspacesRepo(ctx.db).listByProject(
+      req.projectId,
+    );
+    const workspaceName = allocateWorkspaceName(
+      existing.map((row) => row.name),
+    );
+    return {
+      workspaceName,
+      worktreeName: workspaceName,
+      branchName: workspaceName,
+    };
   });
 
   // workspace:list/get/archive/restore — delegate to the WorkspaceManager, the sole
@@ -1309,7 +1472,10 @@ export function registerIpc(ctx: AppContext): void {
       rel.includes(`..${sep}`) ||
       !target.endsWith('.md')
     ) {
-      throw new AppError('invalid_input', 'plan path must stay inside Claude plans');
+      throw new AppError(
+        'invalid_input',
+        'plan path must stay inside Claude plans',
+      );
     }
     const fileStat = await stat(target);
     if (!fileStat.isFile() || fileStat.size > CHAT_FILE_PREVIEW_MAX_BYTES) {
@@ -1715,6 +1881,9 @@ export function registerIpc(ctx: AppContext): void {
     assertTaskPrompt(req.prompt);
     if (req.mode !== undefined) assertTaskMode(req.mode);
     if (req.model !== undefined) assertTaskModel(req.model);
+    if (req.harnessOverride !== undefined) {
+      assertTaskHarness(req.harnessOverride);
+    }
     if (req.scheduledAt !== undefined) assertScheduledAt(req.scheduledAt);
     if (req.origin !== undefined && !TASK_ORIGINS.has(req.origin)) {
       throw new AppError('invalid_input', 'origin must be user|limit_resume');
@@ -1732,6 +1901,7 @@ export function registerIpc(ctx: AppContext): void {
       mode: req.mode,
       scheduledAt: req.scheduledAt,
       origin: req.origin,
+      harnessOverride: req.harnessOverride,
     });
     emitTaskChanged(task.workspaceId);
     return task;
@@ -1744,6 +1914,9 @@ export function registerIpc(ctx: AppContext): void {
     if (req.model !== undefined && req.model !== null) {
       assertTaskModel(req.model);
     }
+    if (req.harnessOverride !== undefined && req.harnessOverride !== null) {
+      assertTaskHarness(req.harnessOverride);
+    }
     if (req.scheduledAt !== undefined && req.scheduledAt !== null) {
       assertScheduledAt(req.scheduledAt);
     }
@@ -1752,6 +1925,7 @@ export function registerIpc(ctx: AppContext): void {
       model: req.model,
       mode: req.mode,
       scheduledAt: req.scheduledAt,
+      harnessOverride: req.harnessOverride,
     });
     emitTaskChanged(task.workspaceId);
     return task;
@@ -2049,11 +2223,13 @@ export function registerIpc(ctx: AppContext): void {
   // pollution in the key path and validates the re-merged value; a violation rejects
   // through the error boundary without writing.
   handle('settings:set', async (req) => {
-    if (
-      req.layer !== 'user' &&
-      req.layer !== 'project-shared' &&
-      req.layer !== 'project-local'
-    ) {
+    if (req.layer === 'project-shared') {
+      throw new AppError(
+        'invalid_input',
+        'Project settings must be saved through settings:setProject.',
+      );
+    }
+    if (req.layer !== 'user' && req.layer !== 'project-local') {
       throw new AppError(
         'invalid_input',
         `Unknown settings layer: ${String(req.layer)}`,
@@ -2070,6 +2246,7 @@ export function registerIpc(ctx: AppContext): void {
   ): Promise<{
     project: NonNullable<Awaited<ReturnType<ProjectsRepo['getById']>>>;
     service: SettingsService;
+    stored: Awaited<ReturnType<typeof loadStoredProjectSettings>>;
   }> => {
     if (typeof projectId !== 'string' || projectId === '') {
       throw new AppError('invalid_input', 'projectId is required');
@@ -2078,18 +2255,25 @@ export function registerIpc(ctx: AppContext): void {
     if (project === null) {
       throw new AppError('not_found', 'project not found', { projectId });
     }
+    const stored = await loadStoredProjectSettings(ctx.db, project);
     const service = new SettingsService();
-    service.loadResult({ projectDir: project.repoPath });
-    return { project, service };
+    service.loadResult({
+      projectDir: project.repoPath,
+      projectSettings: stored.value,
+    });
+    return { project, service, stored };
   };
 
   handle('settings:getProject', async (req) => {
-    const { project, service } = await projectSettings(req.projectId);
-    const result = service.loadResult({ projectDir: project.repoPath });
+    const { project, service, stored } = await projectSettings(req.projectId);
+    const result = service.loadResult({
+      projectDir: project.repoPath,
+      projectSettings: stored.value,
+    });
     return {
       settings: result.settings,
       provenance: result.provenance,
-      issues: result.issues,
+      issues: [...stored.issues, ...result.issues],
     };
   });
 
@@ -2098,8 +2282,16 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'keyPath is required');
     }
     const { project, service } = await projectSettings(req.projectId);
-    service.set('project-shared', req.keyPath, req.value);
-    const result = service.loadResult({ projectDir: project.repoPath });
+    const projectSettingsValue = await saveStoredProjectSetting(
+      ctx.db,
+      project,
+      req.keyPath,
+      req.value,
+    );
+    const result = service.loadResult({
+      projectDir: project.repoPath,
+      projectSettings: projectSettingsValue,
+    });
     return {
       settings: result.settings,
       provenance: result.provenance,
@@ -2166,6 +2358,7 @@ export function registerIpc(ctx: AppContext): void {
   // onboarding:state — compose the onboarding readiness (harness / GitHub / projects) for
   // the first-run wizard (spec §7). No input; delegates to the OnboardingService.
   handle('onboarding:state', async () => ctx.onboarding.getState());
+  handle('onboarding:acknowledge', async () => ctx.onboarding.acknowledge());
 
   // update:check — trigger an update check; returns the current UpdateStatus. DESCOPED:
   // on an unsigned/dev/no-feed build this returns `{ state: 'unsupported' }` without
@@ -2175,6 +2368,178 @@ export function registerIpc(ctx: AppContext): void {
   // update:install — quit + install a downloaded update. Rejects with a typed AppError
   // (through the boundary) when updates are unsupported or nothing is downloaded yet.
   handle('update:install', async () => ctx.updater.install());
+
+  // Project Knowledge Wiki. The service applies the feature gate and confines every
+  // filesystem path to the app-managed bundle; handlers still narrow IPC input first.
+  handle('knowledge:config', async (req) => {
+    assertProjectId(req?.projectId);
+    return ctx.knowledge.getConfig(req.projectId);
+  });
+  handle('knowledge:initialize', async (req) => {
+    assertProjectId(req?.projectId);
+    return ctx.knowledge.initializeProject(req.projectId);
+  });
+  handle('knowledge:listPages', async (req) => {
+    assertProjectId(req?.projectId);
+    return ctx.knowledge.listPages(req.projectId);
+  });
+  handle('knowledge:getPage', async (req) => {
+    assertProjectId(req?.projectId);
+    if (typeof req.path !== 'string' || req.path.trim() === '') {
+      throw new AppError('invalid_input', 'path is required');
+    }
+    return ctx.knowledge.getPage(req.projectId, req.path);
+  });
+  handle('knowledge:search', async (req) => {
+    assertProjectId(req?.projectId);
+    if (typeof req.query !== 'string') {
+      throw new AppError('invalid_input', 'query must be a string');
+    }
+    if (
+      req.limit !== undefined &&
+      (!Number.isInteger(req.limit) || req.limit < 1 || req.limit > 100)
+    ) {
+      throw new AppError('invalid_input', 'limit must be between 1 and 100');
+    }
+    return ctx.knowledge.search(req.projectId, req.query, req.limit);
+  });
+  handle('knowledge:lint', async (req) => {
+    assertProjectId(req?.projectId);
+    return ctx.knowledge.lint(req.projectId);
+  });
+  handle('knowledge:updateCatalog', async (req) => {
+    assertProjectId(req?.projectId);
+    return ctx.knowledge.updateCatalog(req.projectId);
+  });
+  handle('knowledge:qmdStatus', async () => qmdStatus());
+  handle('knowledge:installQmd', async () => installQmd());
+  handle('knowledge:createProposal', async (req) => {
+    assertProjectId(req?.projectId);
+    if (
+      typeof req.title !== 'string' ||
+      typeof req.summary !== 'string' ||
+      !Array.isArray(req.operations)
+    ) {
+      throw new AppError('invalid_input', 'invalid knowledge proposal');
+    }
+    return ctx.knowledge.createProposal(req);
+  });
+  handle('knowledge:listProposals', async (req) => {
+    assertProjectId(req?.projectId);
+    return ctx.knowledge.listProposals(req.projectId);
+  });
+  handle('knowledge:acceptProposal', async (req) => {
+    assertProjectId(req?.projectId);
+    assertProposalId(req?.proposalId);
+    return ctx.knowledge.acceptProposal(req.projectId, req.proposalId);
+  });
+  handle('knowledge:rejectProposal', async (req) => {
+    assertProjectId(req?.projectId);
+    assertProposalId(req?.proposalId);
+    if (req.reason !== undefined && typeof req.reason !== 'string') {
+      throw new AppError('invalid_input', 'reason must be a string');
+    }
+    return ctx.knowledge.rejectProposal(
+      req.projectId,
+      req.proposalId,
+      req.reason,
+    );
+  });
+  handle('knowledge:history', async (req) => {
+    assertProjectId(req?.projectId);
+    return ctx.knowledge.history(req.projectId);
+  });
+  handle('knowledge:importZip', async (req, event) => {
+    assertProjectId(req?.projectId);
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: 'Import project knowledge',
+      properties: ['openFile'] as ['openFile'],
+      filters: [{ name: 'ZIP archives', extensions: ['zip'] }],
+    };
+    const selection =
+      owner === null
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(owner, options);
+    if (selection.canceled || selection.filePaths[0] === undefined) {
+      return {
+        imported: false,
+        fileCount: 0,
+        createdCount: 0,
+        updatedCount: 0,
+      };
+    }
+    return ctx.knowledge.importZip(req.projectId, selection.filePaths[0]);
+  });
+  handle('knowledge:discoverAgentMemory', async (req, event) => {
+    assertProjectId(req?.projectId);
+    if (req.provider !== 'claude_code' && req.provider !== 'codex') {
+      throw new AppError('invalid_input', 'invalid agent memory provider');
+    }
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = {
+      title: `Choose ${req.provider === 'claude_code' ? 'Claude Code' : 'Codex'} memory folder (optional)`,
+      properties: ['openDirectory'],
+      defaultPath:
+        req.provider === 'claude_code'
+          ? join(homedir(), '.claude', 'projects')
+          : join(homedir(), '.codex'),
+    };
+    const selection =
+      owner === null
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(owner, options);
+    return ctx.knowledge.discoverAgentMemory(
+      req.projectId,
+      req.provider,
+      selection.canceled ? undefined : selection.filePaths[0],
+    );
+  });
+  handle('knowledge:createAgentMemoryProposal', async (req) => {
+    assertProjectId(req?.projectId);
+    if (req.provider !== 'claude_code' && req.provider !== 'codex') {
+      throw new AppError('invalid_input', 'invalid agent memory provider');
+    }
+    if (
+      typeof req.discoveryId !== 'string' ||
+      req.discoveryId.trim() === '' ||
+      !Array.isArray(req.sourceIds) ||
+      !req.sourceIds.every(
+        (sourceId): sourceId is string =>
+          typeof sourceId === 'string' && sourceId.trim() !== '',
+      )
+    ) {
+      throw new AppError('invalid_input', 'invalid agent memory selection');
+    }
+    return ctx.knowledge.createAgentMemoryProposal(req);
+  });
+  handle('github:getWorkspacePr', async (req) => {
+    if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
+      throw new AppError('invalid_input', 'workspaceId is required');
+    }
+    const workspace = await new WorkspacesRepo(ctx.db).getById(req.workspaceId);
+    if (workspace === null) {
+      throw new AppError('not_found', 'workspace not found', {
+        workspaceId: req.workspaceId,
+      });
+    }
+    const project = await new ProjectsRepo(ctx.db).getById(workspace.projectId);
+    if (project === null) {
+      throw new AppError('not_found', 'project not found', {
+        projectId: workspace.projectId,
+      });
+    }
+    const octokit = await githubClientForSettings(ctx);
+    const repo = await githubRepoForProject(ctx, project);
+    const client = new GithubClient(octokit, repo);
+    try {
+      return workspace.prNumber === null
+        ? await client.getPr(workspace.branch)
+        : await client.getPrByNumber(workspace.prNumber);
+    } catch (error) {
+      return clarifyGithubRepoError(error, repo);
+    }
+  });
 
   registerStreamControl(ctx);
 

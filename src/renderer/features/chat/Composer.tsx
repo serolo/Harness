@@ -14,6 +14,7 @@ import {
   ArrowUp,
   BookOpenText,
   Check,
+  DollarSign,
   Gauge,
   Info,
   Map,
@@ -22,7 +23,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import type { AgentMode, Attachment, HarnessId } from '@shared/harness';
+import type { AgentMode, Attachment, HarnessId, Usage } from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
 import {
   expandSlashTemplate,
@@ -34,7 +35,8 @@ import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useHarnessStore } from '@renderer/stores/harness';
 import { useComposerStore } from '@renderer/stores/composer';
 import type { RenderedTurn } from '@renderer/stores/chat';
-import { Textarea } from '@renderer/components/ui';
+import { Textarea, Tooltip } from '@renderer/components/ui';
+import { formatUsdMicros } from '@shared/billing';
 import { AttachmentBar } from './AttachmentBar';
 import { readModelPreferences } from '../settings/modelPreferences';
 import {
@@ -162,6 +164,7 @@ function contextStats(
   for (const turn of source) {
     let estimatedInput = 0;
     let estimatedOutput = 0;
+    let contextUsage: Usage | undefined;
     for (const event of turn.events) {
       if (event.kind === 'user_message' || event.kind === 'text') {
         messageCount += 1;
@@ -181,11 +184,18 @@ function contextStats(
       if (event.kind === 'tool_result') {
         estimatedInput += estimatedTokens(event.output);
       }
+      if (event.kind === 'context_usage') {
+        contextUsage = event.usage;
+      }
     }
-    if (turn.usage?.inputTokens != null) {
+    if (contextUsage?.inputTokens != null) {
+      // Claude's terminal usage is cumulative across every model call in the tool
+      // loop. The latest assistant message carries the actual context snapshot.
+      input = contextUsage.inputTokens;
+      output = contextUsage.outputTokens ?? estimatedOutput;
+    } else if (turn.usage?.inputTokens != null) {
       // A resumed turn's provider input count is a snapshot of the context sent for
-      // that request, including earlier messages. Replacing the previous snapshot is
-      // essential: summing snapshots counts the same history once per turn.
+      // that request for providers without per-call snapshots.
       input = turn.usage.inputTokens;
       output = turn.usage.outputTokens ?? estimatedOutput;
     } else {
@@ -214,6 +224,7 @@ function ContextIndicator({
   const [open, setOpen] = useState(false);
   const indicatorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const hoverCloseTimerRef = useRef<number | null>(null);
   const [popoverPosition, setPopoverPosition] = useState({
     bottom: 0,
     left: 0,
@@ -227,6 +238,27 @@ function ContextIndicator({
     { label: 'Messages', value: stats.messageCount },
     { label: 'Tool events', value: stats.toolCount },
   ];
+
+  const cancelHoverClose = (): void => {
+    if (hoverCloseTimerRef.current === null) return;
+    window.clearTimeout(hoverCloseTimerRef.current);
+    hoverCloseTimerRef.current = null;
+  };
+
+  const scheduleHoverClose = (): void => {
+    cancelHoverClose();
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      setOpen(false);
+    }, 100);
+  };
+
+  useEffect(
+    () => () => {
+      cancelHoverClose();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -276,12 +308,18 @@ function ContextIndicator({
       <button
         type="button"
         className={`flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium transition-colors duration-fast ease-out ${
-          open ? 'bg-bg-3 text-fg-1' : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
+          open
+            ? 'bg-bg-3 text-fg-1'
+            : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
         }`}
         data-testid="composer-context"
         aria-label="Context usage"
         aria-expanded={open}
-        title="Context usage"
+        onMouseEnter={() => {
+          cancelHoverClose();
+          setOpen(true);
+        }}
+        onMouseLeave={scheduleHoverClose}
         onClick={() => setOpen((value) => !value)}
       >
         <BookOpenText className="h-5 w-5" aria-hidden />
@@ -294,7 +332,9 @@ function ContextIndicator({
         >
           <span
             className="block h-full rounded-full bg-fg-2"
-            style={{ width: `${Math.max(4, Math.min(100, usedPct * 100))}%` }}
+            style={{
+              width: `${Math.max(4, Math.min(100, usedPct * 100))}%`,
+            }}
           />
         </span>
       </button>
@@ -305,6 +345,11 @@ function ContextIndicator({
               className="fixed z-[1000] w-[320px] rounded-4 border border-border-1 bg-surface-panel p-4 shadow-4"
               style={popoverPosition}
               data-testid="composer-context-popover"
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={() => {
+                cancelHoverClose();
+                setOpen(false);
+              }}
             >
               <div className="flex items-center justify-between gap-4">
                 <div className="text-lg font-semibold text-fg-1">Context</div>
@@ -331,6 +376,145 @@ function ContextIndicator({
                   </div>
                 ))}
               </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+function CostIndicator({
+  turns,
+}: {
+  turns: RenderedTurn[];
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const hoverCloseTimerRef = useRef<number | null>(null);
+  const [popoverPosition, setPopoverPosition] = useState({
+    bottom: 0,
+    left: 0,
+  });
+  const pricedTurns = turns.filter((turn) => turn.costMicros !== undefined);
+  const totalCostMicros = pricedTurns.reduce(
+    (total, turn) => total + (turn.costMicros ?? 0),
+    0,
+  );
+  const unpricedTurns = turns.length - pricedTurns.length;
+
+  const cancelHoverClose = (): void => {
+    if (hoverCloseTimerRef.current === null) return;
+    window.clearTimeout(hoverCloseTimerRef.current);
+    hoverCloseTimerRef.current = null;
+  };
+
+  const scheduleHoverClose = (): void => {
+    cancelHoverClose();
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      setOpen(false);
+    }, 100);
+  };
+
+  useEffect(
+    () => () => {
+      cancelHoverClose();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent): void {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (triggerRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    function positionPopover(): void {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const margin = 16;
+      const width = 320;
+      setPopoverPosition({
+        bottom: window.innerHeight - rect.top + 10,
+        left: Math.max(
+          margin,
+          Math.min(rect.left, window.innerWidth - width - margin),
+        ),
+      });
+    }
+    positionPopover();
+    window.addEventListener('resize', positionPopover);
+    return () => window.removeEventListener('resize', positionPopover);
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={triggerRef}>
+      <button
+        type="button"
+        className={`flex h-9 items-center gap-1 rounded-2 px-2 text-sm font-medium tabular-nums transition-colors duration-fast ease-out ${
+          open
+            ? 'bg-bg-3 text-fg-1'
+            : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
+        }`}
+        data-testid="composer-cost"
+        aria-label="Estimated API cost"
+        aria-expanded={open}
+        onMouseEnter={() => {
+          cancelHoverClose();
+          setOpen(true);
+        }}
+        onMouseLeave={scheduleHoverClose}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <DollarSign className="h-5 w-5" aria-hidden />
+        <span className="hidden sm:inline">
+          {formatUsdMicros(totalCostMicros)}
+        </span>
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              className="fixed z-[1000] w-[320px] rounded-4 border border-border-1 bg-surface-panel p-4 shadow-4"
+              style={popoverPosition}
+              data-testid="composer-cost-popover"
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={() => {
+                cancelHoverClose();
+                setOpen(false);
+              }}
+            >
+              <div className="text-lg font-semibold text-fg-1">
+                Estimated API cost
+              </div>
+              <div className="mt-1 font-mono text-2xl text-fg-1">
+                {formatUsdMicros(totalCostMicros)}
+              </div>
+              <div className="mt-4 border-t border-border-1 pt-3 text-sm">
+                <div className="flex justify-between py-1">
+                  <span className="text-fg-3">Priced turns</span>
+                  <span className="text-fg-1">{pricedTurns.length}</span>
+                </div>
+                <div className="flex justify-between py-1">
+                  <span className="text-fg-3">Unpriced turns</span>
+                  <span className="text-fg-1">{unpricedTurns}</span>
+                </div>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-fg-3">
+                Provider API list-price estimate. Subscription plans may not be
+                billed per turn.
+              </p>
             </div>,
             document.body,
           )
@@ -379,6 +563,17 @@ export function Composer({
   const sentTextHistoryRef = useRef<string[]>([]);
   const sentTextHistoryIndexRef = useRef(-1);
   const preHistoryDraftRef = useRef('');
+  const activeDraftWorkspaceRef = useRef<string | null>(null);
+  const draftsByWorkspaceRef = useRef<
+    Record<
+      string,
+      {
+        text: string;
+        attachments: Attachment[];
+        mode: AgentMode;
+      }
+    >
+  >({});
 
   // The composer always targets the currently selected workspace (its host
   // <ChatPanel> is rendered with `workspaceId={selectedWorkspaceId}`), so read the
@@ -397,12 +592,44 @@ export function Composer({
   const loadHarnesses = useHarnessStore((s) => s.load);
   const harnessInfoById = useHarnessStore((s) => s.infoById);
 
-  // Consume any pending prompt seeded for this workspace (e.g. by the "From issue"
-  // create flow) exactly once. Keyed on the workspace id: it fires on mount and when
-  // the selection changes; `takePendingPrompt` clears the value, so switching away and
-  // back after it was consumed does not re-seed the input. `takePendingPrompt` is a
-  // stable Zustand action, so it never re-fires the effect on its own.
+  // Persist edits against the workspace that supplied the currently displayed draft.
+  // This effect intentionally runs before the workspace-switch effect below: during a
+  // switch render, it captures the outgoing values before that effect loads the incoming
+  // workspace's cached draft.
   useEffect(() => {
+    const workspace = activeDraftWorkspaceRef.current;
+    if (workspace === null) return;
+    draftsByWorkspaceRef.current[workspace] = {
+      text,
+      attachments,
+      mode,
+    };
+  }, [text, attachments, mode, selectedWorkspaceId]);
+
+  // Composer state belongs to one workspace. The component itself survives navigation,
+  // so swap in the destination workspace's cached draft and close transient UI. A
+  // one-time seeded prompt (e.g. "From issue") takes precedence over cached text.
+  useEffect(() => {
+    const cached =
+      selectedWorkspaceId === null
+        ? undefined
+        : draftsByWorkspaceRef.current[selectedWorkspaceId];
+    activeDraftWorkspaceRef.current = selectedWorkspaceId;
+
+    setText(cached?.text ?? '');
+    setMode(cached?.mode ?? 'default');
+    setAttachments(cached?.attachments ?? []);
+    setSlashCommands([]);
+    setSlashLoading(false);
+    setSlashActive(0);
+    setModelOpen(false);
+    setEffortOpen(false);
+    setPlusOpen(false);
+    setPlusPanel('root');
+    setIssueOptions([]);
+    setIsDraggingFiles(false);
+    dragDepthRef.current = 0;
+
     if (selectedWorkspaceId === null) return;
     const pending = takePendingPrompt(selectedWorkspaceId);
     if (pending !== undefined && pending !== '') {
@@ -455,8 +682,8 @@ export function Composer({
       (group) => group.options,
     ).find(
       (option) =>
-        (option.id === preferences.defaultModel ||
-          option.model === preferences.defaultModel),
+        option.id === preferences.defaultModel ||
+        option.model === preferences.defaultModel,
     );
     const harness = preferred?.harness ?? selectedWorkspace?.harness;
     setSelectedHarness(harness);
@@ -935,6 +1162,7 @@ export function Composer({
           />
           <Textarea
             className="min-h-[118px] w-full resize-none border-0 bg-transparent px-5 py-4 text-[19px] leading-7 shadow-none focus:border-transparent focus:shadow-none"
+            style={{ resize: 'none' }}
             rows={4}
             placeholder="Ask to make changes, @mention files, run /commands"
             value={text}
@@ -1025,20 +1253,30 @@ export function Composer({
               }
             }}
           />
-          <div className="flex items-center gap-3 px-4 pb-4">
-            <div className="relative" ref={modelPickerRef}>
-              <button
-                type="button"
-                className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-                data-testid="composer-model"
-                aria-label="Select model"
-                aria-expanded={modelOpen}
-                title="Select model"
-                onClick={() => setModelOpen((open) => !open)}
-              >
-                <Zap className="h-5 w-5 text-fg-3" aria-hidden />
-                <span>{selectedModelLabel}</span>
-              </button>
+          <div
+            className="flex min-w-0 items-center gap-3 px-4 pb-4"
+            data-testid="composer-controls"
+          >
+            <div
+              className="relative min-w-0 max-w-[22rem]"
+              ref={modelPickerRef}
+            >
+              <Tooltip content="Select model">
+                <button
+                  type="button"
+                  className="flex h-9 max-w-full min-w-0 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+                  data-testid="composer-model"
+                  aria-label="Select model"
+                  aria-expanded={modelOpen}
+                  title="Select model"
+                  onClick={() => setModelOpen((open) => !open)}
+                >
+                  <Zap className="h-5 w-5 text-fg-3" aria-hidden />
+                  <span className="min-w-0 truncate whitespace-nowrap">
+                    {selectedModelLabel}
+                  </span>
+                </button>
+              </Tooltip>
               {modelOpen ? (
                 <div
                   className="absolute bottom-[calc(100%+10px)] left-0 z-30 max-h-[70vh] w-[360px] overflow-y-auto rounded-4 border border-border-1 bg-surface-panel shadow-4"
@@ -1127,19 +1365,21 @@ export function Composer({
                 </div>
               ) : null}
             </div>
-            <div className="relative" ref={effortPickerRef}>
-              <button
-                type="button"
-                className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-                data-testid="composer-effort"
-                aria-label="Select effort"
-                aria-expanded={effortOpen}
-                title="Select effort"
-                onClick={() => setEffortOpen((open) => !open)}
-              >
-                <Gauge className="h-5 w-5 text-fg-3" aria-hidden />
-                <span>{effort.label}</span>
-              </button>
+            <div className="relative shrink-0" ref={effortPickerRef}>
+              <Tooltip content="Select effort">
+                <button
+                  type="button"
+                  className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+                  data-testid="composer-effort"
+                  aria-label="Select effort"
+                  aria-expanded={effortOpen}
+                  title="Select effort"
+                  onClick={() => setEffortOpen((open) => !open)}
+                >
+                  <Gauge className="h-5 w-5 text-fg-3" aria-hidden />
+                  <span>{effort.label}</span>
+                </button>
+              </Tooltip>
               {effortOpen ? (
                 <div
                   className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-44 rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
@@ -1165,39 +1405,44 @@ export function Composer({
                 </div>
               ) : null}
             </div>
-            <button
-              type="button"
-              className={`rounded-1 p-1.5 transition-colors duration-fast ease-out ${
-                mode === 'plan'
-                  ? 'bg-bg-3 text-fg-1'
-                  : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
-              } disabled:cursor-not-allowed disabled:opacity-40`}
-              data-testid="composer-plan"
-              aria-label="Plan mode"
-              aria-pressed={mode === 'plan'}
-              title="Plan mode"
-              disabled={!supportsPlan}
-              onClick={togglePlanMode}
-            >
-              <Map className="h-5 w-5" aria-hidden />
-            </button>
-            <div className="ml-auto flex items-center gap-3">
+            <Tooltip content="Plan mode">
+              <button
+                type="button"
+                className={`shrink-0 rounded-1 p-1.5 transition-colors duration-fast ease-out ${
+                  mode === 'plan'
+                    ? 'bg-bg-3 text-fg-1'
+                    : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
+                } disabled:cursor-not-allowed disabled:opacity-40`}
+                data-testid="composer-plan"
+                aria-label="Plan mode"
+                aria-pressed={mode === 'plan'}
+                title="Plan mode"
+                disabled={!supportsPlan}
+                onClick={togglePlanMode}
+              >
+                <Map className="h-5 w-5" aria-hidden />
+              </button>
+            </Tooltip>
+            <div className="ml-auto flex shrink-0 items-center gap-3">
+              <CostIndicator turns={turns ?? []} />
               <ContextIndicator stats={context} />
-              <div className="relative" ref={plusPickerRef}>
-                <button
-                  type="button"
-                  className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-                  data-testid="composer-plus"
-                  aria-label="More options"
-                  aria-expanded={plusOpen}
-                  title="More options"
-                  onClick={() => {
-                    setPlusOpen((open) => !open);
-                    setPlusPanel('root');
-                  }}
-                >
-                  <Plus className="h-5 w-5" aria-hidden />
-                </button>
+              <div className="relative shrink-0" ref={plusPickerRef}>
+                <Tooltip content="Attachments and options">
+                  <button
+                    type="button"
+                    className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+                    data-testid="composer-plus"
+                    aria-label="More options"
+                    aria-expanded={plusOpen}
+                    title="More options"
+                    onClick={() => {
+                      setPlusOpen((open) => !open);
+                      setPlusPanel('root');
+                    }}
+                  >
+                    <Plus className="h-5 w-5" aria-hidden />
+                  </button>
+                </Tooltip>
                 {plusOpen ? (
                   <div
                     className="absolute bottom-[calc(100%+10px)] right-0 z-50 w-[300px] rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
@@ -1268,30 +1513,32 @@ export function Composer({
                   </div>
                 ) : null}
               </div>
-              {isBusy ? (
-                <button
-                  type="button"
-                  className="flex h-10 w-10 items-center justify-center rounded-2 bg-danger text-white transition-colors duration-fast ease-out hover:bg-danger-hover"
-                  data-testid="composer-interrupt"
-                  onClick={() => void onInterrupt()}
-                  aria-label="Stop"
-                  title="Stop"
-                >
-                  <span className="h-3 w-3 rounded-[2px] bg-white" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="flex h-10 w-10 items-center justify-center rounded-2 bg-accent text-accent-fg transition-colors duration-fast ease-out hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-45"
-                  data-testid="composer-send"
-                  disabled={!canSend}
-                  onClick={send}
-                  aria-label="Send"
-                  title="Send"
-                >
-                  <ArrowUp className="h-5 w-5" aria-hidden />
-                </button>
-              )}
+              <Tooltip content={isBusy ? 'Stop response' : 'Send message'}>
+                {isBusy ? (
+                  <button
+                    type="button"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2 bg-danger text-white transition-colors duration-fast ease-out hover:bg-danger-hover"
+                    data-testid="composer-interrupt"
+                    onClick={() => void onInterrupt()}
+                    aria-label="Stop"
+                    title="Stop"
+                  >
+                    <span className="h-3 w-3 rounded-[2px] bg-white" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2 bg-accent text-accent-fg transition-colors duration-fast ease-out hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-45"
+                    data-testid="composer-send"
+                    disabled={!canSend}
+                    onClick={send}
+                    aria-label="Send"
+                    title="Send"
+                  >
+                    <ArrowUp className="h-5 w-5" aria-hidden />
+                  </button>
+                )}
+              </Tooltip>
             </div>
           </div>
         </div>

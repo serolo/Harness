@@ -160,6 +160,16 @@ describe('task:create — input narrowing', () => {
     ).toBe('invalid_input');
   });
 
+  it('rejects an unknown harness override', async () => {
+    expect(
+      await invokeCode('task:create', {
+        workspaceId,
+        prompt: 'go',
+        harnessOverride: 'unknown' as never,
+      }),
+    ).toBe('invalid_input');
+  });
+
   it('rejects a non-integer scheduledAt', async () => {
     expect(
       await invokeCode('task:create', {
@@ -204,11 +214,44 @@ describe('task:create — input narrowing', () => {
         model: 'sonnet',
         mode: 'plan',
         scheduledAt: 1, // a past time is deliberately allowed
+        harnessOverride: 'codex',
       }),
     ).toBe('OK');
     const list = await repo.list(workspaceId);
     expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ model: 'sonnet', mode: 'plan' });
+    expect(list[0]).toMatchObject({
+      model: 'sonnet',
+      mode: 'plan',
+      harnessOverride: 'codex',
+    });
+  });
+});
+
+describe('task:update — harness override', () => {
+  it('validates and persists set/clear patches', async () => {
+    const task = await repo.create({ workspaceId, prompt: 'go' });
+
+    expect(
+      await invokeCode('task:update', {
+        id: task.id,
+        harnessOverride: 'unknown' as never,
+      }),
+    ).toBe('invalid_input');
+    expect(
+      await invokeCode('task:update', {
+        id: task.id,
+        harnessOverride: 'codex',
+      }),
+    ).toBe('OK');
+    expect((await repo.get(task.id)).harnessOverride).toBe('codex');
+
+    expect(
+      await invokeCode('task:update', {
+        id: task.id,
+        harnessOverride: null,
+      }),
+    ).toBe('OK');
+    expect((await repo.get(task.id)).harnessOverride).toBeNull();
   });
 });
 

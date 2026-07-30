@@ -31,7 +31,7 @@ export const PROJECT_SHARED_FILE = 'settings.toml';
 export const PROJECT_LOCAL_FILE = 'settings.local.toml';
 
 /** A plain JSON-ish object (the parsed shape of a TOML table). */
-type PlainObject = Record<string, unknown>;
+export type PlainObject = Record<string, unknown>;
 
 /** Where each layer's file lives + which project dir (if any) it needs. */
 export interface LayerLocation {
@@ -39,6 +39,8 @@ export interface LayerLocation {
   userPath?: string;
   /** Project root, required for the two project layers. */
   projectDir?: string;
+  /** Database-backed replacement for the former project shared file. */
+  projectSettings?: PlainObject;
 }
 
 /** True for non-null, non-array object values (mergeable TOML tables). */
@@ -111,10 +113,12 @@ export function layerFiles(loc: LayerLocation): {
     { tag: 'user', file: loc.userPath ?? settingsPath() },
   ];
   if (loc.projectDir !== undefined) {
-    files.push({
-      tag: 'project-shared',
-      file: join(loc.projectDir, PROJECT_SETTINGS_DIR, PROJECT_SHARED_FILE),
-    });
+    if (loc.projectSettings === undefined) {
+      files.push({
+        tag: 'project-shared',
+        file: join(loc.projectDir, PROJECT_SETTINGS_DIR, PROJECT_SHARED_FILE),
+      });
+    }
     files.push({
       tag: 'project-local',
       file: join(loc.projectDir, PROJECT_SETTINGS_DIR, PROJECT_LOCAL_FILE),
@@ -149,6 +153,7 @@ export function readLayersStrict(loc: LayerLocation): TaggedLayer[] {
     const obj = readLayerStrict(file);
     if (obj !== undefined) layers.push({ tag, obj });
   }
+  insertDatabaseProjectLayer(layers, loc.projectSettings);
   return layers;
 }
 
@@ -185,7 +190,21 @@ export function readLayersSafe(loc: LayerLocation): {
       });
     }
   }
+  insertDatabaseProjectLayer(layers, loc.projectSettings);
   return { layers, issues };
+}
+
+function insertDatabaseProjectLayer(
+  layers: TaggedLayer[],
+  projectSettings: PlainObject | undefined,
+): void {
+  if (projectSettings === undefined) return;
+  const localIndex = layers.findIndex((layer) => layer.tag === 'project-local');
+  const index = localIndex === -1 ? layers.length : localIndex;
+  layers.splice(index, 0, {
+    tag: 'project-shared',
+    obj: structuredClone(projectSettings),
+  });
 }
 
 /** Split + validate a dotted key path, rejecting empty / traversal / unsafe segments. */
@@ -220,6 +239,24 @@ function setAtPath(obj: PlainObject, segments: string[], value: unknown): void {
     cursor = cursor[key] as PlainObject;
   }
   cursor[segments[segments.length - 1]!] = value;
+}
+
+export function withSettingValue(
+  settings: PlainObject,
+  keyPath: string,
+  value: unknown,
+): PlainObject {
+  const next = structuredClone(settings);
+  setAtPath(next, parseKeyPath(keyPath), value);
+  return next;
+}
+
+export function readLegacyProjectSettings(
+  projectDir: string,
+): PlainObject | undefined {
+  return readLayerStrict(
+    join(projectDir, PROJECT_SETTINGS_DIR, PROJECT_SHARED_FILE),
+  );
 }
 
 /** Options for {@link setSetting}. */

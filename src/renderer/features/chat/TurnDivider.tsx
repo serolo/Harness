@@ -2,7 +2,7 @@
 
 import type { Usage } from '@shared/harness';
 import type { TurnStatus } from '@shared/models';
-import { formatUsdMicros } from '@shared/billing';
+import { formatTokenCount, formatUsdMicros } from '@shared/billing';
 
 export interface TurnDividerProps {
   status: TurnStatus;
@@ -33,7 +33,9 @@ export function TurnDivider({
 }: TurnDividerProps): React.JSX.Element {
   const tokens =
     usage && (usage.inputTokens != null || usage.outputTokens != null)
-      ? `${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out`
+      ? `${formatTokenCount(usage.inputTokens ?? 0)} in / ${formatTokenCount(
+          usage.outputTokens ?? 0,
+        )} out`
       : null;
 
   return (
@@ -49,8 +51,11 @@ export function TurnDivider({
         <span className="normal-case tracking-normal text-fg-3">· {model}</span>
       ) : null}
       {costMicros !== undefined ? (
-        <span className="normal-case tracking-normal text-fg-3">
-          · est. {formatUsdMicros(costMicros)}
+        <span
+          className="normal-case tracking-normal text-fg-3"
+          title="Estimated provider API list price, including prompt-cache reads and writes. Subscription plans may not be billed per turn."
+        >
+          · API est. {formatUsdMicros(costMicros)}
         </span>
       ) : null}
       <span className="h-px flex-1 bg-border-1" />

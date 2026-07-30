@@ -29,13 +29,17 @@
 // controls stay hand-rolled or adopt `Input`/`Select`/`Button`/`IconButton` where useful.
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { GitBranch, GitPullRequest, CircleDot, Check } from 'lucide-react';
 import type { CreateWorkspaceReq } from '@shared/models';
 import type { IssueListItem, PrListItem } from '@shared/github';
 import { invoke, subscribeStream } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useComposerStore } from '@renderer/stores/composer';
-import { createWorkspaceInBackground } from '@renderer/stores/workspaceCreation';
+import {
+  createWorkspaceInBackground,
+  useWorkspaceCreationStore,
+} from '@renderer/stores/workspaceCreation';
 import { Button, IconButton, Input } from '@renderer/components/ui';
 
 type SourceTab = 'branch' | 'pr' | 'issue';
@@ -121,6 +125,21 @@ function matchesFilter(value: string, filter: string): boolean {
   return value.toLowerCase().includes(needle);
 }
 
+function isValidBranchName(branch: string): boolean {
+  return (
+    branch.length <= 128 &&
+    /^(?!.*(?:\.\.|\/\/|@\{|\\))[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9_-])?$/.test(
+      branch,
+    ) &&
+    branch
+      .split('/')
+      .every(
+        (part) =>
+          part !== '' && !part.startsWith('.') && !part.endsWith('.lock'),
+      )
+  );
+}
+
 export interface NewWorkspaceDialogProps {
   /** The project to create the workspace under. Must be set before submission. */
   projectId: string | null;
@@ -138,21 +157,33 @@ export function NewWorkspaceDialog({
 }: NewWorkspaceDialogProps): React.JSX.Element {
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const setPendingPrompt = useComposerStore((s) => s.setPendingPrompt);
+  const creation = useWorkspaceCreationStore((s) => s.current);
 
   // Form state
   const [activeTab, setActiveTab] = useState<SourceTab>('branch');
   const [baseBranches, setBaseBranches] = useState<string[]>([]);
   const [branchListLoading, setBranchListLoading] = useState(false);
   const [branchListError, setBranchListError] = useState<string | null>(null);
-  const [sourceFilter, setSourceFilter] = useState('');
-  const [selectedBranch, setSelectedBranch] = useState<BranchChoice | null>(null);
-  const [selectedPr, setSelectedPr] = useState<PrListItem | null>(null);
-  const [selectedIssue, setSelectedIssue] = useState<IssueListItem | null>(null);
-  const [location, setLocation] = useState<'project' | 'worktree'>('worktree');
-  const [worktreeNaming, setWorktreeNaming] = useState<'automatic' | 'custom'>(
-    'automatic',
+  const [branchListWarning, setBranchListWarning] = useState<string | null>(
+    null,
   );
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState<BranchChoice | null>(
+    null,
+  );
+  const [selectedPr, setSelectedPr] = useState<PrListItem | null>(null);
+  const [selectedIssue, setSelectedIssue] = useState<IssueListItem | null>(
+    null,
+  );
+  const [location, setLocation] = useState<'project' | 'worktree'>('worktree');
+  const [workspaceName, setWorkspaceName] = useState('');
   const [worktreeName, setWorktreeName] = useState('');
+  const [branchName, setBranchName] = useState('');
+  const [branchMode, setBranchMode] = useState<'new' | 'existing'>('new');
+  const [currentBranch, setCurrentBranch] = useState<string | null>(null);
+  const [currentBranchError, setCurrentBranchError] = useState<string | null>(
+    null,
+  );
 
   // PR / issue list state (loaded lazily when the matching tab opens).
   const [prs, setPrs] = useState<PrListItem[] | null>(null);
@@ -171,6 +202,42 @@ export function NewWorkspaceDialog({
 
   // Streaming state
   const [isStreaming, setIsStreaming] = useState(false);
+  const [creationRunId, setCreationRunId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (
+      creationRunId !== null &&
+      creation?.runId === creationRunId &&
+      creation.status === 'error'
+    ) {
+      setIsStreaming(false);
+    }
+  }, [creation, creationRunId]);
+
+  useEffect(() => {
+    if (projectId === null) return;
+    let active = true;
+    void invoke('workspace:suggestNames', { projectId })
+      .then((names) => {
+        if (!active) return;
+        // Never overwrite a fast user edit if suggestions resolve after typing starts.
+        setWorkspaceName((current) =>
+          current === '' ? names.workspaceName : current,
+        );
+        setWorktreeName((current) =>
+          current === '' ? names.worktreeName : current,
+        );
+        setBranchName((current) =>
+          current === '' ? names.branchName : current,
+        );
+      })
+      .catch(() => {
+        // Creation stays disabled until collision-safe suggestions are available.
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
 
   // Load base branches for the Branch tab. The main command fetches origin before
   // returning refs so the select reflects the latest local + remote branch list.
@@ -180,11 +247,13 @@ export function NewWorkspaceDialog({
     let active = true;
     setBranchListLoading(true);
     setBranchListError(null);
+    setBranchListWarning(null);
 
     void invoke('project:listBranches', { projectId })
-      .then(({ branches }) => {
+      .then(({ branches, fetchWarning }) => {
         if (!active) return;
         setBaseBranches(branches);
+        setBranchListWarning(fetchWarning ?? null);
       })
       .catch((err: unknown) => {
         if (!active) return;
@@ -205,6 +274,27 @@ export function NewWorkspaceDialog({
       active = false;
     };
   }, [activeTab, projectId]);
+
+  useEffect(() => {
+    if (projectId === null || location !== 'project') return;
+    let active = true;
+    setCurrentBranchError(null);
+    void invoke('project:getCurrentBranch', { projectId })
+      .then(({ branch }) => {
+        if (active) setCurrentBranch(branch);
+      })
+      .catch((err: unknown) => {
+        if (active) {
+          setCurrentBranch(null);
+          setCurrentBranchError(
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [location, projectId]);
 
   // Load the PR/issue list when its tab becomes active. A rejected invoke (no
   // connected account, offline) is caught and surfaced as the inline empty state.
@@ -270,28 +360,47 @@ export function NewWorkspaceDialog({
       if (projectId === null || isStreaming) return;
 
       setIsStreaming(true);
-      createWorkspaceInBackground({ projectId, ...req }, (workspaceId) => {
-        onCreated?.(workspaceId);
-        selectWorkspace(workspaceId);
-      });
-      onClose();
+      const runId = createWorkspaceInBackground(
+        { projectId, ...req },
+        (workspaceId) => {
+          onCreated?.(workspaceId);
+          selectWorkspace(workspaceId);
+          onClose();
+        },
+      );
+      setCreationRunId(runId);
     },
     [projectId, isStreaming, selectWorkspace, onClose],
   );
 
-  function locationOptions(): Pick<CreateWorkspaceReq, 'location' | 'name'> {
+  function locationOptions(): Pick<
+    CreateWorkspaceReq,
+    'location' | 'name' | 'worktreeName' | 'branch'
+  > {
     return {
       location,
-      ...(location === 'worktree' &&
-      worktreeNaming === 'custom' &&
-      worktreeName.trim() !== ''
-        ? { name: worktreeName.trim() }
+      name: workspaceName.trim(),
+      ...(location === 'worktree'
+        ? {
+            worktreeName: worktreeName.trim(),
+            branch:
+              activeTab === 'branch' &&
+              branchMode === 'existing' &&
+              selectedBranch !== null
+                ? selectedBranch.label
+                : branchName.trim(),
+          }
         : {}),
     };
   }
 
   function handleSelectBranch(branch: BranchChoice): void {
-    if (customNameInvalid) return;
+    if (
+      customWorkspaceNameInvalid ||
+      customWorktreeNameInvalid ||
+      customBranchInvalid
+    )
+      return;
     setSelectedBranch(branch);
   }
 
@@ -304,7 +413,19 @@ export function NewWorkspaceDialog({
   }
 
   function handleCreate(): void {
-    if (customNameInvalid) return;
+    if (
+      customWorkspaceNameInvalid ||
+      customWorktreeNameInvalid ||
+      customBranchInvalid
+    )
+      return;
+    if (selectedLocation === 'project') {
+      runCreate({
+        ...locationOptions(),
+        sourceKind: 'branch',
+      });
+      return;
+    }
     if (activeTab === 'branch' && selectedBranch !== null) {
       runCreate({
         ...locationOptions(),
@@ -313,11 +434,7 @@ export function NewWorkspaceDialog({
       });
       return;
     }
-    if (
-      activeTab === 'pr' &&
-      selectedPr !== null &&
-      selectedLocation !== 'project'
-    ) {
+    if (activeTab === 'pr' && selectedPr !== null) {
       runCreate({
         ...locationOptions(),
         sourceKind: 'pr',
@@ -371,10 +488,16 @@ export function NewWorkspaceDialog({
   }
 
   const selectedLocation = location;
-  const customNameInvalid =
+  const customWorkspaceNameInvalid =
+    workspaceName.trim().length === 0 ||
+    /[\p{Cc}\p{Cf}]/u.test(workspaceName.trim());
+  const customWorktreeNameInvalid =
     selectedLocation === 'worktree' &&
-    worktreeNaming === 'custom' &&
     !/^[a-z0-9](?:[a-z0-9-]{0,62})$/.test(worktreeName.trim());
+  const customBranchInvalid =
+    selectedLocation === 'worktree' &&
+    (activeTab !== 'branch' || branchMode === 'new') &&
+    !isValidBranchName(branchName.trim());
   const branchRows = useMemo(
     () =>
       branchChoices(baseBranches).filter((branch) =>
@@ -401,18 +524,20 @@ export function NewWorkspaceDialog({
   );
   const canCreate =
     !isStreaming &&
-    !customNameInvalid &&
-    ((activeTab === 'branch' && selectedBranch !== null) ||
-      (activeTab === 'pr' &&
-        selectedPr !== null &&
-        selectedLocation !== 'project') ||
+    !customWorkspaceNameInvalid &&
+    !customWorktreeNameInvalid &&
+    !customBranchInvalid &&
+    (selectedLocation === 'project' ||
+      (activeTab === 'branch' && selectedBranch !== null) ||
+      (activeTab === 'pr' && selectedPr !== null) ||
       (activeTab === 'issue' && selectedIssue !== null));
 
-  return (
+  return createPortal(
     <>
       {/* Overlay */}
       <div
-        className="fixed inset-0 z-40 bg-scrim"
+        className="fixed inset-0 z-[100] bg-scrim"
+        data-testid="new-workspace-overlay"
         aria-hidden="true"
         onClick={handleClose}
       />
@@ -422,8 +547,11 @@ export function NewWorkspaceDialog({
         role="dialog"
         aria-modal="true"
         aria-label="New Workspace"
-        className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        className="fixed inset-0 z-[110] flex items-center justify-center p-4"
         data-testid="new-workspace-dialog"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) handleClose();
+        }}
       >
         <div
           className="relative w-full max-w-md rounded-4 border border-border-1 bg-surface-overlay shadow-4"
@@ -458,7 +586,9 @@ export function NewWorkspaceDialog({
                 >
                   <span className="block font-medium">Current workspace</span>
                   <span className="mt-0.5 block text-fg-3">
-                    Work in the project folder
+                    {selectedLocation === 'project' && currentBranch
+                      ? `Use checked-out branch: ${currentBranch}`
+                      : 'Work in the project folder'}
                   </span>
                 </button>
                 <button
@@ -479,60 +609,126 @@ export function NewWorkspaceDialog({
                   </span>
                 </button>
               </div>
+              {selectedLocation === 'project' ? (
+                <p
+                  className={`mt-2 text-xs ${
+                    currentBranchError ? 'text-danger' : 'text-fg-3'
+                  }`}
+                  data-testid="current-workspace-branch"
+                >
+                  {currentBranchError ??
+                    (currentBranch
+                      ? `New workspace will use the currently checked-out branch: ${currentBranch}.`
+                      : 'Reading the currently checked-out branch…')}
+                </p>
+              ) : null}
             </fieldset>
 
-            {selectedLocation === 'worktree' && (
+            <fieldset className="mb-4">
+              <legend className="mb-1 text-xs text-fg-2">
+                Workspace name
+              </legend>
+              <Input
+                value={workspaceName}
+                onChange={(event) => setWorkspaceName(event.target.value)}
+                placeholder="Generating name…"
+                disabled={isStreaming}
+                data-testid="workspace-name-input"
+                aria-invalid={customWorkspaceNameInvalid}
+              />
+              {customWorkspaceNameInvalid && workspaceName.trim() !== '' ? (
+                <p className="mt-1 text-xs text-danger">
+                  Workspace name is required.
+                </p>
+              ) : null}
+            </fieldset>
+
+            {selectedLocation === 'worktree' ? (
               <fieldset className="mb-4">
                 <legend className="mb-1 text-xs text-fg-2">
                   Worktree name
                 </legend>
-                <div className="flex gap-3 text-xs text-fg-2">
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="radio"
-                      name="worktree-naming"
-                      checked={worktreeNaming === 'automatic'}
-                      onChange={() => setWorktreeNaming('automatic')}
-                      disabled={isStreaming}
-                      data-testid="worktree-name-automatic"
-                    />
-                    Assign automatically
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="radio"
-                      name="worktree-naming"
-                      checked={worktreeNaming === 'custom'}
-                      onChange={() => setWorktreeNaming('custom')}
-                      disabled={isStreaming}
-                      data-testid="worktree-name-custom"
-                    />
-                    Choose a name
-                  </label>
-                </div>
-                {worktreeNaming === 'custom' && (
-                  <div className="mt-2">
-                    <Input
-                      value={worktreeName}
-                      onChange={(e) => setWorktreeName(e.target.value)}
-                      placeholder="my-worktree"
-                      disabled={isStreaming}
-                      data-testid="worktree-name-input"
-                      aria-invalid={customNameInvalid}
-                    />
-                    {customNameInvalid && worktreeName.trim() !== '' && (
-                      <p className="mt-1 text-xs text-danger">
-                        Use 1–63 lowercase letters, numbers, or hyphens.
-                      </p>
-                    )}
+                <Input
+                  value={worktreeName}
+                  onChange={(event) => setWorktreeName(event.target.value)}
+                  placeholder="Generating name…"
+                  disabled={isStreaming}
+                  data-testid="worktree-name-input"
+                  aria-invalid={customWorktreeNameInvalid}
+                />
+                {customWorktreeNameInvalid && worktreeName.trim() !== '' ? (
+                  <p className="mt-1 text-xs text-danger">
+                    Use 1–63 lowercase letters, numbers, or hyphens.
+                  </p>
+                ) : null}
+              </fieldset>
+            ) : null}
+
+            {selectedLocation === 'worktree' ? (
+              <fieldset className="mb-4">
+                <legend className="mb-1 text-xs text-fg-2">
+                  Branch name
+                </legend>
+                {activeTab === 'branch' ? (
+                  <div className="mb-2 flex gap-3 text-xs text-fg-2">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="branch-mode"
+                        checked={branchMode === 'new'}
+                        onChange={() => setBranchMode('new')}
+                        disabled={isStreaming}
+                        data-testid="branch-mode-new"
+                      />
+                      Create new branch
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="branch-mode"
+                        checked={branchMode === 'existing'}
+                        onChange={() => setBranchMode('existing')}
+                        disabled={isStreaming}
+                        data-testid="branch-mode-existing"
+                      />
+                      Use selected branch
+                    </label>
                   </div>
+                ) : null}
+                {activeTab === 'branch' && branchMode === 'existing' ? (
+                  <div
+                    className="rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-sm text-fg-2"
+                    data-testid="existing-branch-name"
+                  >
+                    {selectedBranch?.label ??
+                      'Select an existing branch below.'}
+                  </div>
+                ) : (
+                  <>
+                    <Input
+                      value={branchName}
+                      onChange={(event) => setBranchName(event.target.value)}
+                      placeholder="Generating name…"
+                      disabled={isStreaming}
+                      data-testid="branch-name-input"
+                      aria-invalid={customBranchInvalid}
+                    />
+                    {customBranchInvalid && branchName.trim() !== '' ? (
+                      <p className="mt-1 text-xs text-danger">
+                        Enter a valid Git branch name without spaces, double
+                        dots, or consecutive slashes.
+                      </p>
+                    ) : null}
+                  </>
                 )}
               </fieldset>
-            )}
+            ) : null}
 
-            {/* Source selection is intentionally below location + naming. Changing it
-                swaps only the source-specific controls that follow. */}
-            <div className="mb-4" data-testid="source-section">
+            {/* A project-checkout workspace always uses its already checked-out branch,
+                so source selection only applies to isolated worktrees. */}
+            {selectedLocation === 'worktree' ? (
+              <>
+                <div className="mb-4" data-testid="source-section">
               <h3 className="mb-2 text-xs font-medium uppercase tracking-caps text-fg-3">
                 Create From
               </h3>
@@ -563,11 +759,14 @@ export function NewWorkspaceDialog({
                 data-testid="source-filter"
                 className="h-12 rounded-3 border-border-1 bg-surface-overlay px-4 text-sm"
               />
-            </div>
+                </div>
 
-            {/* --- Branch tab --- */}
-            {activeTab === 'branch' && (
-              <div>
+                {/* --- Branch tab --- */}
+                {activeTab === 'branch' && (
+              <div
+                className="h-64 overflow-y-auto"
+                data-testid="branch-results"
+              >
                 {branchListLoading && (
                   <p className="py-4 text-center text-xs text-fg-3">
                     Loading branches...
@@ -583,15 +782,29 @@ export function NewWorkspaceDialog({
                   </p>
                 )}
 
+                {branchListWarning !== null && (
+                  <p
+                    data-testid="branch-list-warning"
+                    className="mb-3 rounded-2 border border-warning/30 bg-warning-muted px-2 py-1.5 text-xs text-warning"
+                  >
+                    {branchListWarning}
+                  </p>
+                )}
+
                 {!branchListLoading &&
                   branchListError === null &&
                   (branchRows.length > 0 ? (
-                    <ul className="max-h-64 space-y-1 overflow-y-auto">
+                    <ul className="space-y-1">
                       {branchRows.map((branch) => (
                         <li key={branch.ref}>
                           <button
                             type="button"
-                            disabled={isStreaming || customNameInvalid}
+                            disabled={
+                              isStreaming ||
+                              customWorkspaceNameInvalid ||
+                              customWorktreeNameInvalid ||
+                              customBranchInvalid
+                            }
                             onClick={() => handleSelectBranch(branch)}
                             data-testid="branch-item"
                             data-branch-ref={branch.ref}
@@ -610,7 +823,10 @@ export function NewWorkspaceDialog({
                               {branch.label}
                             </span>
                             {selectedBranch?.ref === branch.ref ? (
-                              <Check className="h-4 w-4 text-accent" aria-hidden />
+                              <Check
+                                className="h-4 w-4 text-accent"
+                                aria-hidden
+                              />
                             ) : null}
                           </button>
                         </li>
@@ -622,20 +838,14 @@ export function NewWorkspaceDialog({
                     </p>
                   ))}
               </div>
-            )}
+                )}
 
-            {/* --- From PR / From issue tabs --- */}
-            {activeTab !== 'branch' && (
-              <div data-testid={`${activeTab}-list`}>
-                {activeTab === 'pr' && selectedLocation === 'project' ? (
-                  <p
-                    className="mb-3 rounded-2 border border-warn/30 bg-warn-muted px-2.5 py-2 text-xs text-warn"
-                    data-testid="pr-location-warning"
-                  >
-                    Pull requests require an isolated worktree. Select Add
-                    worktree above to continue.
-                  </p>
-                ) : null}
+                {/* --- From PR / From issue tabs --- */}
+                {activeTab !== 'branch' && (
+              <div
+                className="h-64 overflow-y-auto"
+                data-testid={`${activeTab}-list`}
+              >
                 {listLoading && (
                   <p className="py-4 text-center text-xs text-fg-3">Loading…</p>
                 )}
@@ -698,15 +908,16 @@ export function NewWorkspaceDialog({
                   listError === null &&
                   activeTab === 'pr' &&
                   (prRows.length > 0 ? (
-                    <ul className="max-h-64 space-y-1 overflow-y-auto">
+                    <ul className="space-y-1">
                       {prRows.map((pr) => (
                         <li key={pr.number}>
                           <button
                             type="button"
                             disabled={
                               isStreaming ||
-                              customNameInvalid ||
-                              selectedLocation === 'project'
+                              customWorkspaceNameInvalid ||
+                              customWorktreeNameInvalid ||
+                              customBranchInvalid
                             }
                             onClick={() => handleSelectPr(pr)}
                             data-testid="pr-item"
@@ -732,7 +943,10 @@ export function NewWorkspaceDialog({
                               </span>
                             </span>
                             {selectedPr?.number === pr.number ? (
-                              <Check className="h-4 w-4 text-accent" aria-hidden />
+                              <Check
+                                className="h-4 w-4 text-accent"
+                                aria-hidden
+                              />
                             ) : null}
                           </button>
                         </li>
@@ -749,16 +963,23 @@ export function NewWorkspaceDialog({
                   listError === null &&
                   activeTab === 'issue' &&
                   (issueRows.length > 0 ? (
-                    <ul className="max-h-64 space-y-1 overflow-y-auto">
+                    <ul className="space-y-1">
                       {issueRows.map((issue) => (
                         <li key={issue.number}>
                           <button
                             type="button"
-                            disabled={isStreaming || customNameInvalid}
+                            disabled={
+                              isStreaming ||
+                              customWorkspaceNameInvalid ||
+                              customWorktreeNameInvalid ||
+                              customBranchInvalid
+                            }
                             onClick={() => handleSelectIssue(issue)}
                             data-testid="issue-item"
                             data-issue-number={issue.number}
-                            aria-pressed={selectedIssue?.number === issue.number}
+                            aria-pressed={
+                              selectedIssue?.number === issue.number
+                            }
                             className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
                               selectedIssue?.number === issue.number
                                 ? 'border-accent bg-accent-muted'
@@ -778,7 +999,10 @@ export function NewWorkspaceDialog({
                               </span>
                             </span>
                             {selectedIssue?.number === issue.number ? (
-                              <Check className="h-4 w-4 text-accent" aria-hidden />
+                              <Check
+                                className="h-4 w-4 text-accent"
+                                aria-hidden
+                              />
                             ) : null}
                           </button>
                         </li>
@@ -790,9 +1014,26 @@ export function NewWorkspaceDialog({
                     </p>
                   ))}
               </div>
-            )}
+                )}
+              </>
+            ) : null}
 
             <div className="mt-4 flex justify-end gap-2 border-t border-border-1 pt-4">
+              {creationRunId !== null &&
+              creation?.runId === creationRunId ? (
+                <p
+                  className={`mr-auto self-center text-xs ${
+                    creation.status === 'error'
+                      ? 'text-danger'
+                      : creation.status === 'complete'
+                        ? 'text-ok'
+                        : 'text-fg-3'
+                  }`}
+                  data-testid="workspace-creation-status"
+                >
+                  {creation.error ?? creation.phase}
+                </p>
+              ) : null}
               <Button type="button" variant="ghost" onClick={handleClose}>
                 Cancel
               </Button>
@@ -806,10 +1047,10 @@ export function NewWorkspaceDialog({
                 Create
               </Button>
             </div>
-
           </div>
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   );
 }

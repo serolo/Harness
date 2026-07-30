@@ -50,6 +50,7 @@ function rowToTask(row: ScheduledTasksTable): ScheduledTask {
     errorMessage: row.error_message,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    harnessOverride: row.harness_override,
   };
 }
 
@@ -94,6 +95,7 @@ export class ScheduledTasksRepo {
       error_message: null,
       created_at: now,
       updated_at: now,
+      harness_override: input.harnessOverride ?? null,
     };
     await this.db.insertInto('scheduled_tasks').values(row).execute();
     return rowToTask(row);
@@ -122,6 +124,9 @@ export class ScheduledTasksRepo {
     if (patch.prompt !== undefined) set.prompt = patch.prompt;
     if (patch.model !== undefined) set.model = patch.model;
     if (patch.mode !== undefined) set.mode = patch.mode;
+    if (patch.harnessOverride !== undefined) {
+      set.harness_override = patch.harnessOverride;
+    }
     // Re-derive state ONLY when the schedule itself changes (design doc §5.2):
     //   a time → 'scheduled'; cleared (null) → 'pending'.
     if (patch.scheduledAt !== undefined) {

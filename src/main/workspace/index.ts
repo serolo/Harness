@@ -20,7 +20,7 @@ import { join, resolve } from 'node:path';
 import { existsSync, realpathSync } from 'node:fs';
 
 import { AppError } from '@shared/errors';
-import type { CreateWorkspaceReq, Workspace } from '@shared/models';
+import type { CreateWorkspaceReq, Project, Workspace } from '@shared/models';
 import type { EffectiveSettings } from '@shared/settings';
 import type {
   EventChannel,
@@ -64,6 +64,21 @@ function branchSlug(name: string): string {
     .slice(0, 63);
 }
 
+function isValidBranchName(branch: string): boolean {
+  return (
+    branch.length <= 128 &&
+    /^(?!.*(?:\.\.|\/\/|@\{|\\))[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9_-])?$/.test(
+      branch,
+    ) &&
+    branch
+      .split('/')
+      .every(
+        (part) =>
+          part !== '' && !part.startsWith('.') && !part.endsWith('.lock'),
+      )
+  );
+}
+
 function branchNameForWorkspaceName(
   currentBranch: string,
   name: string,
@@ -104,7 +119,7 @@ export interface WorkspaceManagerDeps {
   /** Read-only merged settings accessor. */
   settings: SettingsService;
   /** Resolve user + repository layers for lifecycle operations. */
-  settingsForProject?: (repoPath: string) => EffectiveSettings;
+  settingsForProject?: (project: Project) => Promise<EffectiveSettings>;
   /** Runs the setup command in the worktree, streaming combined output. */
   runSetup: (
     command: string,
@@ -195,12 +210,9 @@ export class WorkspaceManager {
     const requestedName = req.name?.trim();
     if (
       requestedName !== undefined &&
-      !/^[a-z0-9](?:[a-z0-9-]{0,62})$/.test(requestedName)
+      (requestedName.length === 0 || /[\p{Cc}\p{Cf}]/u.test(requestedName))
     ) {
-      throw new AppError(
-        'invalid_input',
-        'workspace name must be 1-63 lowercase letters, numbers, or hyphens',
-      );
+      throw new AppError('invalid_input', 'workspace name is required');
     }
     if (
       requestedName !== undefined &&
@@ -218,12 +230,43 @@ export class WorkspaceManager {
       (location === 'project' && !existingNames.includes('current')
         ? 'current'
         : this.deps.naming.allocate(existingNames));
-    const settings =
-      this.deps.settingsForProject?.(project.repoPath) ??
-      this.deps.settings.get();
+    const derivedSafeName = branchSlug(name);
+    if (derivedSafeName === '') {
+      throw new AppError(
+        'invalid_input',
+        'workspace name must contain letters or numbers',
+      );
+    }
+    const requestedWorktreeName = req.worktreeName?.trim();
+    if (
+      requestedWorktreeName !== undefined &&
+      !/^[a-z0-9](?:[a-z0-9-]{0,62})$/.test(requestedWorktreeName)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'worktree name must be 1-63 lowercase letters, numbers, or hyphens',
+      );
+    }
+    const settings = this.deps.settingsForProject
+      ? await this.deps.settingsForProject(project)
+      : this.deps.settings.get();
     const baseRef = req.baseBranch ?? project.defaultBranch;
-    let branch = req.branch ?? `${settings.git.branchPrefix}/${name}`;
-    let worktreePath = join(worktreesDir(project.id), name);
+    const requestedBranch = req.branch?.trim();
+    if (
+      location === 'worktree' &&
+      requestedBranch !== undefined &&
+      !isValidBranchName(requestedBranch)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'branch name is not a valid Git branch name',
+      );
+    }
+    let branch = requestedBranch ?? derivedSafeName;
+    let worktreePath = join(
+      worktreesDir(project.id),
+      requestedWorktreeName ?? derivedSafeName,
+    );
 
     // A `pr` source seeds the worktree from the PR head instead of the base ref.
     // `req.sourceRef` is the PR number as a string; a non-numeric / non-positive
@@ -416,11 +459,8 @@ export class WorkspaceManager {
     let name: string | undefined;
     if (patch.name !== undefined) {
       name = patch.name.trim();
-      if (name.length === 0 || name.length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) {
-        throw new AppError(
-          'invalid_input',
-          'workspace name must be 1-80 visible characters',
-        );
+      if (name.length === 0 || /[\p{Cc}\p{Cf}]/u.test(name)) {
+        throw new AppError('invalid_input', 'workspace name is required');
       }
       const siblings = await this.deps.repos.workspaces.listByProject(
         current.projectId,
@@ -509,10 +549,9 @@ export class WorkspaceManager {
 
     const project = await this.deps.repos.projects.getById(ws.projectId);
     const settings =
-      project === null
-        ? this.deps.settings.get()
-        : (this.deps.settingsForProject?.(project.repoPath) ??
-          this.deps.settings.get());
+      project !== null && this.deps.settingsForProject
+        ? await this.deps.settingsForProject(project)
+        : this.deps.settings.get();
     const willDeleteWorktree =
       settings.git.deleteWorktreeOnArchive &&
       (ws.location ?? 'worktree') === 'worktree' &&
@@ -564,10 +603,9 @@ export class WorkspaceManager {
 
     const project = await this.deps.repos.projects.getById(ws.projectId);
     const settings =
-      project === null
-        ? this.deps.settings.get()
-        : (this.deps.settingsForProject?.(project.repoPath) ??
-          this.deps.settings.get());
+      project !== null && this.deps.settingsForProject
+        ? await this.deps.settingsForProject(project)
+        : this.deps.settings.get();
     const worktreeExists =
       ws.worktreePath !== null && existsSync(ws.worktreePath);
     if (settings.scripts.archive !== undefined && worktreeExists) {

@@ -86,6 +86,11 @@ export function CheckpointTimeline({
             aria-label="Revert to checkpoint"
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
             data-testid="checkpoint-revert-dialog"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !reverting) {
+                setConfirmTarget(null);
+              }
+            }}
           >
             <div
               className="relative w-full max-w-md rounded-4 border border-border-1 bg-surface-overlay p-4 shadow-4"

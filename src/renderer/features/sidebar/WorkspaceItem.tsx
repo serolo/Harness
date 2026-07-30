@@ -2,10 +2,7 @@
 //
 // Renders:
 //   - City name (primary label)
-//   - Branch name (muted, secondary)
 //   - StatusBadge (colored pill)
-//   - Harness label (claude_code / codex / cursor)
-//   - Port (when allocated)
 //   - Archive button (non-archived only)
 //   - Restore button (archived only)
 //
@@ -15,8 +12,18 @@
 // Archived rows render dimmed. The selected row is highlighted.
 
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { Archive, LoaderCircle, Pin, RotateCcw } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Archive,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestClosed,
+  GitPullRequestDraft,
+  LoaderCircle,
+  Pin,
+  RotateCcw,
+} from 'lucide-react';
+import type { PrSummary } from '@shared/github';
 import type { Workspace, WorkspaceStatus } from '@shared/models';
 import { invoke } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
@@ -30,12 +37,52 @@ import {
 import { StatusBadge } from './StatusBadge';
 import { WorkspaceContextMenu } from './WorkspaceContextMenu';
 
-/** Human-readable labels for each HarnessId. */
-const HARNESS_LABELS: Record<string, string> = {
-  claude_code: 'Claude Code',
-  codex: 'Codex',
-  cursor: 'Cursor',
-};
+function PullRequestStateIcon({
+  pullRequest,
+}: {
+  pullRequest: PrSummary;
+}): React.JSX.Element {
+  const state = pullRequest.state?.toLowerCase();
+  const common = {
+    'aria-label': `Pull request #${pullRequest.number}`,
+    'data-testid': 'workspace-pr-icon',
+  };
+
+  if (pullRequest.draft) {
+    return (
+      <GitPullRequestDraft
+        {...common}
+        className="h-5 w-5 shrink-0 text-warning"
+        aria-label={`${common['aria-label']} is draft`}
+      />
+    );
+  }
+  if (state === 'merged') {
+    return (
+      <GitMerge
+        {...common}
+        className="h-5 w-5 shrink-0 text-accent"
+        aria-label={`${common['aria-label']} is merged`}
+      />
+    );
+  }
+  if (state === 'closed') {
+    return (
+      <GitPullRequestClosed
+        {...common}
+        className="h-5 w-5 shrink-0 text-danger"
+        aria-label={`${common['aria-label']} is closed`}
+      />
+    );
+  }
+  return (
+    <GitPullRequest
+      {...common}
+      className="h-5 w-5 shrink-0 text-success"
+      aria-label={`${common['aria-label']} is open`}
+    />
+  );
+}
 
 function branchSlug(name: string): string {
   return name
@@ -87,6 +134,21 @@ export function WorkspaceItem({
       state.current.status === 'running',
   );
   const isArchived = workspace.status === 'archived';
+  const { data: pullRequest } = useQuery({
+    queryKey: [
+      'workspace-pr',
+      workspace.id,
+      workspace.branch,
+      workspace.prNumber,
+    ],
+    queryFn: async () =>
+      (await invoke('github:getWorkspacePr', {
+        workspaceId: workspace.id,
+      })) ?? null,
+    enabled: !isArchived,
+    retry: false,
+    staleTime: 60_000,
+  });
   const [contextPoint, setContextPoint] = useState<{
     x: number;
     y: number;
@@ -215,7 +277,10 @@ export function WorkspaceItem({
           aria-current={isSelected ? 'true' : undefined}
           className="min-w-0 flex-1 px-2 py-2 text-left"
         >
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
+            {pullRequest ? (
+              <PullRequestStateIcon pullRequest={pullRequest} />
+            ) : null}
             {workspace.isUnread ? (
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
@@ -242,21 +307,14 @@ export function WorkspaceItem({
                 className="inline-flex shrink-0 items-center gap-1 text-2xs font-medium text-fg-2"
                 data-testid="workspace-operation-progress"
               >
-                <LoaderCircle className="h-3 w-3 animate-spin text-accent" aria-hidden />
+                <LoaderCircle
+                  className="h-3 w-3 animate-spin text-accent"
+                  aria-hidden
+                />
                 {isArchiving ? 'archiving' : 'creating'}
               </span>
             ) : (
               <StatusBadge status={workspace.status} />
-            )}
-          </div>
-
-          <div className="mt-0.5 flex items-center gap-2 text-xs text-fg-3">
-            <span className="min-w-0 flex-1 truncate">{workspace.branch}</span>
-            <span className="shrink-0">
-              {HARNESS_LABELS[workspace.harness] ?? workspace.harness}
-            </span>
-            {workspace.port != null && (
-              <span className="shrink-0 tabular-nums">:{workspace.port}</span>
             )}
           </div>
         </button>

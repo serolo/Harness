@@ -234,6 +234,11 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     expect(screen.getByTestId('composer-model-cursor')).toHaveTextContent(
       'Cursor',
     );
+    expect(screen.getByTestId('composer-controls')).toHaveClass('min-w-0');
+    expect(
+      screen.getByTestId('composer-model').parentElement?.parentElement,
+    ).toHaveClass('min-w-0', 'flex-1');
+    expect(screen.getByTestId('composer-send')).toHaveClass('shrink-0');
   });
 
   it('closes the model menu when pressing outside it', async () => {
@@ -288,6 +293,75 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     expect(screen.getByTestId('attachment-bar')).not.toHaveTextContent(
       '/tmp/ws/src',
     );
+    expect(api.invoke).toHaveBeenCalledWith('workspace:pickFile', undefined);
+  });
+
+  it('keeps separate cached drafts and attachments for each workspace', async () => {
+    const api = installApi({ pickFile: '/tmp/ws/src/app.ts' });
+    const first = makeWorkspace('claude_code');
+    const second = {
+      ...first,
+      id: 'ws2',
+      name: 'berlin',
+      branch: 'agent/berlin',
+      worktreePath: '/tmp/ws2',
+    };
+    useWorkspacesStore.setState({
+      workspaces: [first, second],
+      selectedWorkspaceId: 'ws1',
+    });
+    const props = {
+      isBusy: false,
+      workspaceId: 'ws1',
+      onSend: () => {},
+      onInterrupt: () => {},
+    };
+    const view = render(React.createElement(Composer, props));
+
+    fireEvent.change(await screen.findByTestId('composer-input'), {
+      target: { value: 'workspace one draft' },
+    });
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-plus-attachment'));
+    expect(await screen.findByTestId('attachment-bar')).toHaveTextContent(
+      'app.ts',
+    );
+
+    view.rerender(
+      React.createElement(Composer, { ...props, workspaceId: 'ws2' }),
+    );
+
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId('composer-input') as HTMLTextAreaElement).value,
+      ).toBe(''),
+    );
+    expect(screen.queryByTestId('attachment-bar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('composer-plus-menu')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'workspace two draft' },
+    });
+    view.rerender(
+      React.createElement(Composer, { ...props, workspaceId: 'ws1' }),
+    );
+
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId('composer-input') as HTMLTextAreaElement).value,
+      ).toBe('workspace one draft'),
+    );
+    expect(screen.getByTestId('attachment-bar')).toHaveTextContent('app.ts');
+
+    view.rerender(
+      React.createElement(Composer, { ...props, workspaceId: 'ws2' }),
+    );
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId('composer-input') as HTMLTextAreaElement).value,
+      ).toBe('workspace two draft'),
+    );
+    expect(screen.queryByTestId('attachment-bar')).not.toBeInTheDocument();
     expect(api.invoke).toHaveBeenCalledWith('workspace:pickFile', undefined);
   });
 

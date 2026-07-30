@@ -6,7 +6,7 @@
 //
 //   1. Built-in defaults        (the zod schema's `.default(...)` values)
 //   2. User          `paths.settingsPath()`                    (~/.../settings.toml)
-//   3. Project shared `<projectDir>/.harness/settings.toml`   (committed)
+//   3. Project shared `project_settings.settings_json`       (SQLite)
 //   4. Project local  `<projectDir>/.harness/settings.local.toml` (gitignored)
 //
 // Later layers deep-merge OVER earlier ones; the merged result is then validated
@@ -57,11 +57,12 @@ export interface LoadOptions {
    */
   userPath?: string;
   /**
-   * Project root. When provided, `<projectDir>/.harness/settings.toml` and
-   * `settings.local.toml` are layered on top of the user layer. When omitted,
-   * only defaults + user are merged.
+   * Project root. When provided, the optional database-backed project settings
+   * and `settings.local.toml` are layered on top of the user layer.
    */
   projectDir?: string;
+  /** Raw project settings loaded from SQLite. */
+  projectSettings?: Record<string, unknown>;
 }
 
 /**

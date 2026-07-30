@@ -224,6 +224,14 @@ function normalizeAssistant(obj: Record<string, unknown>): NormalizeResult[] {
     }
     // Other block types are ignored for forward-compat.
   }
+  const message = isRecord(obj.message) ? obj.message : undefined;
+  const usage = extractUsage(message?.usage);
+  if (usage) {
+    out.push({
+      type: 'event',
+      event: { kind: 'context_usage', usage },
+    });
+  }
   return out;
 }
 

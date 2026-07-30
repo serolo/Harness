@@ -48,7 +48,9 @@ export function QuestionCard({
                     type="button"
                     key={option.label}
                     disabled={disabled || !onSubmit}
-                    aria-pressed={answers[index]?.includes(option.label) ?? false}
+                    aria-pressed={
+                      answers[index]?.includes(option.label) ?? false
+                    }
                     className="rounded-2 border border-border-1 px-2 py-1 text-left text-xs enabled:hover:border-accent enabled:hover:text-fg-1 aria-pressed:border-accent aria-pressed:bg-accent/10 aria-pressed:text-fg-1 disabled:cursor-default"
                     onClick={() =>
                       setAnswers((current) => {
@@ -74,7 +76,8 @@ export function QuestionCard({
                 rows={2}
                 disabled={disabled}
                 aria-label={question.question}
-                className="w-full resize-y rounded-1 border border-border-1 bg-surface-well px-2 py-1.5 text-sm text-fg-1 outline-none focus:border-accent disabled:opacity-60"
+                className="w-full resize-none rounded-1 border border-border-1 bg-surface-well px-2 py-1.5 text-sm text-fg-1 outline-none focus:border-accent disabled:opacity-60"
+                style={{ resize: 'none' }}
                 value={answers[index]?.[0] ?? ''}
                 onChange={(event) =>
                   setAnswers((current) => ({

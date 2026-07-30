@@ -20,6 +20,8 @@ import { migration0008ScheduledTasks } from './0008_scheduled_tasks';
 import { migration0008WorkspaceLocation } from './0008_workspace_location';
 import { migration0009WorkspaceMenu } from './0009_workspace_menu';
 import { migration0010TurnBilling } from './0010_turn_billing';
+import { migration0011ProjectSettings } from './0011_project_settings';
+import { migration0012TaskHarnessOverride } from './0012_task_harness_override';
 
 /**
  * One numbered migration. `up` receives the raw better-sqlite3 handle and runs
@@ -49,6 +51,8 @@ const migrations: readonly Migration[] = [
   migration0008WorkspaceLocation,
   migration0009WorkspaceMenu,
   migration0010TurnBilling,
+  migration0011ProjectSettings,
+  migration0012TaskHarnessOverride,
 ];
 
 /** Read the current schema version from `PRAGMA user_version`. */

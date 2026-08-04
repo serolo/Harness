@@ -19,6 +19,7 @@ import type {
   TaskState,
   UpdateTaskReq,
 } from '@shared/tasks';
+import type { Attachment } from '@shared/harness';
 import type { AppDatabase } from '../index';
 import type { ScheduledTasksTable } from '../schema';
 
@@ -36,6 +37,15 @@ const APP_CLOSED_MESSAGE = 'app closed while the task was running';
 const TURN_ERROR_MESSAGE = "the task's turn ended with an error";
 
 /** Map a DB row to the shared `ScheduledTask` DTO (explicit, per the repo convention). */
+function parseAttachments(value: string): Attachment[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as Attachment[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToTask(row: ScheduledTasksTable): ScheduledTask {
   return {
     id: row.id,
@@ -51,6 +61,8 @@ function rowToTask(row: ScheduledTasksTable): ScheduledTask {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     harnessOverride: row.harness_override,
+    attachments: parseAttachments(row.attachments_json),
+    effort: row.effort,
   };
 }
 
@@ -96,6 +108,8 @@ export class ScheduledTasksRepo {
       created_at: now,
       updated_at: now,
       harness_override: input.harnessOverride ?? null,
+      attachments_json: JSON.stringify(input.attachments ?? []),
+      effort: input.effort ?? null,
     };
     await this.db.insertInto('scheduled_tasks').values(row).execute();
     return rowToTask(row);
@@ -127,6 +141,10 @@ export class ScheduledTasksRepo {
     if (patch.harnessOverride !== undefined) {
       set.harness_override = patch.harnessOverride;
     }
+    if (patch.attachments !== undefined) {
+      set.attachments_json = JSON.stringify(patch.attachments);
+    }
+    if (patch.effort !== undefined) set.effort = patch.effort;
     // Re-derive state ONLY when the schedule itself changes (design doc §5.2):
     //   a time → 'scheduled'; cleared (null) → 'pending'.
     if (patch.scheduledAt !== undefined) {

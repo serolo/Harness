@@ -6,12 +6,12 @@
 //
 //   - harnessReady    — at least one registered harness CLI is installed AND authenticated
 //                       (`harness:detect` via the supervisor's `listHarnesses`).
-//   - githubConnected — at least one GitHub integration row exists (optional for local use).
+//   - githubConnected — a valid GitHub CLI session has been imported into the app.
 //   - hasProjects     — at least one project has been added.
 //
 // `complete` is true once the ESSENTIAL steps are satisfied: a usable harness + a project.
-// GitHub is deliberately NOT part of `complete` — the app is usable on local repos without
-// it. State must DEGRADE GRACEFULLY when nothing is installed (empty detect → all false,
+// GitHub plus one model provider are required before onboarding can be acknowledged.
+// State must DEGRADE GRACEFULLY when nothing is installed (empty detect → all false,
 // `complete: false`) rather than throw and block the app.
 //
 // SECURITY NOTE (heightened scrutiny, spec §7): the wizard this feeds MUST surface the
@@ -19,8 +19,9 @@
 // the worktree; no sandbox in v1). That disclosure + acknowledgement live in the renderer
 // (`OnboardingWizard`); this service only reports readiness.
 
-import type { OnboardingState } from '@shared/ipc';
+import type { OnboardingLoginProvider, OnboardingState } from '@shared/ipc';
 import type { HarnessInfo } from '@shared/ipc';
+import { AppError } from '@shared/errors';
 
 /**
  * Injected readiness probes (kept as plain async functions so the composer is unit-testable
@@ -32,6 +33,8 @@ export interface OnboardingServiceDeps {
   listHarnesses: () => Promise<HarnessInfo[]>;
   /** Count of connected GitHub integration rows (`ctx.integrations.list('github').length`). */
   countGithubAccounts: () => Promise<number>;
+  /** Whether `gh auth status` reports a valid github.com session. */
+  githubAuthenticated: () => Promise<boolean>;
   /** Count of registered projects (`ProjectsRepo.list().length`). */
   countProjects: () => Promise<number>;
   /** Whether the optional QMD knowledge search CLI is installed. */
@@ -53,17 +56,22 @@ export class OnboardingService {
    */
   async getState(): Promise<OnboardingState> {
     const harnesses = await this.deps.listHarnesses();
-    const harnessReady = harnesses.some(
-      (h) => h.detect.installed && h.detect.authenticated,
+    const claudeReady = isReady(
+      harnesses.find((harness) => harness.id === 'claude_code'),
     );
+    const codexReady = isReady(
+      harnesses.find((harness) => harness.id === 'codex'),
+    );
+    const harnessReady = claudeReady || codexReady;
 
-    const githubConnected = (await this.deps.countGithubAccounts()) > 0;
+    const githubConnected =
+      (await this.deps.countGithubAccounts()) > 0 &&
+      (await this.deps.githubAuthenticated());
     const hasProjects = (await this.deps.countProjects()) > 0;
     const qmdInstalled = await this.deps.qmdInstalled();
     const acknowledged = await this.deps.isAcknowledged();
 
-    // Essential steps: a usable harness + at least one project. GitHub is optional.
-    const complete = harnessReady && hasProjects;
+    const complete = githubConnected && harnessReady;
 
     return {
       harnessReady,
@@ -72,10 +80,68 @@ export class OnboardingService {
       qmdInstalled,
       acknowledged,
       complete,
+      claudeReady,
+      codexReady,
     };
   }
 
   async acknowledge(): Promise<void> {
+    const state = await this.getState();
+    if (!state.complete) {
+      throw new AppError(
+        'conflict',
+        'Connect GitHub and sign in to Claude Code or Codex before finishing setup',
+      );
+    }
     await this.deps.acknowledge();
   }
+}
+
+export interface OnboardingLoginCommand {
+  executable: 'gh' | 'claude' | 'codex';
+  args: string[];
+  display: string;
+}
+
+/** Fixed argv allowlist for onboarding login terminals; no renderer text is executed. */
+export function onboardingLoginCommand(
+  provider: OnboardingLoginProvider,
+  method?: 'cli' | 'api_key',
+): OnboardingLoginCommand {
+  switch (provider) {
+    case 'github':
+      return {
+        executable: 'gh',
+        args: ['auth', 'login'],
+        display: 'gh auth login',
+      };
+    case 'claude':
+      return {
+        executable: 'claude',
+        args:
+          method === 'api_key'
+            ? ['auth', 'login', '--console']
+            : ['auth', 'login'],
+        display:
+          method === 'api_key'
+            ? 'claude auth login --console'
+            : 'claude auth login',
+      };
+    case 'codex':
+      return method === 'api_key'
+        ? {
+            executable: 'codex',
+            args: ['login', '--with-api-key'],
+            display: 'codex login --with-api-key',
+          }
+        : { executable: 'codex', args: ['login'], display: 'codex login' };
+  }
+}
+
+function isReady(harness: HarnessInfo | undefined): boolean {
+  return (
+    harness !== undefined &&
+    harness.detect.installed &&
+    harness.detect.authenticated
+  );
 }

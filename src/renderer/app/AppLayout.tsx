@@ -26,8 +26,11 @@ import { ChatPanel } from '@renderer/features/chat/ChatPanel';
 import { TerminalPanel } from '@renderer/features/terminal/TerminalPanel';
 import { DiffPanel } from '@renderer/features/diff/DiffPanel';
 import { TasksPanel } from '@renderer/features/tasks/TasksPanel';
+import { useSchedulerTurnEvents } from '@renderer/features/tasks/useSchedulerTurnEvents';
 import { SettingsPanel } from '@renderer/features/settings/SettingsPanel';
 import { UsagePanel } from '@renderer/features/usage/UsagePanel';
+import { UpdateModal } from '@renderer/features/update/UpdateModal';
+import { useAppUpdate } from '@renderer/features/update/useAppUpdate';
 import { OpenInAppMenu } from '@renderer/features/workspace/OpenInAppMenu';
 import { archiveWorkspaceWithConfirmation } from '@renderer/features/workspace/actions';
 import { CommandPalette } from '@renderer/features/palette/CommandPalette';
@@ -35,6 +38,7 @@ import { Dialog, IconButton, Kbd } from '@renderer/components/ui';
 import {
   useCommands,
   type CommandActions,
+  type UpdateCommandActions,
 } from '@renderer/features/palette/useCommands';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useNavStore } from '@renderer/stores/nav';
@@ -245,6 +249,8 @@ function WorkPaneResizeHandle({
 
 /** The top-level adjustable 3-pane shell: [rail | content | context]. */
 export function AppLayout(): React.JSX.Element {
+  useSchedulerTurnEvents();
+  const appUpdate = useAppUpdate();
   const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
   const selectedProjectId = useWorkspacesStore((s) => s.selectedProjectId);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
@@ -311,7 +317,7 @@ export function AppLayout(): React.JSX.Element {
   // accelerator and a palette entry can never diverge. `openPr` publishes/opens the PR
   // for the selected workspace (spec §5.6, ⌘⇧P); it no-ops when nothing is selected and
   // swallows errors (the Checks pane surfaces PR state — a menu action must not throw).
-  const actions = useMemo<CommandActions>(
+  const actions = useMemo<CommandActions & UpdateCommandActions>(
     () => ({
       showPane: (pane) => {
         if (pane !== 'chat') setRightPaneOpen(true);
@@ -327,9 +333,12 @@ export function AppLayout(): React.JSX.Element {
           },
         );
       },
+      checkForUpdates: () => {
+        void appUpdate.manualCheck();
+      },
       selectWorkspace: (id) => selectWorkspace(id),
     }),
-    [selectWorkspace, setNewWorkspaceOpen],
+    [appUpdate.manualCheck, selectWorkspace, setNewWorkspaceOpen],
   );
 
   // Keep the current registry reachable from the (once-subscribed) menu handler without
@@ -679,6 +688,8 @@ export function AppLayout(): React.JSX.Element {
           data-testid="settings-overlay"
           onClose={() => setSettingsOpen(false)}
           width={1120}
+          fullScreen
+          contentClassName="h-full overflow-hidden p-0"
         >
           <SettingsPanel onClose={() => setSettingsOpen(false)} />
         </Dialog>
@@ -692,6 +703,14 @@ export function AppLayout(): React.JSX.Element {
           <UsagePanel onClose={() => setUsageOpen(false)} />
         </Dialog>
       ) : null}
+      <UpdateModal
+        status={appUpdate.status}
+        open={appUpdate.open}
+        installing={appUpdate.installing}
+        onClose={appUpdate.close}
+        onRetry={() => void appUpdate.manualCheck()}
+        onInstall={() => void appUpdate.install()}
+      />
       {/* ⌘K command palette (Phase 6, Track H2) — renders only when open (ui store). */}
       <CommandPalette actions={actions} />
     </div>

@@ -22,13 +22,12 @@ body,
   height: 100%;
 }
 
-[data-theme='light'] body {
-  background: #6558ef;
+.electron-drag-region {
+  -webkit-app-region: drag;
 }
 
 [data-theme='light'] #root {
   overflow: hidden;
-  border: 1px solid #6558ef;
   border-radius: 14px;
 }
 

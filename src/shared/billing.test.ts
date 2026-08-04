@@ -28,7 +28,7 @@ describe('calculateTurnBilling', () => {
         cachedInputTokens: 500,
         outputTokens: 100,
       })?.costMicros,
-    ).toBe(1_438);
+    ).toBe(2_875);
   });
 
   it('leaves unknown and unsupported models unpriced', () => {

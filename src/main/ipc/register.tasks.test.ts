@@ -62,6 +62,7 @@ let db: AppDatabase;
 let repo: ScheduledTasksRepo;
 let workspaceId: string;
 let recorderClear: ReturnType<typeof vi.fn>;
+let pricingReady: ReturnType<typeof vi.fn>;
 
 const FAKE_EVENT = { sender: {} } as unknown as IpcMainInvokeEvent;
 
@@ -102,6 +103,7 @@ beforeEach(async () => {
   });
   workspaceId = workspace.id;
   recorderClear = vi.fn(async () => undefined);
+  pricingReady = vi.fn(async () => null);
 
   capturedHandlers.clear();
 
@@ -115,6 +117,9 @@ beforeEach(async () => {
     },
     recorder: {
       clear: recorderClear,
+    },
+    pricing: {
+      ready: pricingReady,
     },
   } as unknown as AppContext;
 
@@ -150,6 +155,16 @@ describe('task:create — input narrowing', () => {
     ).toBe('invalid_input');
   });
 
+  it('rejects an unknown reasoning effort', async () => {
+    expect(
+      await invokeCode('task:create', {
+        workspaceId,
+        prompt: 'go',
+        effort: 'extreme' as never,
+      }),
+    ).toBe('invalid_input');
+  });
+
   it('rejects a model failing MODEL_PATTERN (shell metacharacters)', async () => {
     expect(
       await invokeCode('task:create', {
@@ -166,6 +181,16 @@ describe('task:create — input narrowing', () => {
         workspaceId,
         prompt: 'go',
         harnessOverride: 'unknown' as never,
+      }),
+    ).toBe('invalid_input');
+  });
+
+  it('rejects malformed task attachments', async () => {
+    expect(
+      await invokeCode('task:create', {
+        workspaceId,
+        prompt: 'go',
+        attachments: [{ type: 'file', path: 'bad\0path' }],
       }),
     ).toBe('invalid_input');
   });
@@ -215,6 +240,7 @@ describe('task:create — input narrowing', () => {
         mode: 'plan',
         scheduledAt: 1, // a past time is deliberately allowed
         harnessOverride: 'codex',
+        attachments: [{ type: 'file', path: '/tmp/spec.md' }],
       }),
     ).toBe('OK');
     const list = await repo.list(workspaceId);
@@ -223,6 +249,7 @@ describe('task:create — input narrowing', () => {
       model: 'sonnet',
       mode: 'plan',
       harnessOverride: 'codex',
+      attachments: [{ type: 'file', path: '/tmp/spec.md' }],
     });
   });
 });
@@ -291,5 +318,12 @@ describe('chat:clear — handler registration', () => {
       'invalid_input',
     );
     expect(recorderClear).not.toHaveBeenCalled();
+  });
+});
+
+describe('pricing:getCatalog — handler registration', () => {
+  it('returns the startup pricing snapshot', async () => {
+    expect(await invokeCode('pricing:getCatalog', undefined)).toBe('OK');
+    expect(pricingReady).toHaveBeenCalledOnce();
   });
 });

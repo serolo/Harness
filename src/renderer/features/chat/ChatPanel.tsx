@@ -4,8 +4,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Copy, FileText, History, Pencil, Plus, X } from 'lucide-react';
-import { invoke } from '@renderer/ipc';
+import { invoke, onEvent } from '@renderer/ipc';
 import type { FileDiff } from '@shared/review';
+import type { ScheduledTask } from '@shared/tasks';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { useChat } from './useChat';
@@ -13,6 +14,7 @@ import { FileReferencePill } from './FileReferencePill';
 import { Markdown } from './markdown';
 import { WorkspaceCreationTerminal } from './WorkspaceCreationTerminal';
 import { WorkspaceArchiveTerminal } from './WorkspaceArchiveTerminal';
+import { useChatStore, type TaskTurnOwner } from '@renderer/stores/chat';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 
 export interface ChatPanelProps {
@@ -47,9 +49,16 @@ interface ChatContext {
 }
 
 type ActiveTab = 'chat' | string;
+const EMPTY_TASK_TURN_OWNERS: Readonly<Record<string, TaskTurnOwner>> = {};
 
 function labelForPath(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function labelForTask(prompt: string): string {
+  const singleLine = prompt.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= 36) return `Task: ${singleLine || 'Untitled'}`;
+  return `Task: ${singleLine.slice(0, 33)}…`;
 }
 
 function highlightedLine(line: string): React.ReactNode[] {
@@ -317,6 +326,12 @@ export function ChatPanel({
   const [editingContextId, setEditingContextId] = useState<string | null>(null);
   const [contextNameDraft, setContextNameDraft] = useState('');
   const handledInspectRequests = useRef(new Set<number>());
+  const taskTurnOwners = useChatStore((state) =>
+    workspaceId
+      ? (state.taskTurnsByWorkspace[workspaceId] ?? EMPTY_TASK_TURN_OWNERS)
+      : EMPTY_TASK_TURN_OWNERS,
+  );
+  const registerTaskTurn = useChatStore((state) => state.registerTaskTurn);
 
   useEffect(() => {
     setFileTabs([]);
@@ -325,12 +340,85 @@ export function ChatPanel({
     setEditingContextId(null);
   }, [workspaceId]);
 
+  const upsertTaskContext = useCallback(
+    (task: Pick<ScheduledTask, 'id' | 'prompt' | 'turnId'>): void => {
+      if (!task.turnId) return;
+      const turnId = task.turnId;
+      const contextId = `task:${task.id}`;
+      setChatContexts((contexts) => {
+        const withoutTurn = contexts.map((context) => ({
+          ...context,
+          turnIds: context.turnIds.filter(
+            (contextTurnId) => contextTurnId !== turnId,
+          ),
+        }));
+        const existing = withoutTurn.find(
+          (context) => context.id === contextId,
+        );
+        if (existing) {
+          return withoutTurn.map((context) =>
+            context.id === contextId
+              ? {
+                  ...context,
+                  label: labelForTask(task.prompt),
+                  turnIds: [turnId],
+                }
+              : context,
+          );
+        }
+        return [
+          ...withoutTurn,
+          {
+            id: contextId,
+            label: labelForTask(task.prompt),
+            turnIds: [turnId],
+          },
+        ];
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    let active = true;
+    void invoke('task:list', { workspaceId })
+      .then((tasks) => {
+        if (!active) return;
+        for (const task of tasks) {
+          if (task.turnId) {
+            registerTaskTurn(workspaceId, task.id, task.turnId, task.prompt);
+          }
+          upsertTaskContext(task);
+        }
+      })
+      .catch(() => {
+        /* Task tabs can still be opened from the live start event. */
+      });
+    const unsubscribe = onEvent('task:turnStarted', (task) => {
+      if (task.workspaceId !== workspaceId) return;
+      upsertTaskContext({
+        id: task.taskId,
+        prompt: task.prompt,
+        turnId: task.turnId,
+      });
+      setActiveTab(`task:${task.taskId}`);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [registerTaskTurn, upsertTaskContext, workspaceId]);
+
   useEffect(() => {
     setChatContexts((contexts) => {
       const owned = new Set(contexts.flatMap((context) => context.turnIds));
       const unowned = turns
         .map((turn) => turn.turnId)
-        .filter((turnId) => !owned.has(turnId));
+        .filter(
+          (turnId) =>
+            !owned.has(turnId) && taskTurnOwners[turnId] === undefined,
+        );
       if (unowned.length === 0) return contexts;
       return contexts.map((context) =>
         context.id === activeTab
@@ -338,7 +426,7 @@ export function ChatPanel({
           : context,
       );
     });
-  }, [activeTab, turns]);
+  }, [activeTab, taskTurnOwners, turns]);
 
   const fetchFileDiff = useCallback(
     (id: string, path: string): void => {
@@ -736,7 +824,7 @@ export function ChatPanel({
             workspaceId={workspaceId}
             contextId={activeContext?.id}
             turns={contextTurns}
-            onSend={(prompt, attachments, mode, harness, model) =>
+            onSend={(prompt, attachments, mode, harness, model, effort) =>
               sendTurn(
                 prompt,
                 attachments,
@@ -744,6 +832,7 @@ export function ChatPanel({
                 harness,
                 contextSessionId,
                 model,
+                effort,
               )
             }
             onInterrupt={interrupt}

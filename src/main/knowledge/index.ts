@@ -74,6 +74,8 @@ append one or more ${PROPOSAL_OPEN} JSON blocks ${PROPOSAL_CLOSE}.
 Each JSON object must have "title", "summary", and "operations". Operations are
 {"op":"create"|"update","path":"<OKF relative .md path>","content":"<complete OKF v0.1 Markdown>"}.
 Use status "canonical" in OKF frontmatter because the operation is applied only after approval.
+Use "update" when the catalog already contains the target path, and preserve/consolidate
+the existing durable content in the complete replacement document.
 Emit no block when the turn produced no durable knowledge.
 These blocks are hidden by Harness and require human approval before becoming canonical.
 `.trim();
@@ -140,6 +142,120 @@ export function parseOkfMarkdown(content: string): ParsedMarkdown {
     }
   }
   return { frontmatter, body: content.slice(end + 4).replace(/^\n/, '') };
+}
+
+interface MarkdownSection {
+  heading: string | null;
+  key: string;
+  content: string;
+}
+
+/**
+ * Consolidate a mistaken `create` proposal into an existing canonical page without
+ * replacing prior knowledge. Canonical frontmatter remains authoritative; proposed
+ * prose is merged into matching Markdown sections and exact blocks are deduplicated.
+ */
+function consolidateKnowledgePage(
+  existingContent: string,
+  proposedContent: string,
+): string {
+  const existing = parseOkfMarkdown(existingContent);
+  const proposed = parseOkfMarkdown(proposedContent);
+  const sections = markdownSections(existing.body);
+
+  for (const proposedSection of markdownSections(proposed.body)) {
+    const existingSection = sections.find(
+      (section) => section.key === proposedSection.key,
+    );
+    if (existingSection === undefined) {
+      sections.push(proposedSection);
+    } else {
+      existingSection.content = mergeMarkdownBlocks(
+        existingSection.content,
+        proposedSection.content,
+      );
+    }
+  }
+
+  const frontmatterEnd = existingContent.indexOf('\n---', 4);
+  const frontmatter = existingContent.slice(0, frontmatterEnd + 4);
+  const body = sections
+    .map((section) =>
+      section.heading === null
+        ? section.content
+        : [section.heading, section.content].filter(Boolean).join('\n\n'),
+    )
+    .filter((section) => section.trim() !== '')
+    .join('\n\n');
+  return `${frontmatter}\n\n${body.trim()}\n`;
+}
+
+function markdownSections(body: string): MarkdownSection[] {
+  const headings = [...body.matchAll(/^(#{1,6})\s+(.+?)\s*$/gm)];
+  const sections: MarkdownSection[] = [];
+  const firstHeading = headings[0];
+  const preamble = body.slice(0, firstHeading?.index ?? body.length).trim();
+  if (preamble !== '') {
+    sections.push({ heading: null, key: '__preamble__', content: preamble });
+  }
+  for (const [index, heading] of headings.entries()) {
+    const start = (heading.index ?? 0) + heading[0].length;
+    const end = headings[index + 1]?.index ?? body.length;
+    const level = heading[1].length;
+    const title = heading[2].trim().toLowerCase().replace(/\s+/g, ' ');
+    sections.push({
+      heading: heading[0].trimEnd(),
+      // A page has one document title. Merge differing proposed H1 wording into the
+      // canonical title section instead of creating a second top-level heading.
+      key: level === 1 ? '__title__' : `${level}:${title}`,
+      content: body.slice(start, end).trim(),
+    });
+  }
+  return sections;
+}
+
+function mergeMarkdownBlocks(existing: string, proposed: string): string {
+  const existingBlocks = markdownBlocks(existing);
+  const seen = new Set(existingBlocks.map(normalizeMarkdownBlock));
+  for (const block of markdownBlocks(proposed)) {
+    const normalized = normalizeMarkdownBlock(block);
+    if (normalized !== '' && !seen.has(normalized)) {
+      existingBlocks.push(block);
+      seen.add(normalized);
+    }
+  }
+  return existingBlocks.join('\n\n');
+}
+
+function markdownBlocks(content: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let fence: string | null = null;
+  const flush = (): void => {
+    const block = current.join('\n').trim();
+    if (block !== '') blocks.push(block);
+    current = [];
+  };
+  for (const line of content.split('\n')) {
+    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
+    if (fenceMatch !== null) {
+      if (fence === null) fence = fenceMatch[1][0];
+      else if (fenceMatch[1][0] === fence) fence = null;
+      current.push(line);
+      continue;
+    }
+    if (line.trim() === '' && fence === null) flush();
+    else current.push(line);
+  }
+  flush();
+  return blocks;
+}
+
+function normalizeMarkdownBlock(block: string): string {
+  return block
+    .trim()
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\s+/g, ' ');
 }
 
 function pageTitle(body: string, fallback: string): string {
@@ -741,7 +857,10 @@ export class WikiService {
           typeof operation.content !== 'string' ||
           operation.content.length > MAX_PROPOSAL_CONTENT_CHARACTERS
         ) {
-          throw new AppError('invalid_input', 'invalid knowledge page operation');
+          throw new AppError(
+            'invalid_input',
+            'invalid knowledge page operation',
+          );
         }
         totalCharacters += operation.path.length + operation.content.length;
         if (seenOperationPaths.has(operation.path)) {
@@ -965,10 +1084,26 @@ export class WikiService {
             operation.op === 'create' &&
             touched.get(operation.path) !== null
           ) {
-            throw new AppError(
-              'conflict',
-              `wiki page already exists: ${operation.path}`,
+            if (RESERVED.has(operation.path.split('/').at(-1) ?? '')) {
+              throw new AppError(
+                'conflict',
+                `wiki page already exists: ${operation.path}`,
+              );
+            }
+            const existingContent = touched.get(operation.path);
+            if (typeof existingContent !== 'string') {
+              throw new AppError(
+                'conflict',
+                `wiki page could not be consolidated: ${operation.path}`,
+              );
+            }
+            const consolidated = consolidateKnowledgePage(
+              existingContent,
+              operation.content,
             );
+            pageFromContent(operation.path, consolidated);
+            await writeFile(target, consolidated, 'utf8');
+            continue;
           }
           await mkdir(dirname(target), { recursive: true });
           await writeFile(target, operation.content, 'utf8');
@@ -1001,13 +1136,15 @@ export class WikiService {
     } catch (error) {
       // Clear staged files and, if the commit already succeeded but audit
       // persistence failed, restore the proposal's original wiki commit.
-      await git.reset(['--mixed', proposal.baseWikiCommit]).catch((resetError) => {
-        logger.error(
-          `[knowledge:accept] failed to restore Git state for ${projectId}: ${String(
-            resetError,
-          )}`,
-        );
-      });
+      await git
+        .reset(['--mixed', proposal.baseWikiCommit])
+        .catch((resetError) => {
+          logger.error(
+            `[knowledge:accept] failed to restore Git state for ${projectId}: ${String(
+              resetError,
+            )}`,
+          );
+        });
       await restore();
       throw error;
     }

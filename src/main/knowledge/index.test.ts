@@ -78,6 +78,56 @@ describe('OKF project knowledge', () => {
     expect(await service.history(projectId)).toHaveLength(2);
   });
 
+  it('consolidates an approved create into an existing knowledge page', async () => {
+    const { service, projectId } = await fixture();
+    await service.initializeProject(projectId);
+    const original = await service.createProposal({
+      projectId,
+      title: 'Document Claude Code hooks',
+      summary: 'Adds the initial hook guide.',
+      operations: [
+        {
+          op: 'create',
+          path: 'technical/claude-code-hooks.md',
+          content:
+            '---\ntype: Technical Guide\ntitle: Claude Code hooks\nstatus: canonical\ntags: [claude, hooks]\n---\n\n# Claude Code hooks\n\n## Invocation\n\nHooks run after edits.\n',
+        },
+      ],
+    });
+    await service.acceptProposal(projectId, original.id);
+    const reconciliation = await service.createProposal({
+      projectId,
+      title: 'Reconcile Claude Code hook behavior',
+      summary: 'Adds durable stdin and validation details.',
+      operations: [
+        {
+          // Curators can incorrectly emit create when the canonical path already exists.
+          op: 'create',
+          path: 'technical/claude-code-hooks.md',
+          content:
+            '---\ntype: Technical Guide\ntitle: Claude Code hooks\nstatus: canonical\ntags: [claude, hooks, validation]\n---\n\n# Claude Code hooks\n\n## Invocation\n\nHooks run after edits.\n\nHooks receive JSON on stdin.\n\n## Validation\n\nFail closed when validation reports findings.\n',
+        },
+      ],
+    });
+
+    const accepted = await service.acceptProposal(projectId, reconciliation.id);
+    const page = await service.getPage(
+      projectId,
+      'technical/claude-code-hooks.md',
+    );
+
+    expect(accepted.status).toBe('accepted');
+    expect(page.content).toContain('Hooks run after edits.');
+    expect(page.content).toContain('Hooks receive JSON on stdin.');
+    expect(page.content).toContain(
+      'Fail closed when validation reports findings.',
+    );
+    expect(page.content.match(/^# Claude Code hooks$/gm)).toHaveLength(1);
+    expect(page.content.match(/^## Invocation$/gm)).toHaveLength(1);
+    expect((await service.lint(projectId)).ok).toBe(true);
+    expect(await service.history(projectId)).toHaveLength(3);
+  });
+
   it('rejects non-OKF concept content before creating a proposal', async () => {
     const { service, projectId } = await fixture();
     await expect(
@@ -322,7 +372,9 @@ describe('OKF project knowledge', () => {
       },
     ]);
     await service.acceptProposal(projectId, result.proposalId!);
-    expect(await service.getPage(projectId, 'components/imported.md')).toMatchObject({
+    expect(
+      await service.getPage(projectId, 'components/imported.md'),
+    ).toMatchObject({
       title: 'Imported component',
       type: 'Component',
     });

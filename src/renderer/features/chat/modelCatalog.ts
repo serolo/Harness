@@ -137,18 +137,15 @@ export function resolveProviderModelId(value: string): string {
 
 /**
  * Convert a catalogue selection to the identifier accepted by the harness CLI.
- * Claude Code resolves its native aliases (including the `[1m]` context suffix) to
- * provider-qualified gateway models itself. Catalogue IDs and labels remain unchanged.
+ * Claude's family aliases (for example `opus`) float to the newest release, so a
+ * versioned catalogue choice must keep its exact identifier. The catalogue represents
+ * extended context with a `-1m` suffix; Claude Code expects that as `[1m]`.
  */
-export function runtimeProviderModel(
-  option: ProviderModelOption,
-): string {
-  if (
-    option.harness === 'claude_code' &&
-    option.id.startsWith('claude-')
-  ) {
-    const alias = option.model ?? option.id;
-    return option.id.endsWith('-1m') ? `${alias}[1m]` : alias;
+export function runtimeProviderModel(option: ProviderModelOption): string {
+  if (option.harness === 'claude_code' && option.id.startsWith('claude-')) {
+    return option.id.endsWith('-1m')
+      ? `${option.id.slice(0, -3)}[1m]`
+      : option.id;
   }
   return option.model ?? option.id;
 }

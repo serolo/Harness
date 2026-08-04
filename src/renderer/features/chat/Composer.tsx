@@ -23,7 +23,13 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import type { AgentMode, Attachment, HarnessId, Usage } from '@shared/harness';
+import type {
+  AgentMode,
+  Attachment,
+  HarnessId,
+  ReasoningEffort,
+  Usage,
+} from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
 import {
   expandSlashTemplate,
@@ -45,6 +51,11 @@ import {
   runtimeProviderModel,
   type ProviderModelGroup,
 } from './modelCatalog';
+import {
+  CLAUDE_EFFORT_OPTIONS,
+  CODEX_EFFORT_OPTIONS,
+  type EffortOption,
+} from './effortCatalog';
 
 export interface ComposerProps {
   isBusy: boolean;
@@ -58,6 +69,7 @@ export interface ComposerProps {
     mode: AgentMode,
     harness?: HarnessId,
     model?: string,
+    effort?: ReasoningEffort,
   ) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
   onClear?: () => void | Promise<void>;
@@ -82,25 +94,6 @@ interface ComposerIssue {
   id: string;
   label: string;
 }
-
-interface EffortOption {
-  id: string;
-  label: string;
-}
-
-const CLAUDE_EFFORT_OPTIONS: EffortOption[] = [
-  { id: 'low', label: 'Low' },
-  { id: 'medium', label: 'Medium' },
-  { id: 'high', label: 'High' },
-  { id: 'max', label: 'Max' },
-];
-
-const CODEX_EFFORT_OPTIONS: EffortOption[] = [
-  { id: 'low', label: 'Low' },
-  { id: 'medium', label: 'Medium' },
-  { id: 'high', label: 'High' },
-  { id: 'xhigh', label: 'Extra High' },
-];
 
 function defaultModelIdForHarness(
   harness: HarnessId | undefined,
@@ -308,9 +301,7 @@ function ContextIndicator({
       <button
         type="button"
         className={`flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium transition-colors duration-fast ease-out ${
-          open
-            ? 'bg-bg-3 text-fg-1'
-            : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
+          open ? 'bg-bg-3 text-fg-1' : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
         }`}
         data-testid="composer-context"
         aria-label="Context usage"
@@ -463,9 +454,7 @@ function CostIndicator({
       <button
         type="button"
         className={`flex h-9 items-center gap-1 rounded-2 px-2 text-sm font-medium tabular-nums transition-colors duration-fast ease-out ${
-          open
-            ? 'bg-bg-3 text-fg-1'
-            : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
+          open ? 'bg-bg-3 text-fg-1' : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
         }`}
         data-testid="composer-cost"
         aria-label="Estimated API cost"
@@ -894,6 +883,7 @@ export function Composer({
       selectedProviderModelOption
         ? runtimeProviderModel(selectedProviderModelOption)
         : selectedProviderModel,
+      effort.id,
     );
     setText('');
     setAttachments([]);
@@ -1072,7 +1062,7 @@ export function Composer({
   return (
     <div
       ref={composerRef}
-      className="relative z-40 shrink-0 bg-surface-app px-6 pb-5"
+      className="relative z-40 shrink-0 bg-surface-app px-6 pb-5 pt-4"
       data-testid="composer"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}

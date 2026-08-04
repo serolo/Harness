@@ -4,18 +4,22 @@
 // `useSettings`; this component is view + wiring only (all main access is inside the
 // hook via `@renderer/ipc`).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   Bot,
   CheckCircle2,
   Folder,
   ExternalLink,
+  Eye,
+  EyeOff,
   GitBranch,
   FolderGit2,
   KeyRound,
   Laptop,
   Palette,
+  Pencil,
+  Play,
   RefreshCw,
   Settings2,
   SlidersHorizontal,
@@ -26,7 +30,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 
 import type { GithubAccount, GithubCliAuthStatus } from '@shared/github';
-import type { HarnessId } from '@shared/harness';
+import type { AgentAuthMethod, HarnessId } from '@shared/harness';
 import type { HarnessInfo } from '@shared/ipc';
 import type { Project } from '@shared/models';
 import type { QmdStatus } from '@shared/knowledge';
@@ -53,6 +57,7 @@ import {
   visibleProviderModelGroups,
 } from '../chat/modelCatalog';
 import { AgentMemoryImport } from '../knowledge/AgentMemoryImport';
+import { OnboardingLoginTerminal } from '../onboarding/OnboardingLoginTerminal';
 
 export interface SettingsPanelProps {
   /** Close affordance for the overlay host (a header button). */
@@ -72,6 +77,8 @@ export function SettingsPanel({
   const [githubCli, setGithubCli] = useState<GithubCliAuthStatus | null>(null);
   const [githubAuthError, setGithubAuthError] = useState<string | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
+  const [githubLoginOpen, setGithubLoginOpen] = useState(false);
+  const [githubAuthMode, setGithubAuthMode] = useState<'cli' | 'pat'>('cli');
   const [githubPat, setGithubPat] = useState('');
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
@@ -82,6 +89,11 @@ export function SettingsPanel({
   const [repoLoading, setRepoLoading] = useState(false);
   const [repoError, setRepoError] = useState<string | null>(null);
   const [agents, setAgents] = useState<HarnessInfo[]>([]);
+  const [agentLogin, setAgentLogin] = useState<{
+    provider: 'claude' | 'codex';
+    method: Exclude<AgentAuthMethod, 'none'>;
+    force: boolean;
+  } | null>(null);
   const [qmdStatus, setQmdStatus] = useState<QmdStatus | null>(null);
 
   const updateSetting = (keyPath: string, value: unknown): void => {
@@ -140,19 +152,17 @@ export function SettingsPanel({
     };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    void invoke('harness:list', undefined)
-      .then((nextAgents) => {
-        if (active) setAgents(nextAgents);
-      })
-      .catch(() => {
-        // Detection failures are represented as unavailable agents in the UI.
-      });
-    return () => {
-      active = false;
-    };
+  const refreshAgents = useCallback(async (): Promise<void> => {
+    try {
+      setAgents(await invoke('harness:list', undefined));
+    } catch {
+      // Detection failures are represented as unavailable agents in the UI.
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshAgents();
+  }, [refreshAgents]);
 
   useEffect(() => {
     if (scope !== 'repo') return;
@@ -258,6 +268,20 @@ export function SettingsPanel({
     }
   };
 
+  const logoutGithub = async (): Promise<void> => {
+    setGithubBusy(true);
+    setGithubAuthError(null);
+    try {
+      await invoke('github:logoutGhCli', undefined);
+      setGithubAccounts([]);
+      setGithubCli(await safeGithubCliStatus());
+    } catch (err) {
+      setGithubAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
   const connectGithubPat = async (): Promise<void> => {
     const token = githubPat.trim();
     if (token === '') return;
@@ -300,9 +324,14 @@ export function SettingsPanel({
 
   return (
     <div
-      className="flex h-[min(86vh,900px)] min-h-0 flex-col bg-surface-overlay text-fg-1"
+      className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-overlay text-fg-1"
       data-testid="settings-panel"
     >
+      <div
+        className="electron-drag-region h-titlebar shrink-0 bg-surface-overlay"
+        data-testid="settings-native-titlebar-space"
+        aria-hidden="true"
+      />
       <div className="flex h-14 shrink-0 items-center border-b border-border-1 px-5">
         <div className="flex items-center gap-5">
           {onClose ? (
@@ -345,7 +374,10 @@ export function SettingsPanel({
       <SettingsIssuesBanner issues={issues} />
 
       <div className="grid min-h-0 flex-1 grid-cols-[260px_1fr]">
-        <aside className="min-h-0 overflow-y-auto border-r border-border-1 bg-surface-panel px-2 py-3">
+        <aside
+          className="min-h-0 overflow-y-auto border-r border-border-1 bg-surface-panel px-2 py-3"
+          data-testid="settings-nav-scroll"
+        >
           {scope === 'user' ? (
             <SettingsNav
               active={activeSection}
@@ -361,7 +393,10 @@ export function SettingsPanel({
           )}
         </aside>
 
-        <main className="min-h-0 overflow-y-auto">
+        <main
+          className="min-h-0 overflow-y-auto"
+          data-testid="settings-content-scroll"
+        >
           {scope === 'repo' ? (
             <RepoSettingsContent
               projects={projects}
@@ -405,14 +440,64 @@ export function SettingsPanel({
               {activeSection === 'models' ? <ModelsSettings /> : null}
 
               {activeSection === 'agents' ? (
-                <AgentsSettings agents={agents}>
-                  <SettingRows
-                    fields={rowsBySection.agents}
-                    effective={effective}
-                    provenance={provenance}
-                    onSet={updateSetting}
-                  />
-                </AgentsSettings>
+                <>
+                  <AgentsSettings
+                    agents={agents}
+                    authenticationTerminal={
+                      agentLogin ? (
+                        <OnboardingLoginTerminal
+                          provider={agentLogin.provider}
+                          method={agentLogin.method}
+                          force={agentLogin.force}
+                          onFinished={() => void refreshAgents()}
+                          onClose={() => setAgentLogin(null)}
+                          onError={() => undefined}
+                        />
+                      ) : null
+                    }
+                    onRefresh={refreshAgents}
+                    onSelectionChange={() => setAgentLogin(null)}
+                    onRevealApiKey={async (provider) =>
+                      provider === 'claude_code'
+                        ? (await invoke('agent:revealClaudeApiKey', undefined))
+                            .apiKey
+                        : (await invoke('agent:revealCodexApiKey', undefined))
+                            .apiKey
+                    }
+                    onSetApiKey={async (provider, apiKey) => {
+                      if (provider === 'claude_code') {
+                        await invoke('agent:setClaudeApiKey', { apiKey });
+                      } else {
+                        await invoke('agent:setCodexApiKey', { apiKey });
+                      }
+                      await refreshAgents();
+                    }}
+                    onDeleteApiKey={async (provider) => {
+                      if (provider === 'claude_code') {
+                        await invoke('agent:deleteClaudeApiKey', undefined);
+                      } else {
+                        await invoke('agent:deleteCodexApiKey', undefined);
+                      }
+                      await refreshAgents();
+                    }}
+                    onAuthenticate={(id, method) => {
+                      if (id === 'claude_code' || id === 'codex') {
+                        setAgentLogin({
+                          provider: id === 'claude_code' ? 'claude' : 'codex',
+                          method,
+                          force: true,
+                        });
+                      }
+                    }}
+                  >
+                    <SettingRows
+                      fields={rowsBySection.agents}
+                      effective={effective}
+                      provenance={provenance}
+                      onSet={updateSetting}
+                    />
+                  </AgentsSettings>
+                </>
               ) : null}
 
               {activeSection === 'git' ? (
@@ -420,14 +505,33 @@ export function SettingsPanel({
                   <GithubAuthPanel
                     accounts={githubAccounts}
                     cli={githubCli}
+                    mode={githubAuthMode}
                     busy={githubBusy}
                     error={githubAuthError}
                     pat={githubPat}
                     onPatChange={setGithubPat}
+                    onModeChange={setGithubAuthMode}
                     onRefresh={() => void refreshGithubAuth()}
-                    onConnectCli={() => void connectGithubFromCli()}
+                    onConnectCli={() => {
+                      if (githubCli?.authenticated) {
+                        void connectGithubFromCli();
+                      } else {
+                        setGithubLoginOpen(true);
+                      }
+                    }}
+                    onLogout={() => void logoutGithub()}
                     onConnectPat={() => void connectGithubPat()}
                   />
+                  {githubLoginOpen ? (
+                    <OnboardingLoginTerminal
+                      provider="github"
+                      onFinished={(authenticated) => {
+                        if (authenticated) void refreshGithubAuth();
+                      }}
+                      onClose={() => setGithubLoginOpen(false)}
+                      onError={setGithubAuthError}
+                    />
+                  ) : null}
                   <SettingRows
                     fields={rowsBySection.git}
                     effective={effective}
@@ -1198,26 +1302,118 @@ function SettingsToggleRow({
   );
 }
 
-const AGENT_TABS: Array<{ id: HarnessId | 'opencode'; label: string }> = [
+const AGENT_TABS: Array<{ id: HarnessId; label: string }> = [
   { id: 'claude_code', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
   { id: 'cursor', label: 'Cursor' },
-  { id: 'opencode', label: 'OpenCode' },
 ];
+
+const AGENT_AUTH_COPY: Record<
+  HarnessId,
+  {
+    cliTitle: string;
+    cliDetail: string;
+    apiTitle: string;
+    apiDetail: string;
+    supportsApiKey: boolean;
+  }
+> = {
+  claude_code: {
+    cliTitle: 'CLI',
+    cliDetail: 'Use the account signed in through Claude Code',
+    apiTitle: 'API Key',
+    apiDetail: 'Use an Anthropic API key',
+    supportsApiKey: true,
+  },
+  codex: {
+    cliTitle: 'CLI',
+    cliDetail: 'Use your ChatGPT plan',
+    apiTitle: 'API key',
+    apiDetail: 'Use OpenAI Platform usage billing',
+    supportsApiKey: true,
+  },
+  cursor: {
+    cliTitle: 'Cursor account',
+    cliDetail: 'Use the account signed in through Cursor CLI',
+    apiTitle: 'API key',
+    apiDetail: 'Not supported by the Cursor CLI',
+    supportsApiKey: false,
+  },
+};
 
 function AgentsSettings({
   agents,
+  authenticationTerminal,
+  onRefresh,
+  onSelectionChange,
+  onRevealApiKey,
+  onSetApiKey,
+  onDeleteApiKey,
+  onAuthenticate,
   children,
 }: {
   agents: HarnessInfo[];
+  authenticationTerminal: React.ReactNode;
+  onRefresh: () => Promise<void>;
+  onSelectionChange: () => void;
+  onRevealApiKey: (provider: 'claude_code' | 'codex') => Promise<string>;
+  onSetApiKey: (
+    provider: 'claude_code' | 'codex',
+    apiKey: string,
+  ) => Promise<void>;
+  onDeleteApiKey: (provider: 'claude_code' | 'codex') => Promise<void>;
+  onAuthenticate: (
+    id: HarnessId,
+    method: Exclude<AgentAuthMethod, 'none'>,
+  ) => void;
   children: React.ReactNode;
 }): React.JSX.Element {
-  const [selected, setSelected] =
-    useState<(typeof AGENT_TABS)[number]['id']>('claude_code');
-  const [browserEnabled, setBrowserEnabled] = useState(false);
+  const [selected, setSelected] = useState<HarnessId>('claude_code');
+  const [selectedAuthMethod, setSelectedAuthMethod] =
+    useState<Exclude<AgentAuthMethod, 'none'>>('cli');
+  const [refreshing, setRefreshing] = useState(false);
+  const [editingApiKey, setEditingApiKey] = useState(false);
   const info = agents.find((agent) => agent.id === selected);
   const connected = info?.detect.authenticated ?? false;
   const installed = info?.detect.installed ?? false;
+  const authMethod: AgentAuthMethod = connected
+    ? (info?.detect.authMethod ?? 'cli')
+    : 'none';
+  const authCopy = AGENT_AUTH_COPY[selected];
+  const selectedMethodTitle =
+    selectedAuthMethod === 'api_key' ? authCopy.apiTitle : authCopy.cliTitle;
+  const selectedMethodConnected =
+    connected && authMethod === selectedAuthMethod;
+  const selectedMethodSupported =
+    selectedAuthMethod === 'cli' || authCopy.supportsApiKey;
+  const canLogin =
+    selected !== 'cursor' &&
+    selectedMethodSupported &&
+    !selectedMethodConnected;
+  const isManagedApiKey =
+    (selected === 'claude_code' || selected === 'codex') &&
+    selectedAuthMethod === 'api_key';
+  const isManagedCli =
+    (selected === 'claude_code' || selected === 'codex') &&
+    selectedAuthMethod === 'cli';
+
+  useEffect(() => {
+    if (authMethod !== 'none') setSelectedAuthMethod(authMethod);
+  }, [authMethod, selected]);
+
+  useEffect(() => {
+    setEditingApiKey(false);
+  }, [selected, selectedAuthMethod]);
+
+  const selectMethod = (method: Exclude<AgentAuthMethod, 'none'>): void => {
+    setSelectedAuthMethod(method);
+    onSelectionChange();
+  };
+
+  const refresh = (): void => {
+    setRefreshing(true);
+    void onRefresh().finally(() => setRefreshing(false));
+  };
 
   return (
     <section data-testid="settings-section-agents">
@@ -1230,7 +1426,10 @@ function AgentsSettings({
             key={agent.id}
             type="button"
             data-testid={`agent-tab-${agent.id}`}
-            onClick={() => setSelected(agent.id)}
+            onClick={() => {
+              setSelected(agent.id);
+              onSelectionChange();
+            }}
             className={`border-b-2 px-1 pb-3 text-sm font-semibold ${
               selected === agent.id
                 ? 'border-accent text-fg-1'
@@ -1238,11 +1437,6 @@ function AgentsSettings({
             }`}
           >
             {agent.label}
-            {agent.id === 'opencode' ? (
-              <span className="ml-2 rounded bg-bg-4 px-1.5 py-0.5 text-2xs uppercase text-fg-2">
-                New
-              </span>
-            ) : null}
           </button>
         ))}
       </div>
@@ -1253,56 +1447,151 @@ function AgentsSettings({
         </h2>
         <div className="grid grid-cols-2 gap-3">
           <AgentAuthCard
-            title="CLI"
-            selected={installed}
-            detail={installed ? 'Detected on this machine' : 'Not detected'}
+            method="cli"
+            title={authCopy.cliTitle}
+            selected={selectedAuthMethod === 'cli'}
+            disabled={false}
+            detail={
+              !installed
+                ? 'CLI not detected on this machine'
+                : authMethod === 'cli'
+                  ? `${authCopy.cliDetail} · Current`
+                  : authCopy.cliDetail
+            }
+            onClick={() => selectMethod('cli')}
           />
           <AgentAuthCard
-            title="API key"
-            selected={connected}
-            detail={connected ? 'Authenticated' : 'Not configured'}
+            method="api_key"
+            title={authCopy.apiTitle}
+            selected={selectedAuthMethod === 'api_key'}
+            disabled={!authCopy.supportsApiKey}
+            detail={
+              !authCopy.supportsApiKey
+                ? authCopy.apiDetail
+                : !installed
+                  ? 'CLI not detected on this machine'
+                  : authMethod === 'api_key'
+                    ? `${authCopy.apiDetail} · Current`
+                    : authCopy.apiDetail
+            }
+            onClick={() => selectMethod('api_key')}
           />
         </div>
       </div>
 
       <div className="mt-6 flex items-center justify-between">
         <span
-          className={`rounded-lg border px-2 py-1 text-xs font-medium ${
-            connected
-              ? 'border-success text-success'
-              : 'border-border-2 text-fg-3'
+          className={`flex items-center gap-2 text-sm ${
+            selectedMethodConnected ? 'text-success' : 'text-danger'
           }`}
           data-testid="agent-connection-status"
         >
-          {connected ? 'Connected' : installed ? 'Installed' : 'Not connected'}
+          <span
+            className={`h-2 w-2 rounded-full ${
+              selectedMethodConnected ? 'bg-success' : 'bg-danger'
+            }`}
+            aria-hidden
+          />
+          {selectedMethodConnected
+            ? isManagedApiKey || isManagedCli
+              ? 'Connected'
+              : `${selectedMethodTitle} connected`
+            : `${selectedMethodTitle} not authenticated`}
         </span>
-        <span className="text-sm text-fg-2">
-          Version {info?.detect.version ?? '—'}
-        </span>
+        <button
+          type="button"
+          data-testid="agent-auth-refresh"
+          disabled={refreshing}
+          onClick={refresh}
+          className="flex items-center gap-2 text-sm text-fg-2 hover:text-fg-1 disabled:opacity-60"
+        >
+          <RefreshCw
+            className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`}
+            aria-hidden
+          />
+          Refresh
+        </button>
       </div>
 
-      {selected === 'claude_code' ? (
-        <div className="mt-7 divide-y divide-border-1 border-y border-border-1">
-          <SettingsToggleRow
-            title="Use Claude Code with Chrome"
-            description="Allow Claude Code to control your Chrome browser."
-            checked={browserEnabled}
-            onCheckedChange={setBrowserEnabled}
-            testId="agent-browser-enabled"
-          />
-          <div className="py-6">
-            <h2 className="text-base font-semibold text-fg-1">
-              Claude Code executable
-            </h2>
-            <p className="mt-2 text-sm text-fg-3">
-              Harness uses the bundled executable unless a system installation
-              is detected.
-            </p>
-            <div className="mt-4 rounded-2 border border-border-2 bg-surface-well px-4 py-3 font-mono text-sm text-fg-2">
-              {installed
-                ? 'System Claude Code detected'
-                : 'Bundled Claude Code'}
-            </div>
+      {canLogin ? (
+        <button
+          type="button"
+          data-testid="agent-auth-login"
+          onClick={() => {
+            if (isManagedApiKey) setEditingApiKey(true);
+            else onAuthenticate(selected, selectedAuthMethod);
+          }}
+          className="mt-5 flex items-center gap-2 rounded-lg border border-border-2 px-4 py-2 text-sm font-medium text-fg-1 hover:bg-bg-4"
+        >
+          {isManagedApiKey ? (
+            <KeyRound className="h-4 w-4" aria-hidden />
+          ) : (
+            <TerminalSquare className="h-4 w-4" aria-hidden />
+          )}
+          {isManagedApiKey
+            ? 'Add API Key'
+            : `Login with ${selectedMethodTitle}`}
+        </button>
+      ) : null}
+
+      {isManagedApiKey && editingApiKey ? (
+        <AgentApiKeyEditor
+          provider={selected}
+          onSave={async (apiKey) => {
+            await onSetApiKey(selected, apiKey);
+            setEditingApiKey(false);
+          }}
+          onCancel={() => setEditingApiKey(false)}
+        />
+      ) : null}
+
+      {isManagedApiKey && selectedMethodConnected ? (
+        <AgentApiKeyDetails
+          provider={selected}
+          version={info?.detect.version}
+          credentialHint={info?.detect.credentialHint}
+          onReveal={() => onRevealApiKey(selected)}
+          onEdit={() => setEditingApiKey(true)}
+          onDelete={() => onDeleteApiKey(selected)}
+        />
+      ) : isManagedCli && selectedMethodConnected ? (
+        <AgentCliDetails
+          provider={selected}
+          info={info}
+          onRelogin={() => onAuthenticate(selected, 'cli')}
+        />
+      ) : (
+        <div className="mt-5 text-right text-sm text-fg-2">
+          Version {info?.detect.version ?? '—'}
+        </div>
+      )}
+
+      {authenticationTerminal ? (
+        <div className="mt-4" data-testid="agent-auth-terminal-slot">
+          {authenticationTerminal}
+        </div>
+      ) : null}
+
+      {info ? (
+        <div className="mt-7 border-y border-border-1 py-5">
+          <h2 className="text-sm font-semibold text-fg-2">Capabilities</h2>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-fg-2">
+            <AgentCapability
+              label="Resume sessions"
+              enabled={info.capabilities.supportsResume}
+            />
+            <AgentCapability
+              label="MCP servers"
+              enabled={info.capabilities.supportsMcp}
+            />
+            <AgentCapability
+              label="Plan mode"
+              enabled={info.capabilities.supportsPlanMode}
+            />
+            <AgentCapability
+              label="Raw terminal"
+              enabled={info.capabilities.rawTerminalFallback}
+            />
           </div>
         </div>
       ) : null}
@@ -1315,30 +1604,279 @@ function AgentsSettings({
   );
 }
 
-function AgentAuthCard({
-  title,
-  selected,
-  detail,
+function AgentCliDetails({
+  provider,
+  info,
+  onRelogin,
 }: {
-  title: string;
-  selected: boolean;
-  detail: string;
+  provider: 'claude_code' | 'codex';
+  info: HarnessInfo | undefined;
+  onRelogin: () => void;
+}): React.JSX.Element {
+  return (
+    <div className="mt-6" data-testid="agent-cli-details">
+      <dl className="overflow-hidden rounded-xl border border-border-2 text-sm">
+        <AgentDetailRow
+          label="Provider"
+          value={
+            info?.detect.providerLabel ??
+            (provider === 'claude_code' ? 'anthropic' : 'openai')
+          }
+        />
+        <AgentDetailRow label="Plan" value={info?.detect.planLabel ?? '—'} />
+        <AgentDetailRow
+          label="Auth"
+          value={
+            info?.detect.authLabel ??
+            (provider === 'claude_code' ? 'Claude login' : 'ChatGPT login')
+          }
+        />
+        <AgentDetailRow
+          label="Account"
+          value={info?.detect.accountLabel ?? '—'}
+          last
+        />
+      </dl>
+      <button
+        type="button"
+        data-testid="agent-cli-relogin"
+        onClick={onRelogin}
+        className="mt-5 flex items-center gap-2 rounded-lg border border-border-2 px-4 py-2 text-sm font-medium text-fg-1 hover:bg-bg-4"
+      >
+        <Play className="h-4 w-4 fill-current" aria-hidden />
+        Run {provider === 'claude_code' ? 'claude' : 'codex'} login
+      </button>
+    </div>
+  );
+}
+
+function AgentApiKeyDetails({
+  provider,
+  version,
+  credentialHint,
+  onReveal,
+  onEdit,
+  onDelete,
+}: {
+  provider: 'claude_code' | 'codex';
+  version: string | undefined;
+  credentialHint: string | undefined;
+  onReveal: () => Promise<string>;
+  onEdit: () => void;
+  onDelete: () => Promise<void>;
+}): React.JSX.Element {
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reveal = (): void => {
+    if (revealedKey !== null) {
+      setRevealedKey(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    void onReveal()
+      .then(setRevealedKey)
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  const remove = (): void => {
+    const providerName = provider === 'claude_code' ? 'Claude' : 'Codex';
+    if (!window.confirm(`Delete the saved ${providerName} API key?`)) return;
+    setBusy(true);
+    setError(null);
+    void onDelete()
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="mt-6" data-testid="agent-api-key-details">
+      <dl className="overflow-hidden rounded-xl border border-border-2 text-sm">
+        <AgentDetailRow label="Version" value={version ?? '—'} />
+        <AgentDetailRow
+          label="Provider"
+          value={provider === 'claude_code' ? 'Anthropic API' : 'OpenAI API'}
+        />
+        <AgentDetailRow label="Auth" value="API key" last />
+      </dl>
+      <div className="mt-5 flex items-center gap-3 rounded-xl border border-border-2 px-4 py-4 text-fg-2">
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-sm"
+          data-testid="agent-api-key-value"
+        >
+          {revealedKey ?? `••••••••${credentialHint ?? ''}`}
+        </span>
+        <button
+          type="button"
+          aria-label={revealedKey ? 'Hide API key' : 'View API key'}
+          disabled={busy}
+          onClick={reveal}
+        >
+          {revealedKey ? (
+            <EyeOff className="h-5 w-5" />
+          ) : (
+            <Eye className="h-5 w-5" />
+          )}
+        </button>
+        <button
+          type="button"
+          aria-label="Edit API key"
+          disabled={busy}
+          onClick={onEdit}
+        >
+          <Pencil className="h-5 w-5" />
+        </button>
+        <button
+          type="button"
+          aria-label="Delete API key"
+          disabled={busy}
+          onClick={remove}
+        >
+          <Trash2 className="h-5 w-5" />
+        </button>
+      </div>
+      {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
+    </div>
+  );
+}
+
+function AgentApiKeyEditor({
+  provider,
+  onSave,
+  onCancel,
+}: {
+  provider: 'claude_code' | 'codex';
+  onSave: (apiKey: string) => Promise<void>;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const [apiKey, setApiKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = (): void => {
+    setBusy(true);
+    setError(null);
+    void onSave(apiKey)
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div
+      className="mt-4 rounded-xl border border-border-2 bg-surface-well p-4"
+      data-testid="agent-api-key-editor"
+    >
+      <label
+        className="text-sm font-medium text-fg-1"
+        htmlFor="agent-api-key-input"
+      >
+        {provider === 'claude_code' ? 'Anthropic' : 'OpenAI'} API key
+      </label>
+      <Input
+        id="agent-api-key-input"
+        type="password"
+        value={apiKey}
+        onChange={(event) => setApiKey(event.target.value)}
+        placeholder="sk-ant-…"
+        className="mt-3"
+      />
+      {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
+      <div className="mt-4 flex gap-2">
+        <Button disabled={busy || apiKey.length === 0} onClick={save}>
+          Save
+        </Button>
+        <Button variant="secondary" disabled={busy} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AgentDetailRow({
+  label,
+  value,
+  last = false,
+}: {
+  label: string;
+  value: string;
+  last?: boolean;
 }): React.JSX.Element {
   return (
     <div
+      className={`grid grid-cols-[150px_1fr] ${last ? '' : 'border-b border-border-2'}`}
+    >
+      <dt className="bg-surface-well px-4 py-3 text-fg-3">{label}</dt>
+      <dd className="px-4 py-3 text-fg-1">{value}</dd>
+    </div>
+  );
+}
+
+function AgentAuthCard({
+  method,
+  title,
+  selected,
+  disabled,
+  detail,
+  onClick,
+}: {
+  method: Exclude<AgentAuthMethod, 'none'>;
+  title: string;
+  selected: boolean;
+  disabled: boolean;
+  detail: string;
+  onClick: () => void;
+}): React.JSX.Element {
+  const Icon = method === 'cli' ? TerminalSquare : KeyRound;
+  return (
+    <button
+      type="button"
+      data-testid={`agent-auth-${method}`}
+      data-selected={selected ? 'true' : 'false'}
+      disabled={disabled}
+      onClick={onClick}
       className={`relative flex min-h-28 flex-col items-center justify-center rounded-2 border ${
         selected
-          ? 'border-border-2 bg-bg-4 text-fg-1'
-          : 'border-border-1 bg-surface-well text-fg-2'
-      }`}
+          ? 'border-accent bg-bg-4 text-fg-1'
+          : 'border-border-1 bg-surface-well text-fg-2 enabled:hover:border-border-2 enabled:hover:bg-bg-4'
+      } disabled:cursor-default disabled:opacity-70`}
     >
       {selected ? (
         <CheckCircle2 className="absolute right-3 top-3 h-4 w-4" aria-hidden />
       ) : null}
-      <KeyRound className="mb-2 h-5 w-5" aria-hidden />
+      <Icon className="mb-2 h-5 w-5" aria-hidden />
       <span className="text-sm font-semibold">{title}</span>
       <span className="mt-1 text-xs text-fg-3">{detail}</span>
-    </div>
+    </button>
+  );
+}
+
+function AgentCapability({
+  label,
+  enabled,
+}: {
+  label: string;
+  enabled: boolean;
+}): React.JSX.Element {
+  return (
+    <span
+      className={`rounded-lg border px-2 py-1 ${
+        enabled
+          ? 'border-border-2 bg-surface-well'
+          : 'border-border-1 text-fg-3 line-through'
+      }`}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -1560,22 +2098,28 @@ function SettingRows({
 function GithubAuthPanel({
   accounts,
   cli,
+  mode,
   busy,
   error,
   pat,
   onPatChange,
+  onModeChange,
   onRefresh,
   onConnectCli,
+  onLogout,
   onConnectPat,
 }: {
   accounts: GithubAccount[];
   cli: GithubCliAuthStatus | null;
+  mode: 'cli' | 'pat';
   busy: boolean;
   error: string | null;
   pat: string;
   onPatChange: (value: string) => void;
+  onModeChange: (mode: 'cli' | 'pat') => void;
   onRefresh: () => void;
   onConnectCli: () => void;
+  onLogout: () => void;
   onConnectPat: () => void;
 }): React.JSX.Element {
   const connected = accounts.length > 0;
@@ -1603,10 +2147,22 @@ function GithubAuthPanel({
       </div>
 
       <div className="space-y-3">
-        <div className="rounded-3 border border-border-1 bg-surface-well p-4">
+        <div
+          className={`rounded-3 border bg-surface-well p-4 ${
+            mode === 'cli' ? 'border-accent' : 'border-border-1'
+          }`}
+        >
           <div className="flex items-start justify-between gap-4">
             <div className="flex min-w-0 gap-3">
-              <RadioMark selected={cli?.authenticated === true} />
+              <button
+                type="button"
+                className="flex shrink-0"
+                aria-label="Use GitHub CLI authentication"
+                aria-pressed={mode === 'cli'}
+                onClick={() => onModeChange('cli')}
+              >
+                <RadioMark selected={mode === 'cli'} />
+              </button>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-base font-semibold text-fg-1">
@@ -1626,16 +2182,38 @@ function GithubAuthPanel({
                 </p>
               </div>
             </div>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={onConnectCli}
-              disabled={busy || cli?.authenticated !== true}
-              data-testid="github-connect-gh"
-            >
-              Use gh auth
-            </Button>
+            {mode === 'cli' ? (
+              <div className="flex shrink-0 gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={onConnectCli}
+                  disabled={busy}
+                  data-testid="github-connect-gh"
+                >
+                  {cli?.authenticated
+                    ? connected
+                      ? 'Refresh access'
+                      : 'Use gh auth'
+                    : connected
+                      ? 'Log in again'
+                      : 'Sign in'}
+                </Button>
+                {connected || cli?.login ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={onLogout}
+                    disabled={busy}
+                    data-testid="github-logout"
+                  >
+                    Log out
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -1655,9 +2233,21 @@ function GithubAuthPanel({
           </div>
         ) : null}
 
-        <div className="rounded-3 border border-border-1 bg-surface-well p-4">
+        <div
+          className={`rounded-3 border bg-surface-well p-4 ${
+            mode === 'pat' ? 'border-accent' : 'border-border-1'
+          }`}
+        >
           <div className="flex items-start gap-3">
-            <RadioMark selected={connected} />
+            <button
+              type="button"
+              className="flex shrink-0"
+              aria-label="Use personal access token authentication"
+              aria-pressed={mode === 'pat'}
+              onClick={() => onModeChange('pat')}
+            >
+              <RadioMark selected={mode === 'pat'} />
+            </button>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="text-base font-semibold text-fg-1">
@@ -1673,30 +2263,39 @@ function GithubAuthPanel({
                   <ExternalLink className="h-3.5 w-3.5" aria-hidden />
                 </a>
               </div>
-              <p className="mt-2 text-sm text-fg-2">
-                Paste a GitHub token with repository access. It is encrypted at
-                rest and never stored in settings.toml.
-              </p>
-              <div className="mt-3 flex gap-2">
-                <Input
-                  type="password"
-                  value={pat}
-                  onChange={(e) => onPatChange(e.target.value)}
-                  placeholder="github_pat_..."
-                  disabled={busy}
-                  data-testid="github-settings-token-input"
-                  className="min-w-0 flex-1"
-                />
-                <Button
-                  type="button"
-                  variant="primary"
-                  onClick={onConnectPat}
-                  disabled={busy || pat.trim() === ''}
-                  data-testid="github-settings-token-submit"
-                >
-                  {busy ? 'Connecting...' : 'Connect'}
-                </Button>
-              </div>
+              {mode === 'pat' ? (
+                <>
+                  <p className="mt-2 text-sm text-fg-2">
+                    Paste a GitHub token with repository access. It is encrypted
+                    at rest and never stored in settings.toml.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <Input
+                      type="password"
+                      value={pat}
+                      onChange={(e) => onPatChange(e.target.value)}
+                      placeholder="github_pat_..."
+                      disabled={busy}
+                      data-testid="github-settings-token-input"
+                      className="min-w-0 flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="primary"
+                      onClick={onConnectPat}
+                      disabled={busy || pat.trim() === ''}
+                      data-testid="github-settings-token-submit"
+                    >
+                      {busy ? 'Connecting...' : 'Connect'}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <p className="mt-2 text-sm text-fg-2">
+                  Select this option to connect with a fine-grained or classic
+                  token instead of GitHub CLI.
+                </p>
+              )}
             </div>
           </div>
         </div>

@@ -75,6 +75,14 @@ function installApi(
         return Promise.resolve(tasks);
       case 'settings:getEffective':
         return Promise.resolve({ agent: { mode: 'default' } });
+      case 'slash:list':
+        return Promise.resolve([
+          {
+            name: 'harness-plan',
+            template: 'Use the harness-plan skill.\n\n$ARGS',
+            description: 'Create an implementation plan',
+          },
+        ]);
       case 'knowledge:config':
         return Promise.resolve(knowledge?.config);
       case 'knowledge:initialize':
@@ -123,6 +131,7 @@ function installApi(
 }
 
 beforeEach(() => {
+  window.localStorage.removeItem('harness:model-preferences');
   useTasksStore.setState({ tasksByWorkspace: {} });
   useWorkspacesStore.setState({
     projects: [
@@ -484,7 +493,9 @@ describe('TasksPanel rendering', () => {
     const reason = await screen.findByRole('textbox', {
       name: 'Rejection reason for Document cabin semantics',
     });
-    fireEvent.change(reason, { target: { value: '  Superseded by ADR-42.  ' } });
+    fireEvent.change(reason, {
+      target: { value: '  Superseded by ADR-42.  ' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
 
     await waitFor(() =>
@@ -503,21 +514,164 @@ describe('TasksPanel rendering', () => {
 });
 
 describe('TasksPanel create form', () => {
-  it('defaults to the current workspace and shows project-qualified active workspaces', async () => {
+  it('does not expose workspace selection', async () => {
     installApi([]);
     render(<TasksPanel workspaceId="ws1" />);
 
     fireEvent.click(await screen.findByTestId('task-new'));
-    const select = screen.getByTestId('task-workspace-select');
 
-    expect(select).toHaveValue('ws1');
-    expect(select).toHaveTextContent('Harness — current');
-    expect(select).toHaveTextContent('Harness — target');
-    expect(select).toHaveTextContent('Companion — remote');
-    expect(select).not.toHaveTextContent('Companion — old');
+    expect(
+      screen.queryByTestId('task-workspace-select'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
   });
 
-  it('submits the selected workspace and normalized cross-provider model without navigating', async () => {
+  it('uses the chat composer layout without cost or context controls', async () => {
+    installApi([]);
+    render(<TasksPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('task-new'));
+
+    expect(screen.getByTestId('task-composer')).toContainElement(
+      screen.getByTestId('task-prompt'),
+    );
+    expect(screen.getByTestId('task-composer-controls')).toContainElement(
+      screen.getByTestId('task-model-select'),
+    );
+    expect(screen.getByTestId('task-composer-controls')).toContainElement(
+      screen.getByTestId('task-effort-select'),
+    );
+    expect(screen.queryByTestId('composer-cost')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('composer-context')).not.toBeInTheDocument();
+  });
+
+  it('shows the resolved default model and mode without workspace-default text', async () => {
+    installApi([]);
+    render(<TasksPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('task-new'));
+
+    expect(screen.getByTestId('task-model-select')).toHaveTextContent('Opus 5');
+    expect(screen.getByTestId('task-effort-select')).toHaveTextContent('High');
+    expect(screen.queryByText(/Workspace default/)).not.toBeInTheDocument();
+  });
+
+  it('offers workspace skills and expands the selected slash command on submit', async () => {
+    const { api } = installApi([]);
+    render(<TasksPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('task-new'));
+    fireEvent.change(screen.getByTestId('task-prompt'), {
+      target: { value: '/harness' },
+    });
+    fireEvent.click(
+      await screen.findByTestId('task-slash-command-harness-plan'),
+    );
+    fireEvent.change(screen.getByTestId('task-prompt'), {
+      target: { value: '/harness-plan build the task modal' },
+    });
+    fireEvent.click(screen.getByTestId('task-form-submit'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith(
+        'task:create',
+        expect.objectContaining({
+          prompt: 'Use the harness-plan skill.\n\nbuild the task modal',
+        }),
+      ),
+    );
+  });
+
+  it('submits plan mode and attached files from composer controls', async () => {
+    const { api } = installApi([]);
+    render(<TasksPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('task-new'));
+    fireEvent.change(screen.getByTestId('task-prompt'), {
+      target: { value: 'review the brief' },
+    });
+    fireEvent.click(screen.getByTestId('task-plan'));
+    expect(screen.getByTestId('task-plan')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByTestId('task-attach'));
+    api.invoke.mockResolvedValueOnce('/tmp/brief.md');
+    fireEvent.click(screen.getByTestId('task-attach-file'));
+    expect(await screen.findByText('📄 brief.md')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('task-form-submit'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith(
+        'task:create',
+        expect.objectContaining({
+          mode: 'plan',
+          attachments: [{ type: 'file', path: '/tmp/brief.md' }],
+        }),
+      ),
+    );
+  });
+
+  it('submits the selected reasoning effort', async () => {
+    const { api } = installApi([]);
+    render(<TasksPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('task-new'));
+    fireEvent.change(screen.getByTestId('task-prompt'), {
+      target: { value: 'review the implementation' },
+    });
+    fireEvent.click(screen.getByTestId('task-effort-select'));
+    fireEvent.click(screen.getByTestId('task-effort-low'));
+    fireEvent.click(screen.getByTestId('task-form-submit'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith(
+        'task:create',
+        expect.objectContaining({ effort: 'low' }),
+      ),
+    );
+  });
+
+  it('schedules after a predefined minute or hour delay', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const { api } = installApi([]);
+    render(<TasksPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('task-new'));
+    expect(screen.getByTestId('task-schedule-now')).toBeChecked();
+    expect(
+      screen.queryByTestId('task-relative-schedule'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('task-schedule')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('task-prompt'), {
+      target: { value: 'run after the delay' },
+    });
+    fireEvent.click(screen.getByTestId('task-schedule-relative'));
+    fireEvent.click(screen.getByTestId('task-relative-preset-240'));
+
+    expect(screen.getByTestId('task-relative-schedule')).toHaveTextContent(
+      'Runs in 4 hours',
+    );
+    expect(screen.getByTestId('task-relative-preset-1440')).toHaveTextContent(
+      '1 day',
+    );
+    expect(screen.queryByTestId('task-schedule')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('task-form-submit'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith(
+        'task:create',
+        expect.objectContaining({
+          scheduledAt: 15_400_000,
+        }),
+      ),
+    );
+  });
+
+  it('submits the current workspace and normalized cross-provider model', async () => {
     const { api } = installApi([]);
     render(<TasksPanel workspaceId="ws1" />);
 
@@ -528,12 +682,10 @@ describe('TasksPanel create form', () => {
     fireEvent.change(screen.getByTestId('task-prompt'), {
       target: { value: 'run the suite' },
     });
-    fireEvent.change(screen.getByTestId('task-model-select'), {
-      target: { value: 'codex-gpt-5-6-terra' },
-    });
-    fireEvent.change(screen.getByTestId('task-workspace-select'), {
-      target: { value: 'ws2' },
-    });
+    fireEvent.click(screen.getByTestId('task-model-select'));
+    fireEvent.click(
+      screen.getByTestId('task-model-option-codex-gpt-5-6-terra'),
+    );
 
     fireEvent.click(screen.getByTestId('task-form-submit'));
 
@@ -541,7 +693,7 @@ describe('TasksPanel create form', () => {
       expect(api.invoke).toHaveBeenCalledWith(
         'task:create',
         expect.objectContaining({
-          workspaceId: 'ws2',
+          workspaceId: 'ws1',
           prompt: 'run the suite',
           model: 'codex-gpt-5-6-terra',
           harnessOverride: 'codex',
@@ -549,6 +701,18 @@ describe('TasksPanel create form', () => {
       ),
     );
     expect(useWorkspacesStore.getState().selectedWorkspaceId).toBe('ws1');
+  });
+
+  it('renders the full model menu outside the clipping task modal', async () => {
+    installApi([]);
+    render(<TasksPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('task-new'));
+    fireEvent.click(screen.getByTestId('task-model-select'));
+
+    const menu = screen.getByTestId('task-model-menu');
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu).toHaveClass('fixed', 'max-h-[calc(100vh-32px)]');
   });
 
   it('uses Chat catalogue normalization for Claude extended-context models', async () => {
@@ -559,16 +723,15 @@ describe('TasksPanel create form', () => {
     fireEvent.change(screen.getByTestId('task-prompt'), {
       target: { value: 'review everything' },
     });
-    fireEvent.change(screen.getByTestId('task-model-select'), {
-      target: { value: 'claude-opus-4-8-1m' },
-    });
+    fireEvent.click(screen.getByTestId('task-model-select'));
+    fireEvent.click(screen.getByTestId('task-model-option-claude-opus-4-8-1m'));
     fireEvent.click(screen.getByTestId('task-form-submit'));
 
     await waitFor(() =>
       expect(api.invoke).toHaveBeenCalledWith(
         'task:create',
         expect.objectContaining({
-          model: 'opus[1m]',
+          model: 'claude-opus-4-8[1m]',
           harnessOverride: 'claude_code',
         }),
       ),

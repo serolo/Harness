@@ -50,6 +50,8 @@ function installApi(): {
         return Promise.resolve([]);
       case 'chat:history':
         return Promise.resolve({ turns: [] });
+      case 'update:getStatus':
+        return Promise.resolve({ state: 'idle', currentVersion: '1.0.0' });
       case 'diff:get':
         return Promise.resolve({ baseRef: 'main', headRef: 'HEAD', files: [] });
       case 'workspace:archivePreview':
@@ -209,6 +211,40 @@ describe('AppLayout terminal section', () => {
 });
 
 describe('AppLayout menu:action dispatch (Track H1)', () => {
+  it('opens one update modal for repeated downloaded broadcasts', async () => {
+    const { listeners } = installApi();
+    render(
+      <Providers>
+        <AppLayout />
+      </Providers>,
+    );
+    await waitFor(() => expect(listeners['update:status']).toHaveLength(1));
+
+    act(() => {
+      listeners['update:status']?.forEach((cb) =>
+        cb({
+          state: 'downloaded',
+          currentVersion: '1.0.0',
+          version: '1.1.0',
+        }),
+      );
+      listeners['update:status']?.forEach((cb) =>
+        cb({
+          state: 'downloaded',
+          currentVersion: '1.0.0',
+          version: '1.1.0',
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId('update-modal')).toHaveLength(1),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Restart and update' }),
+    ).toBeInTheDocument();
+  });
+
   it('opens the settings overlay on the openSettings action', async () => {
     const { listeners } = installApi();
     render(
@@ -226,6 +262,13 @@ describe('AppLayout menu:action dispatch (Track H1)', () => {
     await waitFor(() =>
       expect(screen.getByTestId('settings-overlay')).toBeInTheDocument(),
     );
+    const dialogContent = screen.getByRole('dialog').firstElementChild;
+    expect(dialogContent).toHaveClass('overflow-hidden');
+    expect(dialogContent).not.toHaveClass('overflow-y-auto');
+    expect(screen.getByRole('dialog')).toHaveStyle({
+      width: '100%',
+      height: '100%',
+    });
   });
 
   it('reveals the fixed right pane on the showDiff action', async () => {

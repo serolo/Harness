@@ -55,13 +55,19 @@ import { ScheduledTasksRepo } from './db/repos/tasks';
 import { TaskScheduler } from './scheduler';
 import { ChecksService } from './checks';
 import { IntegrationService } from './integrations';
+import { githubCliAuthStatus } from './integrations/github/ghCli';
 import { LinearService } from './integrations/linear';
 import { OnboardingService } from './onboarding';
 import { qmdStatus } from './knowledge/qmd';
 import { readFile, writeFile } from 'node:fs/promises';
-import { onboardingStatePath, rootDirectory } from './paths';
-import { UpdateService } from './update';
+import {
+  onboardingStatePath,
+  pricingCatalogPath,
+  rootDirectory,
+} from './paths';
+import { loadReleaseUpdater, UpdateService } from './update';
 import { WikiService } from './knowledge';
+import { PricingService } from './billing/pricing';
 import { SecretStore } from './integrations/secrets';
 import { PrWorkflow } from './integrations/github/pr';
 import { IntegrationsRepo } from './db/repos/integrations';
@@ -258,7 +264,7 @@ function installCsp(): void {
  * only constructor arg); every remaining subsystem is still a no-arg Phase-0 stub.
  * Later phases inject their own collaborators here.
  */
-function createAppContext(): AppContext {
+async function createAppContext(): Promise<AppContext> {
   // openDb() → default path via paths.dbPath(); pragmas (WAL, FK) + migrations run
   // synchronously inside openDb, so by the time it returns the schema is current.
   const db = openDb();
@@ -267,6 +273,12 @@ function createAppContext(): AppContext {
   const settings = new SettingsService();
   settings.load();
   logger.info('[startup] settings loaded');
+
+  const pricing = new PricingService({
+    cachePath: pricingCatalogPath(),
+    log: (message) => logger.info(`[startup] ${message}`),
+  });
+  void pricing.start();
 
   // Phase 1: repos + git + allocators + broadcast emitter, injected into the manager.
   const projectsRepo = new ProjectsRepo(db);
@@ -379,9 +391,23 @@ function createAppContext(): AppContext {
   // Shared across the GitHub + Linear connectors: one integrations repo (rows carry a
   // `kind` discriminator) and one SecretStore (token-at-rest under userData/secrets).
   const secrets = new SecretStore();
+  const secureStorageAvailable = secrets.unlock();
   logger.info(
-    `[startup] secure storage ${secrets.unlock() ? 'unlocked' : 'unavailable or denied'}`,
+    `[startup] secure storage ${secureStorageAvailable ? 'unlocked' : 'unavailable or denied'}`,
   );
+  const managedClaudeApiKey = secureStorageAvailable
+    ? await secrets.getOptional('claude-api-key')
+    : undefined;
+  if (managedClaudeApiKey) {
+    process.env['ANTHROPIC_API_KEY'] = managedClaudeApiKey;
+    delete process.env['ANTHROPIC_AUTH_TOKEN'];
+  }
+  const managedCodexApiKey = secureStorageAvailable
+    ? await secrets.getOptional('codex-api-key')
+    : undefined;
+  if (managedCodexApiKey) {
+    process.env['OPENAI_API_KEY'] = managedCodexApiKey;
+  }
   const integrationsRepo = new IntegrationsRepo(db);
   const integrations = new IntegrationService({
     repo: integrationsRepo,
@@ -577,6 +603,8 @@ function createAppContext(): AppContext {
   const onboarding = new OnboardingService({
     listHarnesses: () => harness.listHarnesses(),
     countGithubAccounts: async () => (await integrations.list('github')).length,
+    githubAuthenticated: async () =>
+      (await githubCliAuthStatus()).authenticated,
     countProjects: async () => (await projectsRepo.list()).length,
     qmdInstalled: async () => (await qmdStatus()).installed,
     isAcknowledged: async () => {
@@ -584,7 +612,7 @@ function createAppContext(): AppContext {
         const saved = JSON.parse(
           await readFile(onboardingStatePath(), 'utf8'),
         ) as { version?: unknown; acknowledged?: unknown };
-        return saved.version === 2 && saved.acknowledged === true;
+        return saved.version === 3 && saved.acknowledged === true;
       } catch {
         return false;
       }
@@ -592,23 +620,28 @@ function createAppContext(): AppContext {
     acknowledge: async () => {
       await writeFile(
         onboardingStatePath(),
-        JSON.stringify({ version: 2, acknowledged: true }, null, 2),
+        JSON.stringify({ version: 3, acknowledged: true }, null, 2),
         'utf8',
       );
     },
   });
 
-  // Phase 6: auto-update (README §6.5). DESCOPED for this checkout — there is no release
-  // feed and no code-signing/notarization, so `feedConfigured` is false and no
-  // `autoUpdater` is injected: the service reports `unsupported` and never touches
-  // electron-updater (see src/main/update). When a signed build with a publish feed lands,
-  // set `feedConfigured` (e.g. from `AGENTAPP_UPDATE_FEED`) and inject
-  // `require('electron-updater').autoUpdater` here — the service already drives the full
-  // check/download/install lifecycle from that injection.
+  // Release packages embed app-update.yml. Its validated presence is the capability
+  // signal: generic packaged/local builds remain network-free and never load
+  // electron-updater.
+  const autoUpdater = await loadReleaseUpdater({
+    isPackaged: app.isPackaged,
+    readMetadata: () =>
+      readFile(join(process.resourcesPath, 'app-update.yml'), 'utf8'),
+    importUpdater: async () => (await import('electron-updater')).autoUpdater,
+    log: (message) => logger.warn(message),
+  });
   const updater = new UpdateService({
     isPackaged: app.isPackaged,
-    feedConfigured: process.env['AGENTAPP_UPDATE_FEED'] !== undefined,
-    autoUpdater: undefined,
+    feedConfigured: autoUpdater !== undefined,
+    autoUpdater,
+    currentVersion: app.getVersion(),
+    onStatusChange: (status) => emit('update:status', status),
     log: (message) => logger.info(message),
   });
   const ctx: AppContext = {
@@ -635,6 +668,8 @@ function createAppContext(): AppContext {
     tasks,
     scheduler,
     knowledge,
+    pricing,
+    secrets,
   };
 
   return ctx;
@@ -855,7 +890,7 @@ if (!gotSingleInstanceLock) {
     }
   });
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     // electron-builder embeds the production icon during packaging, but Electron's
     // development binary otherwise keeps its default Dock icon.
     if (process.platform === 'darwin' && !app.isPackaged) {
@@ -866,7 +901,7 @@ if (!gotSingleInstanceLock) {
     // will call `app:ping` / DB IPC on mount.
     installCsp();
 
-    const ctx = createAppContext();
+    const ctx = await createAppContext();
     appContext = ctx;
     registerIpc(ctx);
     logger.info('[startup] IPC registered');

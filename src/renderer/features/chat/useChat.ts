@@ -9,6 +9,7 @@ import type {
   Attachment,
   AgentMode,
   HarnessId,
+  ReasoningEffort,
   Usage,
 } from '@shared/harness';
 import type { ChatHistory } from '@shared/ipc';
@@ -64,6 +65,7 @@ export interface UseChat {
     harness?: HarnessId,
     sessionId?: string | null,
     model?: string,
+    effort?: ReasoningEffort,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
   clear: () => Promise<void>;
@@ -127,6 +129,7 @@ export function useChat(workspaceId: string | null): UseChat {
       harness?: HarnessId,
       sessionId?: string | null,
       model?: string,
+      effort?: ReasoningEffort,
     ): Promise<void> => {
       if (!workspaceId) return;
       const startedAt = Date.now();
@@ -154,6 +157,7 @@ export function useChat(workspaceId: string | null): UseChat {
           mode,
           harness,
           model,
+          effort,
           ...(sessionId === undefined ? {} : { sessionId }),
         };
         await subscribeStream('turn:start', turnArg, (chunk) => {

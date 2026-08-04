@@ -10,7 +10,22 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
+vi.mock('../onboarding/OnboardingLoginTerminal', () => ({
+  OnboardingLoginTerminal: ({
+    provider,
+    method,
+  }: {
+    provider: string;
+    method?: string;
+  }) => (
+    <div data-testid="settings-login-terminal">
+      {provider}:{method ?? 'default'}
+    </div>
+  ),
+}));
+
 import { SettingsPanel } from './SettingsPanel';
+import type { HarnessInfo } from '@shared/ipc';
 import type {
   EffectiveSettings,
   SettingsIssue,
@@ -85,6 +100,16 @@ interface Installed {
 function installApi(
   issues: SettingsIssue[] = [],
   projectEffective: EffectiveSettings = EFFECTIVE,
+  github: {
+    accounts?: Array<{ id: string; login: string; kind: 'github' }>;
+    agents?: HarnessInfo[];
+    cli?: {
+      available: boolean;
+      authenticated: boolean;
+      login?: string;
+      message?: string;
+    };
+  } = {},
 ): Installed {
   const listeners: Record<string, ((payload: unknown) => void)[]> = {};
   const unsubscribe = vi.fn();
@@ -142,32 +167,85 @@ function installApi(
           },
         ]);
       case 'github:accounts':
-        return Promise.resolve([]);
+        return Promise.resolve(github.accounts ?? []);
       case 'github:cliStatus':
-        return Promise.resolve({
-          available: true,
-          authenticated: true,
-          login: 'octo',
-        });
+        return Promise.resolve(
+          github.cli ?? {
+            available: true,
+            authenticated: true,
+            login: 'octo',
+          },
+        );
       case 'github:connectGhCli':
         return Promise.resolve({ id: 'gh-1', login: 'octo', kind: 'github' });
+      case 'github:logoutGhCli':
+        return Promise.resolve(undefined);
+      case 'agent:revealClaudeApiKey':
+        return Promise.resolve({ apiKey: 'sk-ant-revealed-secret-LI0A' });
+      case 'agent:setClaudeApiKey':
+        return Promise.resolve({ configured: true, hint: 'NEW1' });
+      case 'agent:deleteClaudeApiKey':
+        return Promise.resolve(undefined);
+      case 'agent:revealCodexApiKey':
+        return Promise.resolve({ apiKey: 'sk-openai-revealed-C0DX' });
+      case 'agent:setCodexApiKey':
+        return Promise.resolve({ configured: true, hint: 'NEW2' });
+      case 'agent:deleteCodexApiKey':
+        return Promise.resolve(undefined);
       case 'harness:list':
-        return Promise.resolve([
-          {
-            id: 'claude_code',
-            capabilities: {
-              supportsResume: true,
-              supportsMcp: true,
-              supportsPlanMode: true,
-              rawTerminalFallback: true,
+        return Promise.resolve(
+          github.agents ?? [
+            {
+              id: 'claude_code',
+              capabilities: {
+                supportsResume: true,
+                supportsMcp: true,
+                supportsPlanMode: true,
+                rawTerminalFallback: true,
+              },
+              detect: {
+                installed: true,
+                authenticated: true,
+                version: '2.1.201',
+                authMethod: 'cli',
+                providerLabel: 'anthropic',
+                planLabel: 'Max',
+                authLabel: 'Claude login',
+                accountLabel: 'person@example.com',
+              },
             },
-            detect: {
-              installed: true,
-              authenticated: true,
-              version: '2.1.201',
+            {
+              id: 'codex',
+              capabilities: {
+                supportsResume: true,
+                supportsMcp: true,
+                supportsPlanMode: true,
+                rawTerminalFallback: true,
+              },
+              detect: {
+                installed: true,
+                authenticated: true,
+                version: '0.145.0',
+                authMethod: 'api_key',
+              },
             },
-          },
-        ]);
+            {
+              id: 'cursor',
+              capabilities: {
+                supportsResume: false,
+                supportsMcp: false,
+                supportsPlanMode: false,
+                rawTerminalFallback: true,
+              },
+              detect: {
+                installed: true,
+                authenticated: true,
+                version: '1.0.0',
+                authMethod: 'cli',
+              },
+            },
+          ],
+        );
       case 'settings:set':
         return Promise.resolve(EFFECTIVE);
       case 'app:getRootDirectory':
@@ -209,6 +287,24 @@ afterEach(() => {
 });
 
 describe('SettingsPanel rendering', () => {
+  it('keeps scrolling inside the navigation and content panes', async () => {
+    installApi();
+    render(<SettingsPanel />);
+
+    expect(await screen.findByTestId('settings-panel')).toHaveClass(
+      'overflow-hidden',
+    );
+    expect(screen.getByTestId('settings-native-titlebar-space')).toHaveClass(
+      'h-titlebar',
+    );
+    expect(screen.getByTestId('settings-nav-scroll')).toHaveClass(
+      'overflow-y-auto',
+    );
+    expect(screen.getByTestId('settings-content-scroll')).toHaveClass(
+      'overflow-y-auto',
+    );
+  });
+
   it('shows and changes the Harness root directory', async () => {
     const { api } = installApi();
     render(<SettingsPanel />);
@@ -269,6 +365,52 @@ describe('SettingsPanel rendering', () => {
     ).toHaveAttribute('data-layer', 'default');
   });
 
+  it('offers login again and logout for an expired GitHub CLI session', async () => {
+    const { api } = installApi([], EFFECTIVE, {
+      accounts: [{ id: 'gh-1', login: 'octo', kind: 'github' }],
+      cli: {
+        available: true,
+        authenticated: false,
+        login: 'octo',
+        message: 'The token is invalid.',
+      },
+    });
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-git'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Log in again' }),
+    );
+    expect(
+      await screen.findByTestId('settings-login-terminal'),
+    ).toHaveTextContent('github');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('github:logoutGhCli', undefined),
+    );
+  });
+
+  it('shows the token form only when personal access token auth is selected', async () => {
+    installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-git'));
+    expect(screen.queryByTestId('github-settings-token-input')).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Use personal access token authentication',
+      }),
+    );
+    expect(screen.getByTestId('github-settings-token-input')).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Use GitHub CLI authentication' }),
+    );
+    expect(screen.queryByTestId('github-settings-token-input')).toBeNull();
+  });
+
   it('renders model defaults, review defaults, and chat mode toggles', async () => {
     installApi();
     render(<SettingsPanel />);
@@ -314,7 +456,207 @@ describe('SettingsPanel rendering', () => {
     expect(screen.getByTestId('agent-connection-status')).toHaveTextContent(
       'Connected',
     );
+    expect(screen.getByTestId('agent-auth-cli')).toHaveTextContent('CLI');
+    expect(screen.getByTestId('agent-auth-api_key')).toHaveTextContent(
+      'API Key',
+    );
+    expect(screen.getByTestId('agent-auth-cli')).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
+    expect(screen.getByTestId('agent-auth-api_key')).toHaveAttribute(
+      'data-selected',
+      'false',
+    );
+    expect(screen.queryByTestId('agent-tab-opencode')).toBeNull();
     expect(screen.queryByText('Harnesses')).toBeNull();
+    const cliDetails = screen.getByTestId('agent-cli-details');
+    expect(cliDetails).toHaveTextContent('anthropic');
+    expect(cliDetails).toHaveTextContent('Max');
+    expect(cliDetails).toHaveTextContent('Claude login');
+    expect(cliDetails).toHaveTextContent('person@example.com');
+    fireEvent.click(screen.getByTestId('agent-cli-relogin'));
+    expect(screen.getByTestId('settings-login-terminal')).toHaveTextContent(
+      'claude:cli',
+    );
+  });
+
+  it('shows connected Codex CLI account details and can run login again', async () => {
+    installApi([], EFFECTIVE, {
+      agents: [
+        {
+          id: 'codex',
+          capabilities: {
+            supportsResume: true,
+            supportsMcp: true,
+            supportsPlanMode: true,
+            rawTerminalFallback: true,
+          },
+          detect: {
+            installed: true,
+            authenticated: true,
+            version: '0.145.0',
+            authMethod: 'cli',
+            providerLabel: 'openai',
+            planLabel: 'Plus',
+            authLabel: 'ChatGPT login',
+            accountLabel: 'person@example.com',
+          },
+        },
+      ],
+    });
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-agents'));
+    fireEvent.click(screen.getByTestId('agent-tab-codex'));
+
+    expect(screen.getByTestId('agent-connection-status')).toHaveTextContent(
+      'Connected',
+    );
+    const details = screen.getByTestId('agent-cli-details');
+    expect(details).toHaveTextContent('openai');
+    expect(details).toHaveTextContent('Plus');
+    expect(details).toHaveTextContent('ChatGPT login');
+    expect(details).toHaveTextContent('person@example.com');
+    expect(screen.getByTestId('agent-cli-relogin')).toHaveTextContent(
+      'Run codex login',
+    );
+  });
+
+  it('shows the active Codex method and can switch to CLI auth', async () => {
+    installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-agents'));
+    fireEvent.click(screen.getByTestId('agent-tab-codex'));
+
+    expect(screen.getByTestId('agent-connection-status')).toHaveTextContent(
+      'Connected',
+    );
+    expect(screen.getByTestId('agent-auth-api_key')).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
+    expect(screen.getByTestId('agent-auth-cli')).toHaveAttribute(
+      'data-selected',
+      'false',
+    );
+    expect(screen.getByTestId('agent-api-key-details')).toHaveTextContent(
+      'OpenAI API',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'View API key' }));
+    expect(await screen.findByText('sk-openai-revealed-C0DX')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide API key' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit API key' }));
+    expect(screen.getByLabelText('OpenAI API key')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete API key' }));
+    await waitFor(() =>
+      expect(window.api.invoke).toHaveBeenCalledWith(
+        'agent:deleteCodexApiKey',
+        undefined,
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId('agent-auth-cli'));
+    expect(screen.queryByTestId('settings-login-terminal')).toBeNull();
+    expect(screen.getByTestId('agent-connection-status')).toHaveTextContent(
+      'CLI not authenticated',
+    );
+    fireEvent.click(screen.getByTestId('agent-auth-login'));
+    const terminal = screen.getByTestId('settings-login-terminal');
+    expect(terminal).toHaveTextContent('codex:cli');
+    expect(
+      screen
+        .getByTestId('agent-auth-api_key')
+        .compareDocumentPosition(terminal) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId('agent-auth-login').compareDocumentPosition(terminal) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('shows connected Claude API-key details without exposing the key', async () => {
+    installApi([], EFFECTIVE, {
+      agents: [
+        {
+          id: 'claude_code',
+          capabilities: {
+            supportsResume: true,
+            supportsMcp: true,
+            supportsPlanMode: true,
+            rawTerminalFallback: true,
+          },
+          detect: {
+            installed: true,
+            authenticated: true,
+            version: '2.1.220',
+            authMethod: 'api_key',
+            credentialHint: 'LI0A',
+          },
+        },
+      ],
+    });
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-agents'));
+
+    expect(screen.getByTestId('agent-connection-status')).toHaveTextContent(
+      'Connected',
+    );
+    const details = screen.getByTestId('agent-api-key-details');
+    expect(details).toHaveTextContent('2.1.220');
+    expect(details).toHaveTextContent('Anthropic API');
+    expect(details).toHaveTextContent('API key');
+    expect(details).toHaveTextContent('••••••••LI0A');
+    expect(details).not.toHaveTextContent('sk-ant-');
+
+    fireEvent.click(screen.getByRole('button', { name: 'View API key' }));
+    expect(await screen.findByText('sk-ant-revealed-secret-LI0A')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide API key' }));
+    expect(screen.getByTestId('agent-api-key-value')).toHaveTextContent(
+      '••••••••LI0A',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit API key' }));
+    const input = screen.getByLabelText('Anthropic API key');
+    fireEvent.change(input, {
+      target: { value: 'sk-ant-replacement-key-value' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(window.api.invoke).toHaveBeenCalledWith('agent:setClaudeApiKey', {
+        apiKey: 'sk-ant-replacement-key-value',
+      }),
+    );
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete API key' }));
+    await waitFor(() =>
+      expect(window.api.invoke).toHaveBeenCalledWith(
+        'agent:deleteClaudeApiKey',
+        undefined,
+      ),
+    );
+  });
+
+  it('shows Cursor as CLI-only', async () => {
+    installApi();
+    render(<SettingsPanel />);
+
+    fireEvent.click(await screen.findByTestId('settings-nav-agents'));
+    fireEvent.click(screen.getByTestId('agent-tab-cursor'));
+
+    expect(screen.getByTestId('agent-auth-cli')).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
+    expect(screen.getByTestId('agent-auth-api_key')).toBeDisabled();
+    expect(screen.getByTestId('agent-auth-api_key')).toHaveTextContent(
+      'Not supported by the Cursor CLI',
+    );
   });
 });
 

@@ -1,10 +1,9 @@
 // Auto-update service — electron-updater wrapper (Phase 6, Track H4 / README §6.5).
 //
-// DESCOPE (flagged in the plan, decided from the checkout): this repo ships NO release
-// feed and NO code-signing/notarization (`electron-builder.yml` has no `publish:` block,
-// `hardenedRuntime: false`, and there is no `app-update.yml`). electron-updater's
-// `autoUpdater.checkForUpdates()` throws in exactly that situation (dev run / unsigned /
-// no feed). So this service is built for the real updater but DEGRADES GRACEFULLY:
+// The production-only electron-builder config embeds the public GitHub release feed and
+// signs/notarizes the app. Development and unsigned local packages deliberately omit that
+// metadata. electron-updater's `autoUpdater.checkForUpdates()` throws when no feed exists,
+// so this service degrades gracefully:
 //
 //   - When updates are UNSUPPORTED (not packaged, or no feed configured), `checkForUpdates`
 //     returns a typed `{ state: 'unsupported', message }` snapshot and NEVER touches
@@ -27,6 +26,8 @@ import { AppError } from '@shared/errors';
  */
 export interface AutoUpdaterLike {
   autoDownload: boolean;
+  autoInstallOnAppQuit?: boolean;
+  allowPrerelease?: boolean;
   checkForUpdates(): Promise<unknown>;
   quitAndInstall(): void;
   on(event: string, listener: (...args: unknown[]) => void): void;
@@ -40,19 +41,118 @@ export interface UpdateServiceDeps {
   feedConfigured: boolean;
   /**
    * The real `electron-updater` autoUpdater, or `undefined` to force the unsupported
-   * (descoped) path. Injected so dev/test never loads electron-updater.
+   * path. Injected so dev/test never loads electron-updater.
    */
   autoUpdater?: AutoUpdaterLike;
+  /** Version of the currently running application. */
+  currentVersion?: string;
+  /** Synchronous observer invoked for every status transition. */
+  onStatusChange?: (status: UpdateStatus) => void;
   /** Optional log sink (defaults to no-op). */
+  log?: (message: string) => void;
+}
+
+export interface ReleaseUpdaterLoaderDeps {
+  /** Development and generic unpackaged runs never inspect or import updater code. */
+  isPackaged: boolean;
+  /** Read the embedded app-update.yml contents. Injected for deterministic tests. */
+  readMetadata: () => Promise<string>;
+  /** Lazily import electron-updater only after metadata passes validation. */
+  importUpdater: () => Promise<AutoUpdaterLike>;
+  /** Optional fixed-message diagnostic sink. */
   log?: (message: string) => void;
 }
 
 /** Human-readable reason surfaced when updates aren't available in this build. */
 const UNSUPPORTED_MESSAGE =
   'Automatic updates are unavailable in this build (no signed release feed is configured).';
+const UPDATE_ERROR_MESSAGE =
+  'Unable to check for updates. Please try again later.';
+const INSTALL_ERROR_MESSAGE =
+  'Unable to restart and install the update. Please try again.';
+const TRUSTED_RELEASE_METADATA_KEYS = new Set([
+  'provider',
+  'owner',
+  'repo',
+  'updaterCacheDirName',
+]);
+const SAFE_UPDATER_CACHE_DIR_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /**
- * Wraps electron-updater with a typed `UpdateStatus` state machine + a hard descope path
+ * Decide whether embedded electron-builder metadata authorizes the production updater.
+ * Only the expected public GitHub repository is trusted; malformed or duplicate fields
+ * fail closed.
+ */
+export function isTrustedReleaseMetadata(metadata: string): boolean {
+  const values = new Map<string, string>();
+  for (const rawLine of metadata.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (rawLine !== rawLine.trimStart()) return false;
+    const match = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*?)\s*$/.exec(line);
+    if (!match) return false;
+
+    const key = match[1];
+    if (!TRUSTED_RELEASE_METADATA_KEYS.has(key)) return false;
+    let value = match[2];
+    if (
+      value.length >= 2 &&
+      ((value.startsWith("'") && value.endsWith("'")) ||
+        (value.startsWith('"') && value.endsWith('"')))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (values.has(key)) return false;
+    values.set(key, value);
+  }
+
+  const updaterCacheDirName = values.get('updaterCacheDirName');
+  return (
+    values.get('provider') === 'github' &&
+    values.get('owner') === 'serolo' &&
+    values.get('repo') === 'Harness' &&
+    (updaterCacheDirName === undefined ||
+      SAFE_UPDATER_CACHE_DIR_NAME.test(updaterCacheDirName))
+  );
+}
+
+/**
+ * Load electron-updater only after a packaged build's embedded release metadata passes
+ * validation. Missing/corrupt/wrong-repository metadata never calls `importUpdater`.
+ */
+export async function loadReleaseUpdater(
+  deps: ReleaseUpdaterLoaderDeps,
+): Promise<AutoUpdaterLike | undefined> {
+  if (!deps.isPackaged) return undefined;
+
+  let metadata: string;
+  try {
+    metadata = await deps.readMetadata();
+  } catch {
+    deps.log?.(
+      '[update] embedded release metadata is unavailable; updates disabled',
+    );
+    return undefined;
+  }
+  if (!isTrustedReleaseMetadata(metadata)) {
+    deps.log?.(
+      '[update] embedded release metadata is invalid; updates disabled',
+    );
+    return undefined;
+  }
+
+  try {
+    return await deps.importUpdater();
+  } catch {
+    deps.log?.(
+      '[update] release updater could not be loaded; updates disabled',
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Wraps electron-updater with a typed `UpdateStatus` state machine + a hard unsupported path
  * for unsigned/dev/no-feed builds. Construct once at startup; expose `checkForUpdates` /
  * `install` over IPC and call `checkOnLaunch()` from `whenReady`.
  */
@@ -61,9 +161,14 @@ export class UpdateService {
   private readonly updater: AutoUpdaterLike | undefined;
   private readonly supported: boolean;
   private readonly log: (message: string) => void;
+  private readonly currentVersion: string | undefined;
+  private readonly onStatusChange: (status: UpdateStatus) => void;
+  private installRequested = false;
 
   constructor(deps: UpdateServiceDeps) {
     this.log = deps.log ?? (() => {});
+    this.currentVersion = deps.currentVersion;
+    this.onStatusChange = deps.onStatusChange ?? (() => {});
     this.supported =
       deps.isPackaged && deps.feedConfigured && deps.autoUpdater !== undefined;
     this.updater = this.supported ? deps.autoUpdater : undefined;
@@ -71,9 +176,15 @@ export class UpdateService {
     if (this.updater) {
       // Manual control: we trigger checks explicitly and gate install on `downloaded`.
       this.updater.autoDownload = true;
+      this.updater.autoInstallOnAppQuit = false;
+      this.updater.allowPrerelease = false;
       this.wireEvents(this.updater);
+      this.setStatus({ state: 'idle' });
     } else {
-      this.status = { state: 'unsupported', message: UNSUPPORTED_MESSAGE };
+      this.setStatus({
+        state: 'unsupported',
+        message: UNSUPPORTED_MESSAGE,
+      });
     }
   }
 
@@ -89,18 +200,21 @@ export class UpdateService {
    */
   async checkForUpdates(): Promise<UpdateStatus> {
     if (!this.updater) {
-      this.status = { state: 'unsupported', message: UNSUPPORTED_MESSAGE };
+      this.setStatus({
+        state: 'unsupported',
+        message: UNSUPPORTED_MESSAGE,
+      });
       return this.getStatus();
     }
-    this.status = { state: 'checking' };
+    this.setStatus({ state: 'checking' });
     try {
       await this.updater.checkForUpdates();
     } catch (err) {
-      this.status = {
+      this.setStatus({
         state: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      };
-      this.log(`[update] check failed: ${String(err)}`);
+        message: userFacingError(err),
+      });
+      this.log(`[update] check failed: ${technicalError(err)}`);
     }
     return this.getStatus();
   }
@@ -121,7 +235,15 @@ export class UpdateService {
         'No update has been downloaded yet — check for updates first.',
       );
     }
-    this.updater.quitAndInstall();
+    if (this.installRequested) return;
+    this.installRequested = true;
+    try {
+      this.updater.quitAndInstall();
+    } catch (error) {
+      this.installRequested = false;
+      this.log(`[update] install failed: ${technicalError(error)}`);
+      throw new AppError('internal', INSTALL_ERROR_MESSAGE);
+    }
   }
 
   /** Best-effort check on launch. Never throws — a failure is logged and swallowed. */
@@ -130,7 +252,7 @@ export class UpdateService {
     try {
       await this.checkForUpdates();
     } catch (err) {
-      this.log(`[update] launch check failed: ${String(err)}`);
+      this.log(`[update] launch check failed: ${technicalError(err)}`);
     }
   }
 
@@ -142,26 +264,46 @@ export class UpdateService {
   /** Mirror electron-updater's lifecycle events into the typed `UpdateStatus`. */
   private wireEvents(updater: AutoUpdaterLike): void {
     updater.on('checking-for-update', () => {
-      this.status = { state: 'checking' };
+      this.setStatus({ state: 'checking' });
     });
     updater.on('update-available', (info: unknown) => {
-      this.status = { state: 'available', version: versionOf(info) };
+      this.setStatus({ state: 'available', version: versionOf(info) });
     });
     updater.on('update-not-available', () => {
-      this.status = { state: 'not-available' };
+      this.setStatus({ state: 'not-available' });
     });
-    updater.on('download-progress', () => {
-      this.status = { state: 'downloading' };
+    updater.on('download-progress', (progress: unknown) => {
+      const percent = normalizedPercent(progress);
+      this.setStatus({
+        state: 'downloading',
+        version: this.status.version,
+        ...(percent === undefined ? {} : { percent }),
+      });
     });
     updater.on('update-downloaded', (info: unknown) => {
-      this.status = { state: 'downloaded', version: versionOf(info) };
+      this.setStatus({ state: 'downloaded', version: versionOf(info) });
     });
     updater.on('error', (err: unknown) => {
-      this.status = {
+      this.log(`[update] updater error: ${technicalError(err)}`);
+      this.setStatus({
         state: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      };
+        message: userFacingError(err),
+      });
     });
+  }
+
+  /**
+   * Store and publish one immutable snapshot. Centralizing transitions prevents event
+   * listeners and command paths from exposing subtly different status shapes.
+   */
+  private setStatus(status: UpdateStatus): void {
+    this.status = {
+      ...status,
+      ...(this.currentVersion === undefined
+        ? {}
+        : { currentVersion: this.currentVersion }),
+    };
+    this.onStatusChange({ ...this.status });
   }
 }
 
@@ -172,4 +314,45 @@ function versionOf(info: unknown): string | undefined {
     return typeof v === 'string' ? v : undefined;
   }
   return undefined;
+}
+
+/** Extract, validate, and bound electron-updater's progress percentage. */
+function normalizedPercent(progress: unknown): number | undefined {
+  if (
+    progress === null ||
+    typeof progress !== 'object' ||
+    !('percent' in progress)
+  ) {
+    return undefined;
+  }
+  const percent = (progress as { percent: unknown }).percent;
+  if (typeof percent !== 'number' || !Number.isFinite(percent)) {
+    return undefined;
+  }
+  return Math.min(100, Math.max(0, percent));
+}
+
+/**
+ * Preserve short, useful transport failures while refusing strings that resemble a URL,
+ * credential, authorization header, or local path.
+ */
+function userFacingError(error: unknown): string {
+  if (!(error instanceof Error)) return UPDATE_ERROR_MESSAGE;
+  const message = error.message.trim();
+  if (
+    message === '' ||
+    message.length > 160 ||
+    /https?:\/\/|www\.|token|secret|password|credential|api[-_ ]?key|authorization|bearer|signature|x-amz|[A-Za-z]:\\|\/(?:Users|home|private|tmp)\//i.test(
+      message,
+    )
+  ) {
+    return UPDATE_ERROR_MESSAGE;
+  }
+  return message;
+}
+
+/** Technical log detail constrained to the same secret-safe message policy. */
+function technicalError(error: unknown): string {
+  const kind = error instanceof Error ? error.name : typeof error;
+  return `${kind}: ${userFacingError(error)}`;
 }

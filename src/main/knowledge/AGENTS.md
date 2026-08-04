@@ -31,3 +31,6 @@
 - Accepted proposals rebuild `index.md` in the same Git commit. Rejected proposals retain the
   optional reviewer reason in proposal audit state. Proposal operation count and content size are
   bounded at the service boundary, and failed acceptance must restore both files and the Git index.
+- A reviewed `create` targeting an existing canonical page is consolidated rather than overwritten:
+  preserve canonical frontmatter and existing Markdown, merge proposed content into matching
+  sections, and deduplicate identical blocks. Reserved bundle files still conflict.

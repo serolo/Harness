@@ -44,3 +44,20 @@ shared chat store via `useSchedulerTurnEvents` (mounted once in `AppLayout`). **
 keep flowing over the scoped `turn:start` stream** — the emitter set for `turn:event` MUST stay
 scheduler-only, or user turns would double-render. The `task:changed { workspaceId }` broadcast (also
 Phase 12) tells the renderer's Tasks tab to refetch after any task mutation.
+
+Before a scheduler turn's first `turn:event`, `task:turnStarted` announces the task id, persisted
+turn id, provider session id, and prompt. The renderer uses it to open a dedicated resumable task
+chat tab; reopening a workspace reconstructs the same ownership from `task:list` + `chat:history`.
+
+## Application updater ownership
+
+`UpdateService` is the sole owner of updater state. `update:getStatus` is a read-only hydration
+command and MUST NOT start network work; `update:check` is the only renderer-triggered network
+operation, and `update:install` is the only restart/install operation. Every transition is broadcast
+as `update:status`, allowing a renderer that subscribes before hydrating to close the launch-event
+race without introducing another preload primitive.
+
+The installed application consumes the public GitHub release metadata embedded by electron-builder.
+It never accepts a feed URL or GitHub token over IPC. `GH_TOKEN`, signing certificates, and Apple
+notarization credentials are CI-only secrets and must never enter renderer payloads, packaged
+resources, updater status/error messages, or logs.

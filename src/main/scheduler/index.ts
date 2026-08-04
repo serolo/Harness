@@ -195,12 +195,13 @@ export class TaskScheduler {
     const opts: StartTurnOpts = {
       workspaceDir: workspace.worktreePath,
       prompt: task.prompt,
-      attachments: [],
+      attachments: task.attachments ?? [],
       sessionId: undefined,
       mode: task.mode ?? settings.agent.mode,
       mcpConfig: settings.mcp,
       permissionPolicy: settings.agent.permissionPolicy,
       model: task.model ?? undefined,
+      effort: task.effort ?? undefined,
     };
 
     // 4) sink: buffer events until the turnId is known, then mirror each as `turn:event`.
@@ -272,7 +273,7 @@ export class TaskScheduler {
 
     // 5) start the turn through the supervisor; conflict → re-queue; other throw → error.
     try {
-      await harness.startTurn(
+      const handle = await harness.startTurn(
         workspaceId,
         opts,
         sink,
@@ -282,6 +283,15 @@ export class TaskScheduler {
       if (turnId !== undefined && !terminalHandled) {
         // Record the turn id so boot reconcile can join it; state stays `running`.
         await repo.setState(task.id, 'running', { turnId });
+      }
+      if (turnId !== undefined) {
+        emit('task:turnStarted', {
+          workspaceId,
+          taskId: task.id,
+          turnId,
+          sessionId: handle.sessionId,
+          prompt: task.prompt,
+        });
       }
       flush();
       if (pendingTerminal !== undefined) {

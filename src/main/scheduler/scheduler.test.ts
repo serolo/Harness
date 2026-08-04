@@ -210,6 +210,8 @@ describe('TaskScheduler — opts assembly', () => {
       prompt: 'go',
       model: 'sonnet',
       harnessOverride: 'codex',
+      attachments: [{ type: 'file', path: '/tmp/spec.md' }],
+      effort: 'high',
     });
     await scheduler.runNow(task.id);
 
@@ -218,6 +220,8 @@ describe('TaskScheduler — opts assembly', () => {
     expect(opts.model).toBe('sonnet');
     expect(opts.mode).toBe('default'); // task.mode null → settings default
     expect(opts.prompt).toBe('go');
+    expect(opts.attachments).toEqual([{ type: 'file', path: '/tmp/spec.md' }]);
+    expect(opts.effort).toBe('high');
     expect(opts.workspaceDir).toBe(worktreePath);
     expect(harness.harnessOverrides).toEqual(['codex']);
   });
@@ -301,6 +305,32 @@ describe('TaskScheduler — opts assembly', () => {
 });
 
 describe('TaskScheduler — turn:event mirroring', () => {
+  it('announces a dedicated resumable session before mirroring task output', async () => {
+    harness.onStart = (sink) => sink.push({ kind: 'text', delta: 'working' });
+    const task = await repo.create({
+      workspaceId,
+      prompt: 'Audit the release workflow',
+    });
+
+    await scheduler.runNow(task.id);
+
+    const sessionStartedIndex = emitted.findIndex(
+      ({ event }) => event === 'task:turnStarted',
+    );
+    const firstTurnEventIndex = emitted.findIndex(
+      ({ event }) => event === 'turn:event',
+    );
+    expect(sessionStartedIndex).toBeGreaterThanOrEqual(0);
+    expect(sessionStartedIndex).toBeLessThan(firstTurnEventIndex);
+    expect(emitted[sessionStartedIndex]?.payload).toEqual({
+      workspaceId,
+      taskId: task.id,
+      turnId: fakeTurnId,
+      sessionId: 'sess',
+      prompt: 'Audit the release workflow',
+    });
+  });
+
   it('buffers events pushed before the turnId is known, then emits in order', async () => {
     // A text event pushed DURING startTurn (turnId not yet resolved) must be buffered and
     // flushed with the resolved turnId, ahead of the later terminal event.

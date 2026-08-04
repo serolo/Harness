@@ -7,7 +7,12 @@
 // time; the `TaskScheduler` (`src/main/scheduler`) fires timed tasks and drains queued
 // ones. The `todos` feature (harness.ts `Todo`) is unrelated and untouched.
 
-import type { AgentMode, HarnessId } from './harness';
+import type {
+  AgentMode,
+  Attachment,
+  HarnessId,
+  ReasoningEffort,
+} from './harness';
 
 /**
  * The lifecycle state of a scheduled task (design doc §4.1 state machine).
@@ -46,6 +51,10 @@ export interface ScheduledTask {
   updatedAt: number; // epoch millis
   /** Optional execution harness selected with the provider model catalogue. */
   harnessOverride: HarnessId | null;
+  /** Files staged with the task prompt and passed to the harness when it runs. */
+  attachments?: Attachment[];
+  /** Reasoning effort selected for this execution; null leaves the provider default. */
+  effort?: ReasoningEffort | null;
 }
 
 /**
@@ -62,6 +71,9 @@ export interface CreateTaskReq {
   origin?: TaskOrigin; // defaults to 'user'
   /** Execute with this harness instead of the workspace's configured harness. */
   harnessOverride?: HarnessId;
+  /** Files to pass to the harness with the task prompt. */
+  attachments?: Attachment[];
+  effort?: ReasoningEffort;
 }
 
 /**
@@ -78,6 +90,10 @@ export interface UpdateTaskReq {
   scheduledAt?: number | null;
   /** Change or clear the task-specific execution harness. */
   harnessOverride?: HarnessId | null;
+  /** Replace the files passed to the harness with the task prompt. */
+  attachments?: Attachment[];
+  /** Change or clear the task-specific reasoning effort. */
+  effort?: ReasoningEffort | null;
 }
 
 /** Preset dropdown values — `claude --model` accepts these family aliases. */

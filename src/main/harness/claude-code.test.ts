@@ -14,7 +14,85 @@ import type {
   RawPtySpawner,
   RawPtySpawnOptions,
 } from './raw-terminal';
-import { buildArgs, ClaudeCodeHarness } from './claude-code';
+import {
+  buildArgs,
+  ClaudeCodeHarness,
+  parseClaudeAuthDetails,
+  parseClaudeAuthStatus,
+  parseClaudeCliMetadata,
+  resolveClaudeAuthDetails,
+} from './claude-code';
+
+describe('Claude Code adapter — authentication status', () => {
+  it('accepts only valid logged-in JSON', () => {
+    expect(parseClaudeAuthStatus('{"loggedIn":true}')).toBe(true);
+    expect(parseClaudeAuthStatus('{"loggedIn":false}')).toBe(false);
+    expect(parseClaudeAuthStatus('not json')).toBe(false);
+  });
+
+  it('distinguishes Claude subscription and Console billing', () => {
+    expect(
+      parseClaudeAuthDetails(
+        JSON.stringify({
+          loggedIn: true,
+          authMethod: 'claude.ai',
+          apiProvider: 'firstParty',
+        }),
+      ),
+    ).toEqual({ authenticated: true, authMethod: 'cli' });
+    expect(
+      parseClaudeAuthDetails(
+        JSON.stringify({
+          loggedIn: true,
+          authMethod: 'console',
+          apiProvider: 'firstParty',
+        }),
+      ),
+    ).toEqual({ authenticated: true, authMethod: 'api_key' });
+    expect(
+      parseClaudeAuthDetails(
+        JSON.stringify({ loggedIn: false, authMethod: 'none' }),
+      ),
+    ).toEqual({ authenticated: false, authMethod: 'none' });
+  });
+
+  it('prefers an API credential over account login status', () => {
+    expect(
+      resolveClaudeAuthDetails(
+        JSON.stringify({ loggedIn: false, authMethod: 'none' }),
+        true,
+      ),
+    ).toEqual({ authenticated: true, authMethod: 'api_key' });
+    expect(
+      resolveClaudeAuthDetails(
+        JSON.stringify({
+          loggedIn: true,
+          authMethod: 'claude.ai',
+          apiProvider: 'firstParty',
+        }),
+        true,
+      ),
+    ).toEqual({ authenticated: true, authMethod: 'api_key' });
+  });
+
+  it('reads non-secret Claude account and plan metadata', () => {
+    expect(
+      parseClaudeCliMetadata(
+        JSON.stringify({
+          oauthAccount: {
+            emailAddress: 'person@example.com',
+            organizationRateLimitTier: 'default_claude_max_20x',
+          },
+        }),
+      ),
+    ).toEqual({
+      providerLabel: 'anthropic',
+      planLabel: 'Max',
+      authLabel: 'Claude login',
+      accountLabel: 'person@example.com',
+    });
+  });
+});
 
 /** Minimal valid StartTurnOpts with the given MCP servers. */
 function opts(
@@ -93,9 +171,12 @@ function fakeSpawner(): {
   };
 }
 
-function appendCapturedStdout(fake: {
-  spawnOptions: () => RawPtySpawnOptions | undefined;
-}, chunk: string): void {
+function appendCapturedStdout(
+  fake: {
+    spawnOptions: () => RawPtySpawnOptions | undefined;
+  },
+  chunk: string,
+): void {
   const stdout = fake.spawnOptions()?.env?.['HARNESS_AGENT_STDOUT'];
   if (stdout === undefined) {
     throw new Error('missing HARNESS_AGENT_STDOUT');
@@ -163,6 +244,12 @@ describe('Claude Code adapter — model threading (Phase 12)', () => {
     expect(args).not.toContain('--model');
   });
 
+  it('passes the selected reasoning effort as discrete argv', () => {
+    const args = buildArgs({ ...opts([]), effort: 'high' });
+    const i = args.indexOf('--effort');
+    expect(args.slice(i, i + 2)).toEqual(['--effort', 'high']);
+  });
+
   it('keeps a hostile model string a SINGLE inert argv element (never shell)', () => {
     // Even a string full of shell metacharacters is passed as ONE argument under
     // spawn(shell:false); it is never split or interpreted. (The IPC boundary rejects
@@ -188,9 +275,9 @@ describe('Claude Code adapter — PTY JSON stream fallback', () => {
     await Promise.resolve();
 
     expect(fake.spawnOptions()?.shell).toBe('/bin/zsh');
-    expect(fake.spawnOptions()?.args?.some((arg) => arg.includes('claude'))).toBe(
-      true,
-    );
+    expect(
+      fake.spawnOptions()?.args?.some((arg) => arg.includes('claude')),
+    ).toBe(true);
     expect(fake.spawnOptions()?.args).toContain('--output-format');
 
     appendCapturedStdout(

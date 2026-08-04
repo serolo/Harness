@@ -25,6 +25,7 @@ import type {
   DetectResult,
   HarnessCapabilities,
   HarnessId,
+  ReasoningEffort,
   Todo,
 } from './harness';
 import type {
@@ -57,7 +58,7 @@ import type {
 } from './settings';
 import type { SlashCommand } from './slash';
 import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
-import type { MonthlyUsage } from './billing';
+import type { MonthlyUsage, PricingCatalogSnapshot } from './billing';
 import type {
   CreateWikiProposalInput,
   KnowledgeConfig,
@@ -549,6 +550,40 @@ export interface Commands {
     req: { workspaceId: string };
     res: PrSummary | null;
   };
+  /** Latest validated pricing catalogue, or null when only bundled rates are available. */
+  'pricing:getCatalog': { req: void; res: PricingCatalogSnapshot | null };
+  /** Hydrate the latest updater snapshot without starting network activity. */
+  'update:getStatus': { req: void; res: UpdateStatus };
+  /** Log out the local GitHub CLI account and remove Harness's stored GitHub credentials. */
+  'github:logoutGhCli': { req: void; res: void };
+  /** Read token-free metadata for Harness's encrypted Claude API key. */
+  'agent:claudeApiKeyStatus': {
+    req: void;
+    res: { configured: boolean; hint?: string };
+  };
+  /** Reveal the Claude API key only after explicit user action. */
+  'agent:revealClaudeApiKey': { req: void; res: { apiKey: string } };
+  /** Encrypt and activate a replacement Claude API key. */
+  'agent:setClaudeApiKey': {
+    req: { apiKey: string };
+    res: { configured: true; hint: string };
+  };
+  /** Delete Harness's encrypted Claude API key and remove it from child environments. */
+  'agent:deleteClaudeApiKey': { req: void; res: void };
+  /** Read token-free metadata for Harness's encrypted Codex API key. */
+  'agent:codexApiKeyStatus': {
+    req: void;
+    res: { configured: boolean; hint?: string };
+  };
+  /** Reveal the Codex API key only after explicit user action. */
+  'agent:revealCodexApiKey': { req: void; res: { apiKey: string } };
+  /** Encrypt and activate a replacement Codex API key. */
+  'agent:setCodexApiKey': {
+    req: { apiKey: string };
+    res: { configured: true; hint: string };
+  };
+  /** Delete Harness's encrypted Codex API key and remove it from child environments. */
+  'agent:deleteCodexApiKey': { req: void; res: void };
 }
 
 export type CommandChannel = keyof Commands;
@@ -610,6 +645,16 @@ export interface Events {
    * `selectWorkspace:<n>`); the renderer dispatches it against the current UI.
    */
   'menu:action': { actionId: string };
+  /** A scheduled task allocated a fresh provider session and should open its own chat tab. */
+  'task:turnStarted': {
+    workspaceId: string;
+    taskId: string;
+    turnId: string;
+    sessionId: string;
+    prompt: string;
+  };
+  /** The application updater transitioned to a new observable state. */
+  'update:status': UpdateStatus;
 }
 
 export type EventChannel = keyof Events;
@@ -677,6 +722,13 @@ export interface StreamChannels {
     arg: { mode: 'apiKey'; token?: string };
     chunk: LinearConnectStatus;
   };
+
+  // --- Onboarding provider login terminal (APPEND-ONLY) ---
+  /** Run one allowlisted provider login command in an interactive onboarding PTY. */
+  'onboarding:login': {
+    arg: OnboardingLoginArg;
+    chunk: OnboardingLoginChunk;
+  };
 }
 
 export type StreamChannel = keyof StreamChannels;
@@ -695,6 +747,8 @@ export interface TurnStartArg {
   harness?: HarnessId;
   /** Optional provider model id selected for this turn. */
   model?: string;
+  /** Optional provider reasoning-effort override. */
+  effort?: ReasoningEffort;
   /**
    * Resume a specific context session. `null` explicitly starts a fresh context;
    * omitted preserves the legacy behaviour of resuming the workspace's latest session.
@@ -834,12 +888,16 @@ export interface UpdateStatus {
     | 'unsupported';
   version?: string;
   message?: string;
+  /** Version of the running application. */
+  currentVersion?: string;
+  /** Bounded download completion percentage (`0..100`). */
+  percent?: number;
 }
 
 /**
- * Onboarding readiness (spec §7): composed from `harness:detect` (is a harness CLI
- * installed/authed), whether any GitHub account is connected, and whether any project
- * has been added. `complete` is true once the essential steps are satisfied.
+ * Onboarding readiness (spec §7): composed from provider auth detection, a valid and
+ * imported GitHub CLI session, and optional project/QMD status. `complete` requires
+ * GitHub plus at least one authenticated model provider.
  */
 export interface OnboardingState {
   harnessReady: boolean;
@@ -848,4 +906,31 @@ export interface OnboardingState {
   qmdInstalled: boolean;
   acknowledged: boolean;
   complete: boolean;
+  claudeReady: boolean;
+  codexReady: boolean;
 }
+
+/** Provider whose allowlisted login command may run in the onboarding terminal. */
+export type OnboardingLoginProvider = 'github' | 'claude' | 'codex';
+
+/** Initial dimensions for an interactive provider-login terminal. */
+export interface OnboardingLoginArg {
+  provider: OnboardingLoginProvider;
+  cols?: number;
+  rows?: number;
+  /** Requested provider auth path when Settings switches methods. APPEND-ONLY. */
+  method?: 'cli' | 'api_key';
+  /** Run login even when status currently reports connected. APPEND-ONLY. */
+  force?: boolean;
+}
+
+/** Frames emitted while an onboarding provider login command runs. */
+export type OnboardingLoginChunk =
+  | { kind: 'started'; ptyId: string; command: string }
+  | { kind: 'data'; data: string }
+  | {
+      kind: 'finished';
+      provider: OnboardingLoginProvider;
+      authenticated: boolean;
+    }
+  | { kind: 'progress'; message: string };

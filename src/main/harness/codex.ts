@@ -1,6 +1,6 @@
 // Codex harness adapter (spec §4.2, phase-doc §3.1; plan Task 1). Implements the
 // FROZEN `Harness` contract (README §6.3) over the user's installed `codex` CLI:
-//   - detect(): `execa('codex', ['--version'])` — degrade gracefully (Risk R4).
+//   - detect(): checks `--version` plus the token-free `login status` exit code.
 //   - startTurn(): `child_process.spawn('codex', [...])` headless with `exec --json`,
 //     pipe stdout through the format-agnostic line splitter (`./parser`), normalize
 //     each JSON object with the Codex-specific `normalizeCodex()`, and push the
@@ -34,7 +34,7 @@
 
 import { spawn } from 'node:child_process';
 import { readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
 
@@ -51,7 +51,7 @@ import type {
 import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
 import { childProcessEnv } from '../process/childEnv';
-import { resolveExecutable } from '../process/executable';
+import { resolveHarnessExecutable } from './executable';
 import { createJsonLineSplitter } from './parser';
 import type { RawPtyHandle, RawPtySpawner } from './raw-terminal';
 import {
@@ -89,19 +89,17 @@ export class CodexHarness implements Harness {
   }
 
   /**
-   * Probe whether `codex` is installed and (best-effort) authenticated. Auth is
-   * inherited from the user's existing Codex login (spec §1.2) — this adapter handles
-   * no credentials. Per Risk R4 auth is not reliably detectable, so a successful
-   * `--version` degrades to "installed, assume authenticated; a failing turn surfaces
-   * the real auth error" rather than hard-blocking.
+   * Probe whether `codex` is installed and authenticated. The token-free
+   * `codex login status` exit code is authoritative for onboarding readiness.
    */
   async detect(): Promise<DetectResult> {
     try {
+      const env = childProcessEnv();
       const { stdout } = await execa(
-        resolveExecutable('codex'),
+        resolveHarnessExecutable('codex'),
         ['--version'],
         {
-          env: childProcessEnv(),
+          env,
           extendEnv: false,
         },
       );
@@ -111,7 +109,32 @@ export class CodexHarness implements Harness {
           `[harness:codex] detected codex ${version} < minimum ${MIN_CODEX_VERSION}; JSON output may drift`,
         );
       }
-      return { installed: true, version, authenticated: true };
+      const auth = await execa(
+        resolveHarnessExecutable('codex'),
+        ['login', 'status'],
+        {
+          env,
+          extendEnv: false,
+          reject: false,
+          timeout: 10_000,
+        },
+      );
+      const apiKey = env['OPENAI_API_KEY']?.trim();
+      const authMethod = resolveCodexAuthMethod(
+        `${auth.stdout}\n${auth.stderr}`,
+        Boolean(apiKey),
+        auth.exitCode === 0,
+      );
+      const cliMetadata =
+        authMethod === 'cli' ? readCodexCliMetadata() : undefined;
+      return {
+        installed: true,
+        version,
+        authenticated: authMethod !== 'none',
+        authMethod,
+        credentialHint: apiKey ? apiKey.slice(-4) : undefined,
+        ...cliMetadata,
+      };
     } catch (err) {
       // ENOENT (not on PATH) or any spawn failure → not installed / not usable.
       logger.info(
@@ -142,7 +165,7 @@ export class CodexHarness implements Harness {
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
-    const command = resolveExecutable('codex');
+    const command = resolveHarnessExecutable('codex');
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, {
@@ -275,7 +298,7 @@ export class CodexHarness implements Harness {
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
-    const command = resolveExecutable('codex');
+    const command = resolveHarnessExecutable('codex');
     const captureDir = mkdtempSync(join(tmpdir(), 'harness-codex-stream-'));
     const stdoutPath = join(captureDir, 'stdout');
     const stderrPath = join(captureDir, 'stderr');
@@ -834,6 +857,10 @@ export function buildArgs(opts: StartTurnOpts): string[] {
     args.push('--mcp-config', mcpConfigPath);
   }
 
+  if (opts.effort) {
+    args.push('-c', `model_reasoning_effort="${opts.effort}"`);
+  }
+
   // Phase 12: `opts.model` is Claude-specific (preset aliases target `claude --model`);
   // codex keeps its CLI default and ignores it (design doc §2 out-of-scope).
 
@@ -961,6 +988,70 @@ function extractUsage(raw: unknown):
 function parseVersion(stdout: string): string | undefined {
   const match = /(\d+)\.(\d+)\.(\d+)/.exec(stdout);
   return match ? match[0] : undefined;
+}
+
+export function parseCodexAuthMethod(
+  stdout: string,
+): 'cli' | 'api_key' | 'none' {
+  const normalized = stdout.toLowerCase();
+  if (normalized.includes('not logged in')) return 'none';
+  if (normalized.includes('api key')) return 'api_key';
+  if (normalized.includes('logged in')) return 'cli';
+  return 'none';
+}
+
+export function resolveCodexAuthMethod(
+  stdout: string,
+  hasApiKey: boolean,
+  statusSucceeded = true,
+): 'cli' | 'api_key' | 'none' {
+  if (hasApiKey) return 'api_key';
+  if (!statusSucceeded) return 'none';
+  const parsed = parseCodexAuthMethod(stdout);
+  return parsed === 'none' ? 'cli' : parsed;
+}
+
+export function parseCodexCliMetadata(rawAuth: string): {
+  providerLabel: string;
+  planLabel?: string;
+  authLabel: string;
+  accountLabel?: string;
+} {
+  const fallback = { providerLabel: 'openai', authLabel: 'ChatGPT login' };
+  try {
+    const auth = JSON.parse(rawAuth) as { tokens?: { id_token?: unknown } };
+    if (typeof auth.tokens?.id_token !== 'string') return fallback;
+    const payloadPart = auth.tokens.id_token.split('.')[1];
+    if (!payloadPart) return fallback;
+    const payload = JSON.parse(
+      Buffer.from(payloadPart, 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    const plan = payload['https://api.openai.com/auth.chatgpt_plan_type'];
+    const email = payload['email'];
+    return {
+      ...fallback,
+      ...(typeof plan === 'string' ? { planLabel: titleCase(plan) } : {}),
+      ...(typeof email === 'string' ? { accountLabel: email } : {}),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function readCodexCliMetadata(): ReturnType<typeof parseCodexCliMetadata> {
+  try {
+    return parseCodexCliMetadata(
+      readFileSync(join(homedir(), '.codex', 'auth.json'), 'utf8'),
+    );
+  } catch {
+    return parseCodexCliMetadata('');
+  }
+}
+
+function titleCase(value: string): string {
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 /** True when semver `a` is strictly older than `b` (numeric, three-part, lenient). */

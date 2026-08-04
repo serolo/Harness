@@ -7,7 +7,15 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from '@renderer/app/App';
+import { invoke } from '@renderer/ipc';
+import { installPricingCatalog } from '@shared/billing';
 import '@renderer/index.css';
+
+void invoke('pricing:getCatalog', undefined)
+  .then((catalog) => installPricingCatalog(catalog))
+  .catch(() => {
+    // Main retains bundled pricing when startup refresh/cache is unavailable.
+  });
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {

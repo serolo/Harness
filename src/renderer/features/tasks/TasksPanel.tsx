@@ -1,7 +1,7 @@
 // TasksPanel — the "Tasks" center-tab view for the selected workspace (Phase 12). Wires
 // `useTasks(workspaceId)` to the list of TaskRows + a "New task" button + the TaskForm
 // dialog (create / edit / reschedule). Fetches the effective `agent.mode` once so the
-// form can label the "Workspace default" option. All main access happens inside
+// form can show the resolved inherited mode. All main access happens inside
 // `useTasks` / a one-shot `settings:getEffective`, via `@renderer/ipc`.
 
 import { useEffect, useState } from 'react';
@@ -20,7 +20,6 @@ import { Button } from '@renderer/components/ui';
 import { useTasks } from './useTasks';
 import { TaskRow } from './TaskRow';
 import { TaskForm, type TaskFormValues } from './TaskForm';
-import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { KnowledgeFolderBrowser } from '../knowledge/KnowledgeFolderBrowser';
 import { Markdown } from '../chat/markdown';
 
@@ -49,8 +48,6 @@ export function TasksPanel({
   const [expandedKnowledgeFolders, setExpandedKnowledgeFolders] = useState<
     Set<string>
   >(() => new Set());
-  const workspaces = useWorkspacesStore((state) => state.workspaces);
-  const projects = useWorkspacesStore((state) => state.projects);
 
   useEffect(() => {
     setExpandedKnowledgeFolders(new Set());
@@ -60,7 +57,7 @@ export function TasksPanel({
     if (knowledgeReviewRequestId > 0) setActiveTab('knowledge');
   }, [knowledgeReviewRequestId]);
 
-  // Fetch the effective agent.mode once, for the form's "Workspace default (…)" label.
+  // Fetch the effective agent.mode once so the inherited option shows its actual value.
   useEffect(() => {
     let active = true;
     void invoke('settings:getEffective', undefined)
@@ -95,6 +92,8 @@ export function TasksPanel({
         mode: values.mode,
         scheduledAt: values.scheduledAt,
         harnessOverride: values.harnessOverride,
+        attachments: values.attachments,
+        effort: values.effort,
       });
     } else {
       // Create: the request type uses optional fields (no null), so map null → undefined.
@@ -105,6 +104,8 @@ export function TasksPanel({
         mode: values.mode ?? undefined,
         scheduledAt: values.scheduledAt ?? undefined,
         harnessOverride: values.harnessOverride ?? undefined,
+        attachments: values.attachments,
+        effort: values.effort,
       });
     }
   }
@@ -207,8 +208,6 @@ export function TasksPanel({
           focusSchedule={form.kind === 'edit' ? form.focusSchedule : false}
           defaultAgentMode={defaultMode}
           workspaceId={workspaceId}
-          workspaces={workspaces}
-          projects={projects}
           onSubmit={handleSubmit}
           onClose={() => setForm({ kind: 'closed' })}
         />

@@ -16,7 +16,7 @@ import type {
   WorkspaceStatus,
   WorkspaceLocation,
 } from '@shared/models';
-import type { AgentMode, HarnessId } from '@shared/harness';
+import type { AgentMode, HarnessId, ReasoningEffort } from '@shared/harness';
 import type { TaskOrigin, TaskState } from '@shared/tasks';
 
 /**
@@ -187,6 +187,8 @@ export interface ScheduledTasksTable {
   created_at: number; // INTEGER NOT NULL — epoch millis
   updated_at: number; // INTEGER NOT NULL — epoch millis
   harness_override: HarnessId | null; // TEXT — NULL = use workspace harness
+  attachments_json: string; // TEXT NOT NULL — JSON-encoded Attachment[], default []
+  effort: ReasoningEffort | null; // TEXT — NULL = app default, migration 0014
 }
 
 /**

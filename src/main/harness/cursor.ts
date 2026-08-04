@@ -94,17 +94,26 @@ export class CursorHarness implements Harness {
    */
   async detect(): Promise<DetectResult> {
     try {
-      const { stdout } = await execa(resolveExecutable(CURSOR_BIN), ['--version'], {
-        env: childProcessEnv(),
-        extendEnv: false,
-      });
+      const { stdout } = await execa(
+        resolveExecutable(CURSOR_BIN),
+        ['--version'],
+        {
+          env: childProcessEnv(),
+          extendEnv: false,
+        },
+      );
       const version = parseVersion(stdout);
       if (version && isOlderThan(version, MIN_CURSOR_VERSION)) {
         logger.warn(
           `[harness:cursor] detected ${CURSOR_BIN} ${version} < minimum ${MIN_CURSOR_VERSION}; behaviour may drift`,
         );
       }
-      return { installed: true, version, authenticated: true };
+      return {
+        installed: true,
+        version,
+        authenticated: true,
+        authMethod: 'cli',
+      };
     } catch (err) {
       logger.info(
         `[harness:cursor] detect: ${CURSOR_BIN} not available (${errMessage(err)})`,

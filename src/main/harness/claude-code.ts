@@ -1,6 +1,6 @@
 // Claude Code harness adapter (spec §4.2, phase-doc §3.1). Implements the FROZEN
 // `Harness` contract (README §6.3) over the user's installed `claude` CLI:
-//   - detect(): `execa('claude', ['--version'])` — degrade gracefully (Risk R4).
+//   - detect(): checks `--version` plus the token-free `auth status` JSON response.
 //   - startTurn(): `child_process.spawn('claude', [...])` headless with
 //     `--output-format stream-json --verbose`, pipe stdout through the PURE parser
 //     (`./parser`), and push normalized `AgentEvent`s into the caller's sink.
@@ -15,12 +15,13 @@
 
 import { spawn } from 'node:child_process';
 import { readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
 
 import type {
   AgentEvent,
+  AgentAuthMethod,
   Attachment,
   DetectResult,
   Harness,
@@ -33,7 +34,7 @@ import type { StreamSink } from '@shared/ipc';
 import { AppError } from '@shared/errors';
 import { logger } from '../logging';
 import { childProcessEnv } from '../process/childEnv';
-import { resolveExecutable } from '../process/executable';
+import { resolveHarnessExecutable } from './executable';
 import { createJsonLineSplitter, normalize } from './parser';
 import type { RawPtyHandle, RawPtySpawner } from './raw-terminal';
 
@@ -62,24 +63,55 @@ export class ClaudeCodeHarness implements Harness {
   }
 
   /**
-   * Probe whether `claude` is installed and (best-effort) authenticated. Per Risk R4
-   * auth is NOT reliably detectable across CLI versions, so a successful `--version`
-   * degrades to "installed, assume authenticated; a failing turn surfaces the real
-   * auth error" rather than hard-blocking.
+   * Probe whether `claude` is installed and authenticated. Authentication uses the
+   * CLI's token-free JSON status command; failure stays false so onboarding cannot
+   * claim readiness from `--version` alone.
    */
   async detect(): Promise<DetectResult> {
     try {
-      const { stdout } = await execa(resolveExecutable('claude'), ['--version'], {
-        env: childProcessEnv(),
-        extendEnv: false,
-      });
+      const env = childProcessEnv();
+      const { stdout } = await execa(
+        resolveHarnessExecutable('claude'),
+        ['--version'],
+        {
+          env,
+          extendEnv: false,
+        },
+      );
       const version = parseVersion(stdout);
       if (version && isOlderThan(version, MIN_CLAUDE_VERSION)) {
         logger.warn(
           `[harness:claude_code] detected claude ${version} < minimum ${MIN_CLAUDE_VERSION}; stream-json output may drift`,
         );
       }
-      return { installed: true, version, authenticated: true };
+      const auth = await execa(
+        resolveHarnessExecutable('claude'),
+        ['auth', 'status'],
+        {
+          env,
+          extendEnv: false,
+          reject: false,
+          timeout: 10_000,
+        },
+      );
+      const authDetails = resolveClaudeAuthDetails(
+        auth.stdout,
+        hasClaudeApiCredential(env),
+      );
+      const apiCredential = claudeApiCredential(env);
+      const cliMetadata =
+        authDetails.authMethod === 'cli' ? readClaudeCliMetadata() : undefined;
+      return {
+        installed: true,
+        version,
+        authenticated: authDetails.authenticated,
+        authMethod: authDetails.authMethod,
+        credentialHint:
+          authDetails.authMethod === 'api_key' && apiCredential
+            ? apiCredential.slice(-4)
+            : undefined,
+        ...cliMetadata,
+      };
     } catch (err) {
       // ENOENT (not on PATH) or any spawn failure → not installed / not usable.
       logger.info(
@@ -110,7 +142,7 @@ export class ClaudeCodeHarness implements Harness {
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
-    const command = resolveExecutable('claude');
+    const command = resolveHarnessExecutable('claude');
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, {
@@ -124,7 +156,9 @@ export class ClaudeCodeHarness implements Harness {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
-      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+      throw new Error(
+        formatSpawnFailure(command, args, opts.workspaceDir, err),
+      );
     }
 
     const splitter = createJsonLineSplitter((msg) =>
@@ -242,7 +276,7 @@ export class ClaudeCodeHarness implements Harness {
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
-    const command = resolveExecutable('claude');
+    const command = resolveHarnessExecutable('claude');
     const captureDir = mkdtempSync(join(tmpdir(), 'harness-claude-stream-'));
     const stdoutPath = join(captureDir, 'stdout');
     const stderrPath = join(captureDir, 'stderr');
@@ -269,7 +303,9 @@ export class ClaudeCodeHarness implements Harness {
       });
     } catch (err) {
       rmSync(captureDir, { recursive: true, force: true });
-      throw new Error(formatSpawnFailure(command, args, opts.workspaceDir, err));
+      throw new Error(
+        formatSpawnFailure(command, args, opts.workspaceDir, err),
+      );
     }
 
     const splitter = createJsonLineSplitter((msg) =>
@@ -373,6 +409,124 @@ export class ClaudeCodeHarness implements Harness {
   }
 }
 
+export function parseClaudeAuthStatus(stdout: string): boolean {
+  return parseClaudeAuthDetails(stdout).authenticated;
+}
+
+export function resolveClaudeAuthDetails(
+  stdout: string,
+  hasApiCredential: boolean,
+): {
+  authenticated: boolean;
+  authMethod: AgentAuthMethod;
+} {
+  if (hasApiCredential) {
+    return { authenticated: true, authMethod: 'api_key' };
+  }
+  return parseClaudeAuthDetails(stdout);
+}
+
+export function parseClaudeAuthDetails(stdout: string): {
+  authenticated: boolean;
+  authMethod: AgentAuthMethod;
+} {
+  try {
+    const status = JSON.parse(stdout) as {
+      loggedIn?: unknown;
+      authMethod?: unknown;
+      apiProvider?: unknown;
+    };
+    if (status.loggedIn !== true) {
+      return { authenticated: false, authMethod: 'none' };
+    }
+    const method =
+      typeof status.authMethod === 'string'
+        ? status.authMethod.toLowerCase()
+        : '';
+    const apiProvider =
+      typeof status.apiProvider === 'string'
+        ? status.apiProvider.toLowerCase()
+        : '';
+    return {
+      authenticated: true,
+      authMethod:
+        method.includes('console') ||
+        method.includes('api') ||
+        (apiProvider !== '' && apiProvider !== 'firstparty')
+          ? 'api_key'
+          : 'cli',
+    };
+  } catch {
+    return { authenticated: false, authMethod: 'none' };
+  }
+}
+
+function hasClaudeApiCredential(env: Record<string, string>): boolean {
+  return claudeApiCredential(env) !== undefined;
+}
+
+function claudeApiCredential(env: Record<string, string>): string | undefined {
+  for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']) {
+    const value = env[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+export function parseClaudeCliMetadata(rawConfig: string): {
+  providerLabel: string;
+  planLabel?: string;
+  authLabel: string;
+  accountLabel?: string;
+} {
+  const fallback = { providerLabel: 'anthropic', authLabel: 'Claude login' };
+  try {
+    const config = JSON.parse(rawConfig) as {
+      oauthAccount?: {
+        emailAddress?: unknown;
+        billingType?: unknown;
+        organizationRateLimitTier?: unknown;
+      };
+    };
+    const account = config.oauthAccount;
+    const planSource =
+      typeof account?.organizationRateLimitTier === 'string'
+        ? account.organizationRateLimitTier
+        : typeof account?.billingType === 'string'
+          ? account.billingType
+          : undefined;
+    return {
+      ...fallback,
+      ...(planSource ? { planLabel: claudePlanLabel(planSource) } : {}),
+      ...(typeof account?.emailAddress === 'string'
+        ? { accountLabel: account.emailAddress }
+        : {}),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function readClaudeCliMetadata(): ReturnType<typeof parseClaudeCliMetadata> {
+  try {
+    return parseClaudeCliMetadata(
+      readFileSync(join(homedir(), '.claude.json'), 'utf8'),
+    );
+  } catch {
+    return parseClaudeCliMetadata('');
+  }
+}
+
+function claudePlanLabel(value: string): string {
+  const normalized = value.toLowerCase();
+  for (const plan of ['enterprise', 'team', 'max', 'pro']) {
+    if (normalized.includes(plan)) {
+      return plan[0]!.toUpperCase() + plan.slice(1);
+    }
+  }
+  return normalized.includes('subscription') ? 'Subscription' : value;
+}
+
 function formatSpawnFailure(
   command: string,
   args: readonly string[],
@@ -438,7 +592,10 @@ function readNewBytes(
   try {
     const bytes = readFileSync(path);
     if (bytes.length <= offset) return null;
-    return { text: bytes.subarray(offset).toString('utf8'), offset: bytes.length };
+    return {
+      text: bytes.subarray(offset).toString('utf8'),
+      offset: bytes.length,
+    };
   } catch {
     return null;
   }
@@ -466,13 +623,7 @@ function fileSize(path: string): number {
  */
 export function buildArgs(opts: StartTurnOpts): string[] {
   const prompt = opts.prompt + serializeAttachments(opts.attachments);
-  const args = [
-    '-p',
-    prompt,
-    '--output-format',
-    'stream-json',
-    '--verbose',
-  ];
+  const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
 
   if (opts.sessionId) {
     args.push('--resume', opts.sessionId);
@@ -493,6 +644,9 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   // an inert single argument rather than shell.
   if (opts.model) {
     args.push('--model', opts.model);
+  }
+  if (opts.effort) {
+    args.push('--effort', opts.effort);
   }
 
   const mcpConfigPath = writeMcpConfig(opts.mcpConfig);

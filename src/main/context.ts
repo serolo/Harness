@@ -30,6 +30,8 @@ import type { UpdateService } from './update';
 import type { ScheduledTasksRepo } from './db/repos/tasks';
 import type { TaskScheduler } from './scheduler';
 import type { WikiService } from './knowledge';
+import type { PricingService } from './billing/pricing';
+import type { SecretStore } from './integrations/secrets';
 
 /**
  * Service singletons + the typed DB handle, shared across the main process.
@@ -79,4 +81,8 @@ export interface AppContext {
   scheduler: TaskScheduler;
   /** Local-first, Git-backed OKF v0.1 project knowledge wiki. */
   knowledge: WikiService;
+  /** Startup-refreshed, last-known-good model token pricing. */
+  pricing: PricingService;
+  /** OS-encrypted singleton credentials used by agent providers. */
+  secrets: SecretStore;
 }

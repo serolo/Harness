@@ -37,14 +37,18 @@ import type {
   StreamArg,
   StreamChannel,
   StreamChunk,
+  OnboardingLoginProvider,
   WorkspaceOpenApp,
   WorkspaceOpenAppId,
 } from '@shared/ipc';
 import type { StreamSink } from '@shared/ipc';
 import type {
   AgentEvent,
+  AgentAuthMethod,
   AgentMode,
+  Attachment,
   HarnessId,
+  ReasoningEffort,
   StartTurnOpts,
 } from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
@@ -62,8 +66,14 @@ import { UsageRepo } from '../db/repos/usage';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
 import {
   githubCliAuthStatus,
+  githubCliExecutable,
+  githubCliLogout,
   githubCliToken,
 } from '../integrations/github/ghCli';
+import { installGithubCli } from '../integrations/github/ghInstaller';
+import { installClaudeCli } from '../harness/claudeInstaller';
+import { installCodexCli } from '../harness/codexInstaller';
+import { resolveHarnessExecutable } from '../harness/executable';
 import { discoverGitSshKeys } from '../git/sshKeys';
 import type { GithubAccount } from '@shared/github';
 import type { LinearAccount } from '@shared/linear';
@@ -88,6 +98,7 @@ import { discoverNativeSlashCommands } from '../slash/native';
 import { resolveDeepLink } from '../deeplink';
 import { buildEnv } from '../process/env';
 import type { PtyChunk } from '../pty';
+import { onboardingLoginCommand } from '../onboarding';
 import {
   createStream,
   handleStreamCancel,
@@ -98,6 +109,48 @@ import { installQmd, qmdStatus } from '../knowledge/qmd';
 
 /** Control channel the renderer invokes to begin a scoped stream. */
 const STREAM_START_CHANNEL = 'stream:start';
+const CLAUDE_API_KEY_REF = 'claude-api-key';
+const CODEX_API_KEY_REF = 'codex-api-key';
+
+function activeClaudeApiKey(): string | undefined {
+  return (
+    process.env['ANTHROPIC_API_KEY']?.trim() ||
+    process.env['ANTHROPIC_AUTH_TOKEN']?.trim() ||
+    undefined
+  );
+}
+
+function claudeApiKeyHint(apiKey: string): string {
+  return apiKey.slice(-4);
+}
+
+function validateClaudeApiKey(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 20 ||
+    value.length > 512 ||
+    /\s/.test(value)
+  ) {
+    throw new AppError('invalid_input', 'enter a valid Anthropic API key');
+  }
+  return value;
+}
+
+function activeCodexApiKey(): string | undefined {
+  return process.env['OPENAI_API_KEY']?.trim() || undefined;
+}
+
+function validateCodexApiKey(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 20 ||
+    value.length > 512 ||
+    /\s/.test(value)
+  ) {
+    throw new AppError('invalid_input', 'enter a valid OpenAI API key');
+  }
+  return value;
+}
 
 const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
   {
@@ -287,6 +340,23 @@ function assertTaskMode(mode: unknown): asserts mode is AgentMode {
   }
 }
 
+const REASONING_EFFORTS = new Set<ReasoningEffort>([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
+
+function assertTaskEffort(effort: unknown): asserts effort is ReasoningEffort {
+  if (!REASONING_EFFORTS.has(effort as ReasoningEffort)) {
+    throw new AppError(
+      'invalid_input',
+      'effort must be low|medium|high|xhigh|max',
+    );
+  }
+}
+
 function assertTaskModel(model: unknown): asserts model is string {
   if (typeof model !== 'string' || !MODEL_PATTERN.test(model)) {
     throw new AppError('invalid_input', 'invalid model');
@@ -296,6 +366,28 @@ function assertTaskModel(model: unknown): asserts model is string {
 function assertTaskHarness(harness: unknown): asserts harness is HarnessId {
   if (!['claude_code', 'codex', 'cursor'].includes(harness as HarnessId)) {
     throw new AppError('invalid_input', 'invalid harness override');
+  }
+}
+
+function assertTaskAttachments(
+  attachments: unknown,
+): asserts attachments is Attachment[] {
+  if (!Array.isArray(attachments) || attachments.length > 20) {
+    throw new AppError('invalid_input', 'invalid task attachments');
+  }
+  for (const attachment of attachments) {
+    if (
+      typeof attachment !== 'object' ||
+      attachment === null ||
+      !('type' in attachment) ||
+      !('path' in attachment) ||
+      (attachment.type !== 'file' && attachment.type !== 'image') ||
+      typeof attachment.path !== 'string' ||
+      attachment.path.trim() === '' ||
+      attachment.path.includes('\0')
+    ) {
+      throw new AppError('invalid_input', 'invalid task attachment');
+    }
   }
 }
 
@@ -451,6 +543,55 @@ async function githubClientForSettings(ctx: AppContext): Promise<Octokit> {
     return new Octokit({ auth: await githubCliToken() });
   }
   throw new AppError('integration', 'no GitHub account connected');
+}
+
+async function connectGithubCliAccount(
+  ctx: AppContext,
+): Promise<GithubAccount> {
+  const token = await githubCliToken();
+  let account: GithubAccount | null = null;
+  await ctx.integrations.connectGithub('pat', { token }, (frame) => {
+    if (frame.kind === 'connected') account = frame.account;
+  });
+  if (account === null) {
+    throw new AppError('integration', 'GitHub CLI connection did not complete');
+  }
+  return account;
+}
+
+async function onboardingProviderAuthenticated(
+  provider: OnboardingLoginProvider,
+  ctx: AppContext,
+  expectedMethod?: Exclude<AgentAuthMethod, 'none'>,
+): Promise<boolean> {
+  if (provider === 'github') {
+    const status = await githubCliAuthStatus();
+    if (!status.authenticated) return false;
+    await connectGithubCliAccount(ctx);
+    return true;
+  }
+  const harness = await ctx.harness.detect(
+    provider === 'claude' ? 'claude_code' : 'codex',
+  );
+  return (
+    harness.installed &&
+    harness.authenticated &&
+    (expectedMethod === undefined || harness.authMethod === expectedMethod)
+  );
+}
+
+function onboardingTerminalDimension(
+  value: number | undefined,
+  name: 'cols' | 'rows',
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 1 || value > 1_000) {
+    throw new AppError(
+      'invalid_input',
+      `${name} must be an integer from 1 to 1000`,
+    );
+  }
+  return value;
 }
 
 function clarifyGithubRepoError(
@@ -815,6 +956,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           ? arg.attachments
           : [];
         if (arg.model !== undefined) assertTaskModel(arg.model);
+        if (arg.effort !== undefined) assertTaskEffort(arg.effort);
 
         const workspace = await ctx.workspaces.get(arg.workspaceId);
         if (!workspace) {
@@ -882,6 +1024,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           mcpConfig: settings.mcp,
           permissionPolicy: settings.agent.permissionPolicy,
           model: arg.model,
+          effort: arg.effort,
         };
 
         // Buffer events until the `started` frame is sent (started-first guarantee).
@@ -1128,6 +1271,130 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
       }
     })();
   },
+
+  // Run one fixed provider login command in a PTY rooted at the user's home directory.
+  // The renderer supplies only an enum + dimensions; executable and argv come from the
+  // main-side allowlist, never from renderer text. On successful GitHub login the token
+  // is imported directly into encrypted integration storage and never crosses IPC.
+  'onboarding:login': (arg, ctx, sink) => {
+    let ptyId: string | undefined;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        if (!['github', 'claude', 'codex'].includes(arg.provider)) {
+          throw new AppError('invalid_input', 'unknown onboarding provider');
+        }
+        const provider = arg.provider as OnboardingLoginProvider;
+        if (
+          arg.method !== undefined &&
+          !['cli', 'api_key'].includes(arg.method)
+        ) {
+          throw new AppError('invalid_input', 'unknown provider auth method');
+        }
+        if (provider === 'github' && arg.method !== undefined) {
+          throw new AppError(
+            'invalid_input',
+            'GitHub login does not accept a provider auth method',
+          );
+        }
+        if (arg.force !== undefined && typeof arg.force !== 'boolean') {
+          throw new AppError('invalid_input', 'force must be a boolean');
+        }
+        const cols = onboardingTerminalDimension(arg.cols, 'cols');
+        const rows = onboardingTerminalDimension(arg.rows, 'rows');
+        if (
+          !arg.force &&
+          (await onboardingProviderAuthenticated(provider, ctx, arg.method))
+        ) {
+          sink.push({ kind: 'finished', provider, authenticated: true });
+          sink.end();
+          return;
+        }
+
+        if (provider === 'github') {
+          const status = await githubCliAuthStatus();
+          if (!status.available) {
+            await installGithubCli({
+              onProgress: (message) => sink.push({ kind: 'progress', message }),
+            });
+          }
+        } else {
+          const harness = await ctx.harness.detect(
+            provider === 'claude' ? 'claude_code' : 'codex',
+          );
+          if (!harness.installed) {
+            const install =
+              provider === 'claude' ? installClaudeCli : installCodexCli;
+            await install({
+              onProgress: (message) => sink.push({ kind: 'progress', message }),
+            });
+          }
+        }
+
+        const command = onboardingLoginCommand(provider, arg.method);
+        if (provider === 'codex' && arg.method === 'api_key') {
+          sink.push({
+            kind: 'progress',
+            message: 'Paste your OpenAI API key and press Return.',
+          });
+        }
+        let started = false;
+        const buffered: string[] = [];
+        const ptySink: StreamSink<PtyChunk> = {
+          push: (chunk) => {
+            if (started) sink.push({ kind: 'data', data: chunk.data });
+            else buffered.push(chunk.data);
+          },
+          end: () => {
+            void (async () => {
+              try {
+                const authenticated = await onboardingProviderAuthenticated(
+                  provider,
+                  ctx,
+                  arg.method,
+                );
+                sink.push({ kind: 'finished', provider, authenticated });
+                sink.end();
+              } catch (error) {
+                sink.error(toAppError(error));
+              }
+            })();
+          },
+          error: (error) => sink.error(error),
+        };
+
+        ptyId = await ctx.pty.spawn(
+          {
+            workspaceId: 'onboarding',
+            cwd: homedir(),
+            shell:
+              provider === 'github'
+                ? githubCliExecutable()
+                : resolveHarnessExecutable(provider),
+            args: command.args,
+            cols,
+            rows,
+          },
+          ptySink,
+        );
+        if (cancelled) {
+          ctx.pty.kill(ptyId);
+          return;
+        }
+        sink.push({ kind: 'started', ptyId, command: command.display });
+        started = true;
+        for (const data of buffered) sink.push({ kind: 'data', data });
+      } catch (error) {
+        if (!cancelled) sink.error(toAppError(error));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (ptyId !== undefined) ctx.pty.kill(ptyId);
+    };
+  },
 };
 
 /**
@@ -1234,6 +1501,62 @@ export function registerIpc(ctx: AppContext): void {
   handle('app:echoStream', async () => {
     // No-op on the command path; streaming is driven through `api.stream(...)`.
     return undefined;
+  });
+
+  handle('agent:claudeApiKeyStatus', async () => {
+    const apiKey = activeClaudeApiKey();
+    return apiKey
+      ? { configured: true, hint: claudeApiKeyHint(apiKey) }
+      : { configured: false };
+  });
+
+  handle('agent:revealClaudeApiKey', async () => {
+    const apiKey = activeClaudeApiKey();
+    if (!apiKey) {
+      throw new AppError('not_found', 'Claude API key is not configured');
+    }
+    return { apiKey };
+  });
+
+  handle('agent:setClaudeApiKey', async (req) => {
+    const apiKey = validateClaudeApiKey(req.apiKey);
+    await ctx.secrets.putNamed(CLAUDE_API_KEY_REF, apiKey);
+    process.env['ANTHROPIC_API_KEY'] = apiKey;
+    delete process.env['ANTHROPIC_AUTH_TOKEN'];
+    return { configured: true, hint: claudeApiKeyHint(apiKey) };
+  });
+
+  handle('agent:deleteClaudeApiKey', async () => {
+    await ctx.secrets.remove(CLAUDE_API_KEY_REF);
+    delete process.env['ANTHROPIC_API_KEY'];
+    delete process.env['ANTHROPIC_AUTH_TOKEN'];
+  });
+
+  handle('agent:codexApiKeyStatus', async () => {
+    const apiKey = activeCodexApiKey();
+    return apiKey
+      ? { configured: true, hint: claudeApiKeyHint(apiKey) }
+      : { configured: false };
+  });
+
+  handle('agent:revealCodexApiKey', async () => {
+    const apiKey = activeCodexApiKey();
+    if (!apiKey) {
+      throw new AppError('not_found', 'Codex API key is not configured');
+    }
+    return { apiKey };
+  });
+
+  handle('agent:setCodexApiKey', async (req) => {
+    const apiKey = validateCodexApiKey(req.apiKey);
+    await ctx.secrets.putNamed(CODEX_API_KEY_REF, apiKey);
+    process.env['OPENAI_API_KEY'] = apiKey;
+    return { configured: true, hint: claudeApiKeyHint(apiKey) };
+  });
+
+  handle('agent:deleteCodexApiKey', async () => {
+    await ctx.secrets.remove(CODEX_API_KEY_REF);
+    delete process.env['OPENAI_API_KEY'];
   });
 
   // --- Phase 1: projects + workspaces ---
@@ -1434,6 +1757,8 @@ export function registerIpc(ctx: AppContext): void {
     }
     return new UsageRepo(ctx.db).monthly(req.month, req.startAt, req.endAt);
   });
+
+  handle('pricing:getCatalog', async () => ctx.pricing.ready());
 
   // workspace:readFile — read-only preview for chat file tabs. Paths are relative to
   // the selected checkout and are resolved/capped in main before crossing IPC.
@@ -1881,8 +2206,12 @@ export function registerIpc(ctx: AppContext): void {
     assertTaskPrompt(req.prompt);
     if (req.mode !== undefined) assertTaskMode(req.mode);
     if (req.model !== undefined) assertTaskModel(req.model);
+    if (req.effort !== undefined) assertTaskEffort(req.effort);
     if (req.harnessOverride !== undefined) {
       assertTaskHarness(req.harnessOverride);
+    }
+    if (req.attachments !== undefined) {
+      assertTaskAttachments(req.attachments);
     }
     if (req.scheduledAt !== undefined) assertScheduledAt(req.scheduledAt);
     if (req.origin !== undefined && !TASK_ORIGINS.has(req.origin)) {
@@ -1902,6 +2231,8 @@ export function registerIpc(ctx: AppContext): void {
       scheduledAt: req.scheduledAt,
       origin: req.origin,
       harnessOverride: req.harnessOverride,
+      attachments: req.attachments,
+      effort: req.effort,
     });
     emitTaskChanged(task.workspaceId);
     return task;
@@ -1914,8 +2245,14 @@ export function registerIpc(ctx: AppContext): void {
     if (req.model !== undefined && req.model !== null) {
       assertTaskModel(req.model);
     }
+    if (req.effort !== undefined && req.effort !== null) {
+      assertTaskEffort(req.effort);
+    }
     if (req.harnessOverride !== undefined && req.harnessOverride !== null) {
       assertTaskHarness(req.harnessOverride);
+    }
+    if (req.attachments !== undefined) {
+      assertTaskAttachments(req.attachments);
     }
     if (req.scheduledAt !== undefined && req.scheduledAt !== null) {
       assertScheduledAt(req.scheduledAt);
@@ -1926,6 +2263,8 @@ export function registerIpc(ctx: AppContext): void {
       mode: req.mode,
       scheduledAt: req.scheduledAt,
       harnessOverride: req.harnessOverride,
+      attachments: req.attachments,
+      effort: req.effort,
     });
     emitTaskChanged(task.workspaceId);
     return task;
@@ -1998,19 +2337,14 @@ export function registerIpc(ctx: AppContext): void {
 
   // github:connectGhCli — imports the local `gh auth token` into the encrypted
   // integration store. The token never crosses IPC or reaches the renderer.
-  handle('github:connectGhCli', async () => {
-    const token = await githubCliToken();
-    let account: GithubAccount | null = null;
-    await ctx.integrations.connectGithub('pat', { token }, (frame) => {
-      if (frame.kind === 'connected') account = frame.account;
-    });
-    if (account === null) {
-      throw new AppError(
-        'integration',
-        'GitHub CLI connection did not complete',
-      );
+  handle('github:connectGhCli', async () => connectGithubCliAccount(ctx));
+
+  handle('github:logoutGhCli', async () => {
+    await githubCliLogout();
+    const accounts = await ctx.integrations.list('github');
+    for (const account of accounts) {
+      await ctx.integrations.disconnect(account.id);
     }
-    return account;
   });
 
   // git:sshKeys — read-only SSH identity discovery for Settings > Git. The scanner
@@ -2360,14 +2694,28 @@ export function registerIpc(ctx: AppContext): void {
   handle('onboarding:state', async () => ctx.onboarding.getState());
   handle('onboarding:acknowledge', async () => ctx.onboarding.acknowledge());
 
-  // update:check — trigger an update check; returns the current UpdateStatus. DESCOPED:
-  // on an unsigned/dev/no-feed build this returns `{ state: 'unsupported' }` without
-  // touching electron-updater (see src/main/update). Never throws for "unsupported".
+  // update:getStatus — hydration only. This read cannot trigger network activity.
+  handle('update:getStatus', async () => ctx.updater.getStatus());
+
+  // update:check — the sole renderer-reachable operation that starts a network check.
+  // Unsigned/dev/no-feed builds return `unsupported` without loading electron-updater.
   handle('update:check', async () => ctx.updater.checkForUpdates());
 
   // update:install — quit + install a downloaded update. Rejects with a typed AppError
   // (through the boundary) when updates are unsupported or nothing is downloaded yet.
-  handle('update:install', async () => ctx.updater.install());
+  // Defense in depth: preserve intentional typed failures, but replace any raw/unexpected
+  // updater failure before the generic boundary can encode or log sensitive details.
+  handle('update:install', async () => {
+    try {
+      await ctx.updater.install();
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(
+        'internal',
+        'Unable to restart and install the update. Please try again.',
+      );
+    }
+  });
 
   // Project Knowledge Wiki. The service applies the feature gate and confines every
   // filesystem path to the app-managed bundle; handlers still narrow IPC input first.

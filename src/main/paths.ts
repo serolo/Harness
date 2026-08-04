@@ -113,6 +113,11 @@ export function onboardingStatePath(): string {
   return join(userDataRoot(), 'onboarding.json');
 }
 
+/** `<userData>/pricing-catalog.json` — validated last-known-good token pricing. */
+export function pricingCatalogPath(): string {
+  return join(userDataRoot(), 'pricing-catalog.json');
+}
+
 // --- Directory paths (created on first access) ---
 
 /** `<userData>/logs/` — rolling log files (electron-log target). */
@@ -123,6 +128,38 @@ export function logsDir(): string {
 /** `<userData>/secrets/` — safeStorage ciphertext blobs, never plaintext. */
 export function secretsDir(): string {
   return ensureDir(join(userDataRoot(), 'secrets'));
+}
+
+/** `<userData>/tools/bin/` — verified app-managed helper executables. */
+export function toolsBinDir(): string {
+  return ensureDir(join(userDataRoot(), 'tools', 'bin'));
+}
+
+/** `<userData>/tools/` — root for app-managed helper distributions. */
+export function toolsDir(): string {
+  return ensureDir(join(userDataRoot(), 'tools'));
+}
+
+/** App-managed GitHub CLI executable installed during onboarding when needed. */
+export function githubCliPath(): string {
+  return join(toolsBinDir(), 'gh');
+}
+
+/** App-managed Claude Code native executable. */
+export function claudeCliPath(): string {
+  return join(toolsBinDir(), 'claude');
+}
+
+/** App-managed Codex executable inside its required vendor resource layout. */
+export function codexCliPath(arch: string = process.arch): string {
+  const target =
+    arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+  return join(codexInstallDir(), 'package', 'vendor', target, 'bin', 'codex');
+}
+
+/** Root of the app-managed Codex package, including companion vendor resources. */
+export function codexInstallDir(): string {
+  return join(toolsDir(), 'codex', 'current');
 }
 
 /** `<userData>/projects/<id>/` — root for a single project's on-disk state. */

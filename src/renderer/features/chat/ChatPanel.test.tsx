@@ -23,6 +23,7 @@ import {
 import type { ChatHistory, HarnessInfo, TurnStreamChunk } from '@shared/ipc';
 import type { SlashCommand } from '@shared/slash';
 import type { FileDiff } from '@shared/review';
+import type { ScheduledTask } from '@shared/tasks';
 
 interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
@@ -50,6 +51,7 @@ function installApi(opts: {
   files?: Record<string, string>;
   plans?: Record<string, string>;
   fileDiffs?: Record<string, FileDiff>;
+  tasks?: ScheduledTask[];
 }): ApiStub {
   const invoke = vi.fn((channel: string, req?: unknown) => {
     if (channel === 'chat:history')
@@ -57,6 +59,7 @@ function installApi(opts: {
     if (channel === 'harness:list') return Promise.resolve(HARNESS_LIST);
     if (channel === 'turn:interrupt') return Promise.resolve(undefined);
     if (channel === 'chat:clear') return Promise.resolve(undefined);
+    if (channel === 'task:list') return Promise.resolve(opts.tasks ?? []);
     if (channel === 'workspace:readFile') {
       const path = (req as { path?: string } | undefined)?.path ?? '';
       return Promise.resolve({
@@ -113,7 +116,11 @@ function installApi(opts: {
 
 beforeEach(() => {
   window.localStorage.clear();
-  useChatStore.setState({ byWorkspace: {}, busyByWorkspace: {} });
+  useChatStore.setState({
+    byWorkspace: {},
+    busyByWorkspace: {},
+    taskTurnsByWorkspace: {},
+  });
   useWorkspaceCreationStore.setState({ current: null });
   useWorkspaceArchiveStore.setState({ current: null });
   useWorkspacesStore.setState({
@@ -129,6 +136,207 @@ afterEach(() => {
 });
 
 describe('ChatPanel reconstruction', () => {
+  it('opens and selects a dedicated tab when a scheduled task starts', async () => {
+    const api = installApi({});
+    render(<ChatPanel workspaceId="ws1" />);
+
+    await waitFor(() =>
+      expect(
+        api.on.mock.calls.some(([event]) => event === 'task:turnStarted'),
+      ).toBe(true),
+    );
+    const listener = api.on.mock.calls.find(
+      ([event]) => event === 'task:turnStarted',
+    )?.[1] as
+      | ((payload: {
+          workspaceId: string;
+          taskId: string;
+          turnId: string;
+          sessionId: string;
+          prompt: string;
+        }) => void)
+      | undefined;
+
+    act(() => {
+      listener?.({
+        workspaceId: 'ws1',
+        taskId: 'task-1',
+        turnId: 'turn-task-1',
+        sessionId: 'session-task-1',
+        prompt: 'Audit the release workflow',
+      });
+    });
+
+    const taskTab = screen.getByRole('tab', {
+      name: /Task: Audit the release workflow/i,
+    });
+    expect(taskTab).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('keeps a scheduled turn out of the current chat context', async () => {
+    const api = installApi({
+      history: {
+        turns: [
+          {
+            id: 'turn-chat-1',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'session-chat-1',
+            mode: 'default',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            cachedInputTokens: null,
+            harness: 'claude_code',
+            model: null,
+            costMicros: null,
+            pricingKey: null,
+            events: [
+              {
+                id: 'event-chat-1',
+                turnId: 'turn-chat-1',
+                kind: 'text',
+                ts: 2,
+                event: { kind: 'text', delta: 'Current chat response' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(
+      await screen.findByText('Current chat response'),
+    ).toBeInTheDocument();
+    const listener = api.on.mock.calls.find(
+      ([event]) => event === 'task:turnStarted',
+    )?.[1] as
+      | ((payload: {
+          workspaceId: string;
+          taskId: string;
+          turnId: string;
+          sessionId: string;
+          prompt: string;
+        }) => void)
+      | undefined;
+
+    act(() => {
+      useChatStore
+        .getState()
+        .startTaskTurn(
+          'ws1',
+          'task-1',
+          'turn-task-1',
+          'session-task-1',
+          'Scheduled prompt',
+        );
+      useChatStore
+        .getState()
+        .appendEvent(
+          'ws1',
+          { kind: 'text', delta: 'Scheduled response' },
+          'turn-task-1',
+        );
+      listener?.({
+        workspaceId: 'ws1',
+        taskId: 'task-1',
+        turnId: 'turn-task-1',
+        sessionId: 'session-task-1',
+        prompt: 'Scheduled prompt',
+      });
+    });
+
+    expect(await screen.findByText('Scheduled response')).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Untitled — double-click to rename'));
+    expect(screen.getByText('Current chat response')).toBeInTheDocument();
+    expect(screen.queryByText('Scheduled response')).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByTitle('Task: Scheduled prompt — double-click to rename'),
+    );
+    expect(screen.getByText('Scheduled response')).toBeInTheDocument();
+    expect(screen.queryByText('Current chat response')).not.toBeInTheDocument();
+  });
+
+  it('restores a completed task in its own tab from persisted history', async () => {
+    installApi({
+      tasks: [
+        {
+          id: 'task-1',
+          workspaceId: 'ws1',
+          prompt: 'Audit the release workflow',
+          model: null,
+          mode: null,
+          scheduledAt: null,
+          state: 'done',
+          origin: 'user',
+          turnId: 'turn-task-1',
+          errorMessage: null,
+          createdAt: 1,
+          updatedAt: 2,
+          harnessOverride: null,
+          attachments: [],
+        },
+      ],
+      history: {
+        turns: [
+          {
+            id: 'turn-task-1',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'session-task-1',
+            mode: 'default',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            cachedInputTokens: null,
+            harness: 'claude_code',
+            model: null,
+            costMicros: null,
+            pricingKey: null,
+            events: [
+              {
+                id: 'event-1',
+                turnId: 'turn-task-1',
+                kind: 'user_message',
+                ts: 1,
+                event: {
+                  kind: 'user_message',
+                  text: 'Audit the release workflow',
+                },
+              },
+              {
+                id: 'event-2',
+                turnId: 'turn-task-1',
+                kind: 'text',
+                ts: 2,
+                event: { kind: 'text', delta: 'Audit complete.' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const taskTab = await screen.findByRole('tab', {
+      name: /Task: Audit the release workflow/i,
+    });
+    fireEvent.click(
+      screen.getByTitle(
+        'Task: Audit the release workflow — double-click to rename',
+      ),
+    );
+    expect(taskTab).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('Audit complete.')).toBeInTheDocument();
+  });
+
   it('shows workspace context at the start of a new chat', async () => {
     installApi({});
     useWorkspacesStore.setState({
@@ -167,15 +375,15 @@ describe('ChatPanel reconstruction', () => {
 
     render(<ChatPanel workspaceId="ws1" />);
 
+    expect(screen.getByTestId('transcript')).toHaveClass('pb-8');
+    expect(screen.getByTestId('composer')).toHaveClass('pt-4', 'px-6');
     const context = await screen.findByTestId('new-chat-workspace-context');
     expect(context).toHaveTextContent('FeatureFlag Context');
     expect(context).toHaveTextContent('feature/featureflag-context');
     expect(context).toHaveTextContent('Base branchmain');
     expect(context).toHaveTextContent('w2-platform');
     expect(context).toHaveTextContent('Worktreefeatureflag-context');
-    expect(context).not.toHaveTextContent(
-      '/src/worktrees/featureflag-context',
-    );
+    expect(context).not.toHaveTextContent('/src/worktrees/featureflag-context');
     expect(context).toHaveTextContent('PR #42');
   });
 
@@ -222,10 +430,14 @@ describe('ChatPanel reconstruction', () => {
     });
 
     render(<ChatPanel workspaceId="ws1" />);
-    expect(screen.getByTestId('workspace-creation-terminal')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('workspace-creation-terminal'),
+    ).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(4_999));
-    expect(screen.getByTestId('workspace-creation-terminal')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('workspace-creation-terminal'),
+    ).toBeInTheDocument();
 
     act(() => vi.advanceTimersByTime(1));
     expect(
@@ -328,9 +540,7 @@ describe('ChatPanel reconstruction', () => {
 
     fireEvent.mouseEnter(screen.getByTestId('composer-context'));
     const contextPopover = screen.getByTestId('composer-context-popover');
-    expect(contextPopover).toHaveTextContent(
-      '30/200.0k',
-    );
+    expect(contextPopover).toHaveTextContent('30/200.0k');
     fireEvent.mouseEnter(contextPopover);
     fireEvent.mouseLeave(contextPopover);
     expect(
@@ -1589,6 +1799,33 @@ describe('ChatPanel streaming', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('sends the exact Claude version selected in the catalogue', async () => {
+    const api = installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+    fireEvent.click(await screen.findByTestId('composer-model'));
+    fireEvent.click(
+      await screen.findByTestId('composer-model-option-claude-opus-4-8-1m'),
+    );
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Which model are you using?' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() =>
+      expect(api.stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          harness: 'claude_code',
+          model: 'claude-opus-4-8[1m]',
+        }),
+        expect.any(Function),
+        expect.anything(),
+      ),
+    );
+  });
+
   it('shows OpenCode models only after OpenCode has been configured', async () => {
     window.localStorage.setItem('harness:opencode-configured', 'true');
     installApi({});
@@ -1693,12 +1930,12 @@ describe('ChatPanel streaming', () => {
         'closed',
       );
     }
-    expect(screen.getByTestId('composer-context').parentElement).not.toHaveAttribute(
-      'data-state',
-    );
-    expect(screen.getByTestId('composer-cost').parentElement).not.toHaveAttribute(
-      'data-state',
-    );
+    expect(
+      screen.getByTestId('composer-context').parentElement,
+    ).not.toHaveAttribute('data-state');
+    expect(
+      screen.getByTestId('composer-cost').parentElement,
+    ).not.toHaveAttribute('data-state');
     expect(screen.getByTestId('composer-context')).not.toHaveAttribute('title');
   });
 

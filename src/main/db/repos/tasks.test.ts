@@ -72,6 +72,8 @@ describe('ScheduledTasksRepo.create — state derivation', () => {
       mode: 'plan',
       scheduledAt: at,
       harnessOverride: 'codex',
+      attachments: [{ type: 'file', path: '/tmp/spec.md' }],
+      effort: 'high',
     });
     expect(task).toMatchObject({
       workspaceId,
@@ -84,6 +86,8 @@ describe('ScheduledTasksRepo.create — state derivation', () => {
       turnId: null,
       errorMessage: null,
       harnessOverride: 'codex',
+      attachments: [{ type: 'file', path: '/tmp/spec.md' }],
+      effort: 'high',
     });
     expect(await repo.get(task.id)).toEqual(task);
   });
@@ -97,6 +101,8 @@ describe('ScheduledTasksRepo.create — state derivation', () => {
       scheduledAt: null,
       origin: 'user',
       harnessOverride: null,
+      attachments: [],
+      effort: null,
     });
   });
 
@@ -123,13 +129,25 @@ describe('ScheduledTasksRepo.update — patch + state re-derivation', () => {
       prompt: 'b',
       model: 'opus',
       mode: 'auto_accept',
+      effort: 'low',
     });
     expect(updated).toMatchObject({
       prompt: 'b',
       model: 'opus',
       mode: 'auto_accept',
+      effort: 'low',
       state: 'pending', // unchanged — no schedule in the patch
     });
+  });
+
+  it('replaces and round-trips task attachments', async () => {
+    const task = await repo.create({ workspaceId, prompt: 'a' });
+    const attachments = [{ type: 'file' as const, path: '/tmp/brief.md' }];
+
+    const updated = await repo.update(task.id, { attachments });
+
+    expect(updated.attachments).toEqual(attachments);
+    expect((await repo.get(task.id)).attachments).toEqual(attachments);
   });
 
   it('reschedules a missed task to "scheduled" when a time is set', async () => {

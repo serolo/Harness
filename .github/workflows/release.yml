@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release-macos-arm64:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Require an existing v-prefixed tag
+        run: |
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *) echo "Release tag must start with v" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify tag and package version
+        run: |
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          test "$PACKAGE_VERSION" != "0.0.0"
+          case "$PACKAGE_VERSION" in
+            *-*) echo "Production releases must use a stable semver version" >&2; exit 1 ;;
+          esac
+          test "$RELEASE_TAG" = "v$PACKAGE_VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules for Electron ABI
+        run: npx @electron/rebuild -f -w better-sqlite3,node-pty
+
+      - name: Run repository gate
+        run: npm run check
+
+      - name: Materialize signing and notarization credentials
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          test -n "$MAC_CSC_LINK"
+          test -n "$APPLE_API_KEY_BASE64"
+          printf '%s' "$MAC_CSC_LINK" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Build, sign, and notarize release candidate
+        env:
+          CSC_LINK: ${{ runner.temp }}/developer-id.p12
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_KEY_PASSWORD"
+          test -n "$APPLE_API_KEY_ID"
+          test -n "$APPLE_API_ISSUER"
+          test -n "$APPLE_TEAM_ID"
+          npm run release:mac
+
+      - name: Verify signed and notarized release output
+        run: |
+          codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Harness.app
+          spctl --assess --type execute --verbose=4 dist/mac-arm64/Harness.app
+          test -f dist/mac-arm64/Harness.app/Contents/Resources/app-update.yml
+          test -f dist/latest-mac.yml
+          find dist -maxdepth 1 -name '*.dmg' -print -quit | grep -q .
+          find dist -maxdepth 1 -name '*.zip' -print -quit | grep -q .
+          find dist -maxdepth 1 -name '*.blockmap' -print -quit | grep -q .
+          find dist/mac-arm64/Harness.app -path '*/better-sqlite3/build/Release/better_sqlite3.node' -print -quit | grep -q .
+          find dist/mac-arm64/Harness.app -path '*/node-pty/build/Release/pty.node' -print -quit | grep -q .
+          while IFS= read -r native_module; do
+            if file "$native_module" | grep -q 'Mach-O'; then
+              codesign --verify --strict --verbose=2 "$native_module"
+            fi
+          done < <(find dist/mac-arm64/Harness.app -name '*.node')
+          for artifact in dist/*.dmg; do
+            xcrun stapler validate "$artifact"
+            spctl --assess --type open --context context:primary-signature --verbose=4 "$artifact"
+          done
+
+          dmg="$(find dist -maxdepth 1 -name '*.dmg' -print -quit)"
+          mount_point="$(mktemp -d)"
+          cleanup_mount() {
+            hdiutil detach "$mount_point" -quiet 2>/dev/null || true
+            rmdir "$mount_point" 2>/dev/null || true
+          }
+          trap cleanup_mount EXIT
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_point" "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$mount_point/Harness.app"
+          spctl --assess --type execute --verbose=4 "$mount_point/Harness.app"
+          cleanup_mount
+          trap - EXIT
+
+          find dist -maxdepth 1 -type f \( \
+            -name '*.dmg' -o \
+            -name '*.zip' -o \
+            -name '*.blockmap' -o \
+            -name 'latest-mac.yml' \
+          \) -print | sort > "$RUNNER_TEMP/release-assets.list"
+          test -s "$RUNNER_TEMP/release-assets.list"
+          while IFS= read -r artifact; do
+            shasum -a 256 "$artifact"
+          done < "$RUNNER_TEMP/release-assets.list" > "$RUNNER_TEMP/release-assets.sha256"
+
+      - name: Remove signing credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Create draft and upload verified assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shasum -a 256 -c "$RUNNER_TEMP/release-assets.sha256"
+
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true"
+            test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" = "0"
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --verify-tag \
+              --title "Harness $RELEASE_TAG" \
+              --notes "Verified macOS arm64 release candidate. Review before publishing."
+          fi
+
+          release_assets=()
+          while IFS= read -r artifact; do
+            release_assets+=("$artifact")
+          done < "$RUNNER_TEMP/release-assets.list"
+          test "${#release_assets[@]}" -gt 0
+          gh release upload "$RELEASE_TAG" "${release_assets[@]}"
+
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true"
+          test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" = "${#release_assets[@]}"

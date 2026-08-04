@@ -66,6 +66,17 @@ describe('SecretStore — round-trip', () => {
     expect(recovered).toBe(secret);
   });
 
+  it('replaces and reads a named singleton credential', async () => {
+    const store = new SecretStore(fakeSafeStorage(), tmpDir);
+
+    expect(await store.getOptional('claude-api-key')).toBeUndefined();
+    await store.putNamed('claude-api-key', 'sk-ant-first');
+    await store.putNamed('claude-api-key', 'sk-ant-second');
+
+    expect(await store.getOptional('claude-api-key')).toBe('sk-ant-second');
+    expect(readdirSync(tmpDir)).toEqual(['claude-api-key']);
+  });
+
   it('two puts of the same secret produce different, independent tokenRefs', async () => {
     const store = new SecretStore(fakeSafeStorage(), tmpDir);
     const secret = 'same-secret-value';

@@ -4,7 +4,12 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { UpdateService, type AutoUpdaterLike } from './index';
+import {
+  isTrustedReleaseMetadata,
+  loadReleaseUpdater,
+  UpdateService,
+  type AutoUpdaterLike,
+} from './index';
 import { AppError } from '@shared/errors';
 
 /** A fake autoUpdater that records listeners so a test can drive the lifecycle. */
@@ -32,6 +37,207 @@ function fakeUpdater(): AutoUpdaterLike & {
   };
 }
 
+const TRUSTED_METADATA = [
+  'provider: github',
+  'owner: serolo',
+  'repo: Harness',
+].join('\n');
+
+describe('release updater metadata trust gate', () => {
+  it.each([
+    ['empty metadata', ''],
+    ['missing a required field', 'provider: github\nowner: serolo'],
+    ['duplicate fields', `${TRUSTED_METADATA}\nowner: attacker`],
+    ['malformed syntax', 'provider github\nowner: serolo\nrepo: Harness'],
+    ['indented fields', ' provider: github\nowner: serolo\nrepo: Harness'],
+    ['wrong provider', 'provider: generic\nowner: serolo\nrepo: Harness'],
+    ['wrong owner', 'provider: github\nowner: attacker\nrepo: Harness'],
+    ['wrong repository', 'provider: github\nowner: serolo\nrepo: harness'],
+  ])('rejects %s', (_caseName, metadata) => {
+    expect(isTrustedReleaseMetadata(metadata)).toBe(false);
+  });
+
+  it.each([
+    TRUSTED_METADATA,
+    'provider: "github"\nowner: \'serolo\'\nrepo: "Harness"',
+    `# generated release feed\n${TRUSTED_METADATA}`,
+  ])('accepts only the expected public repository %#', (metadata) => {
+    expect(isTrustedReleaseMetadata(metadata)).toBe(true);
+  });
+
+  it('does not read metadata or import updater code in an unpackaged build', async () => {
+    const readMetadata = vi.fn(async () => TRUSTED_METADATA);
+    const importUpdater = vi.fn(async () => fakeUpdater());
+
+    await expect(
+      loadReleaseUpdater({
+        isPackaged: false,
+        readMetadata,
+        importUpdater,
+      }),
+    ).resolves.toBeUndefined();
+    expect(readMetadata).not.toHaveBeenCalled();
+    expect(importUpdater).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with fixed logs when embedded metadata cannot be read', async () => {
+    const readMetadata = vi.fn(async () => {
+      throw new Error(
+        'ENOENT /Users/alice/private/app-update.yml?token=reader-secret',
+      );
+    });
+    const importUpdater = vi.fn(async () => fakeUpdater());
+    const log = vi.fn<(message: string) => void>();
+
+    await expect(
+      loadReleaseUpdater({
+        isPackaged: true,
+        readMetadata,
+        importUpdater,
+        log,
+      }),
+    ).resolves.toBeUndefined();
+    expect(importUpdater).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      '[update] embedded release metadata is unavailable; updates disabled',
+    );
+    expect(log.mock.calls.flat().join(' ')).not.toMatch(
+      /alice|reader-secret|app-update\.yml/,
+    );
+  });
+
+  it.each([
+    'provider: github\nowner: attacker\nrepo: Harness',
+    `${TRUSTED_METADATA}\nrepo: Other`,
+    'not yaml',
+  ])(
+    'never imports updater code for untrusted metadata %#',
+    async (metadata) => {
+      const importUpdater = vi.fn(async () => fakeUpdater());
+      const log = vi.fn<(message: string) => void>();
+
+      await expect(
+        loadReleaseUpdater({
+          isPackaged: true,
+          readMetadata: async () => metadata,
+          importUpdater,
+          log,
+        }),
+      ).resolves.toBeUndefined();
+      expect(importUpdater).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(
+        '[update] embedded release metadata is invalid; updates disabled',
+      );
+    },
+  );
+
+  it.each([
+    ['host override', 'host: attacker.example'],
+    ['protocol override', 'protocol: http'],
+    ['embedded token', 'token: release-secret'],
+    ['private-repository switch', 'private: true'],
+    ['channel override', 'channel: beta'],
+    ['request headers', 'requestHeaders: Authorization bearer-secret'],
+    ['unknown key', 'arbitraryOverride: enabled'],
+  ])(
+    'rejects trusted repository metadata with a %s and never imports',
+    async (_caseName, override) => {
+      const importUpdater = vi.fn(async () => fakeUpdater());
+      const metadata = `${TRUSTED_METADATA}\n${override}`;
+
+      expect(isTrustedReleaseMetadata(metadata)).toBe(false);
+      await expect(
+        loadReleaseUpdater({
+          isPackaged: true,
+          readMetadata: async () => metadata,
+          importUpdater,
+        }),
+      ).resolves.toBeUndefined();
+      expect(importUpdater).not.toHaveBeenCalled();
+    },
+  );
+
+  it('permits a safe updater cache directory name', async () => {
+    const updater = fakeUpdater();
+    const importUpdater = vi.fn(async () => updater);
+    const metadata = `${TRUSTED_METADATA}\nupdaterCacheDirName: harness-updater`;
+
+    expect(isTrustedReleaseMetadata(metadata)).toBe(true);
+    await expect(
+      loadReleaseUpdater({
+        isPackaged: true,
+        readMetadata: async () => metadata,
+        importUpdater,
+      }),
+    ).resolves.toBe(updater);
+    expect(importUpdater).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['parent traversal', '../harness'],
+    ['forward slash', 'cache/harness'],
+    ['backslash', 'cache\\harness'],
+    ['current-directory dot', '.'],
+    ['parent-directory dots', '..'],
+    ['overlong name', 'a'.repeat(129)],
+  ])(
+    'rejects an unsafe updaterCacheDirName containing %s and never imports',
+    async (_caseName, cacheName) => {
+      const importUpdater = vi.fn(async () => fakeUpdater());
+      const metadata = `${TRUSTED_METADATA}\nupdaterCacheDirName: ${cacheName}`;
+
+      expect(isTrustedReleaseMetadata(metadata)).toBe(false);
+      await expect(
+        loadReleaseUpdater({
+          isPackaged: true,
+          readMetadata: async () => metadata,
+          importUpdater,
+        }),
+      ).resolves.toBeUndefined();
+      expect(importUpdater).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns the updater only after trusted metadata passes validation', async () => {
+    const updater = fakeUpdater();
+    const importUpdater = vi.fn(async () => updater);
+
+    await expect(
+      loadReleaseUpdater({
+        isPackaged: true,
+        readMetadata: async () => TRUSTED_METADATA,
+        importUpdater,
+      }),
+    ).resolves.toBe(updater);
+    expect(importUpdater).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed with a fixed safe log when the lazy import fails', async () => {
+    const importUpdater = vi.fn(async () => {
+      throw new Error(
+        'Cannot import https://signed.example/updater?token=import-secret',
+      );
+    });
+    const log = vi.fn<(message: string) => void>();
+
+    await expect(
+      loadReleaseUpdater({
+        isPackaged: true,
+        readMetadata: async () => TRUSTED_METADATA,
+        importUpdater,
+        log,
+      }),
+    ).resolves.toBeUndefined();
+    expect(importUpdater).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(
+      '[update] release updater could not be loaded; updates disabled',
+    );
+    expect(log.mock.calls.flat().join(' ')).not.toMatch(
+      /signed\.example|import-secret/,
+    );
+  });
+});
+
 describe('UpdateService — unsupported (descoped) path', () => {
   it('reports unsupported and never touches the updater when no feed is configured', async () => {
     const svc = new UpdateService({ isPackaged: true, feedConfigured: false });
@@ -57,8 +263,14 @@ describe('UpdateService — unsupported (descoped) path', () => {
   });
 
   it('checkOnLaunch is a no-op (does not throw) when unsupported', async () => {
-    const svc = new UpdateService({ isPackaged: false, feedConfigured: false });
+    const updater = fakeUpdater();
+    const svc = new UpdateService({
+      isPackaged: false,
+      feedConfigured: false,
+      autoUpdater: updater,
+    });
     await expect(svc.checkOnLaunch()).resolves.toBeUndefined();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
   });
 });
 
@@ -72,20 +284,86 @@ describe('UpdateService — supported path', () => {
 
   it('mirrors updater events into UpdateStatus', async () => {
     const updater = fakeUpdater();
-    const svc = supported(updater);
+    const transitions: unknown[] = [];
+    const svc = new UpdateService({
+      isPackaged: true,
+      feedConfigured: true,
+      autoUpdater: updater,
+      currentVersion: '1.0.0',
+      onStatusChange: (status) => transitions.push(status),
+    });
     expect(updater.autoDownload).toBe(true);
+    expect(updater.autoInstallOnAppQuit).toBe(false);
+    expect(updater.allowPrerelease).toBe(false);
+    expect(svc.getStatus()).toEqual({
+      state: 'idle',
+      currentVersion: '1.0.0',
+    });
 
     await svc.checkForUpdates();
     expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
 
     updater.emit('update-available', { version: '1.2.3' });
-    expect(svc.getStatus()).toEqual({ state: 'available', version: '1.2.3' });
+    expect(svc.getStatus()).toEqual({
+      state: 'available',
+      version: '1.2.3',
+      currentVersion: '1.0.0',
+    });
 
     updater.emit('update-downloaded', { version: '1.2.3' });
-    expect(svc.getStatus()).toEqual({ state: 'downloaded', version: '1.2.3' });
+    expect(svc.getStatus()).toEqual({
+      state: 'downloaded',
+      version: '1.2.3',
+      currentVersion: '1.0.0',
+    });
+    expect(transitions).toEqual([
+      { state: 'idle', currentVersion: '1.0.0' },
+      { state: 'checking', currentVersion: '1.0.0' },
+      {
+        state: 'available',
+        version: '1.2.3',
+        currentVersion: '1.0.0',
+      },
+      {
+        state: 'downloaded',
+        version: '1.2.3',
+        currentVersion: '1.0.0',
+      },
+    ]);
   });
 
-  it('install quits + installs only once an update is downloaded', async () => {
+  it('normalizes progress, rejects invalid percentages, and preserves the target version', () => {
+    const updater = fakeUpdater();
+    const svc = supported(updater);
+
+    updater.emit('update-available', { version: '2.4.0' });
+    updater.emit('download-progress', { percent: -12 });
+    expect(svc.getStatus()).toEqual({
+      state: 'downloading',
+      version: '2.4.0',
+      percent: 0,
+    });
+
+    updater.emit('download-progress', { percent: 34.6 });
+    expect(svc.getStatus()).toEqual({
+      state: 'downloading',
+      version: '2.4.0',
+      percent: 34.6,
+    });
+
+    updater.emit('download-progress', { percent: 140 });
+    expect(svc.getStatus().percent).toBe(100);
+
+    for (const percent of [Number.NaN, Number.POSITIVE_INFINITY, '50']) {
+      updater.emit('download-progress', { percent });
+      expect(svc.getStatus()).toEqual({
+        state: 'downloading',
+        version: '2.4.0',
+      });
+    }
+  });
+
+  it('install quits + installs idempotently only once an update is downloaded', async () => {
     const updater = fakeUpdater();
     const svc = supported(updater);
 
@@ -94,20 +372,93 @@ describe('UpdateService — supported path', () => {
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
 
     updater.emit('update-downloaded', { version: '2.0.0' });
-    await svc.install();
+    await Promise.all([svc.install(), svc.install(), svc.install()]);
     expect(updater.quitAndInstall).toHaveBeenCalledTimes(1);
   });
 
-  it('normalizes a thrown check into an error status', async () => {
-    const updater = fakeUpdater();
-    updater.checkForUpdates.mockRejectedValueOnce(
-      new Error('feed unreachable'),
-    );
-    const svc = supported(updater);
+  it.each([
+    'https://signed.example/update.zip?token=url-secret',
+    'Authorization bearer token-secret',
+    '/Users/alice/private/update.zip',
+  ])(
+    'sanitizes an install failure and permits retry: %s',
+    async (rawFailure) => {
+      const updater = fakeUpdater();
+      updater.quitAndInstall
+        .mockImplementationOnce(() => {
+          throw new Error(rawFailure);
+        })
+        .mockImplementationOnce(() => undefined);
+      const log = vi.fn<(message: string) => void>();
+      const svc = new UpdateService({
+        isPackaged: true,
+        feedConfigured: true,
+        autoUpdater: updater,
+        log,
+      });
+      updater.emit('update-downloaded', { version: '2.0.0' });
 
-    const status = await svc.checkForUpdates();
-    expect(status.state).toBe('error');
-    expect(status.message).toMatch(/unreachable/);
+      const failure = await svc.install().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(AppError);
+      expect(failure).toMatchObject({
+        code: 'internal',
+        message: 'Unable to restart and install the update. Please try again.',
+      });
+      expect(log.mock.calls.flat().join(' ')).not.toContain(rawFailure);
+
+      await expect(svc.install()).resolves.toBeUndefined();
+      expect(updater.quitAndInstall).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('sanitizes sensitive check failures while retaining safe, concise errors', async () => {
+    const updater = fakeUpdater();
+    const log = vi.fn<(message: string) => void>();
+    updater.checkForUpdates
+      .mockRejectedValueOnce(new Error('feed unreachable'))
+      .mockRejectedValueOnce(
+        new Error(
+          'GET https://updates.example.test/file.zip?token=super-secret',
+        ),
+      );
+    const svc = new UpdateService({
+      isPackaged: true,
+      feedConfigured: true,
+      autoUpdater: updater,
+      log,
+    });
+
+    await expect(svc.checkForUpdates()).resolves.toMatchObject({
+      state: 'error',
+      message: 'feed unreachable',
+    });
+    await expect(svc.checkForUpdates()).resolves.toEqual({
+      state: 'error',
+      message: 'Unable to check for updates. Please try again later.',
+    });
+    expect(log.mock.calls.flat().join(' ')).not.toMatch(
+      /updates\.example|super-secret/,
+    );
+  });
+
+  it('sanitizes lifecycle errors and publishes every transition as a distinct snapshot', () => {
+    const updater = fakeUpdater();
+    const observed: { state: string; message?: string }[] = [];
+    const svc = new UpdateService({
+      isPackaged: true,
+      feedConfigured: true,
+      autoUpdater: updater,
+      onStatusChange: (status) => observed.push(status),
+    });
+
+    updater.emit('error', new Error('/Users/alice/secret/app-update.yml'));
+    expect(svc.getStatus()).toEqual({
+      state: 'error',
+      message: 'Unable to check for updates. Please try again later.',
+    });
+
+    observed.at(-1)!.state = 'idle';
+    expect(svc.getStatus().state).toBe('error');
   });
 
   it('dispose detaches updater listeners', () => {

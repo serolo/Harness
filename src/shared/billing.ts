@@ -33,6 +33,24 @@ export interface MonthlyUsage {
   models: MonthlyUsageModel[];
 }
 
+/** Validated startup pricing overrides shared between main and renderer. */
+export interface PricingCatalogRate {
+  harness: HarnessId;
+  key: string;
+  input: number;
+  cachedInput: number;
+  cacheWrite: number;
+  output: number;
+}
+
+/** Compact last-known-good pricing snapshot; rates are USD per million tokens. */
+export interface PricingCatalogSnapshot {
+  version: string;
+  source: string;
+  fetchedAt: number;
+  rates: PricingCatalogRate[];
+}
+
 interface PricingRate {
   key: string;
   matches: (model: string) => boolean;
@@ -151,23 +169,23 @@ const RATES: Record<HarnessId, readonly PricingRate[]> = {
     {
       key: 'openai-gpt-5.6-sol',
       matches: includes('gpt-5.6-sol'),
+      input: 5,
+      cachedInput: 0.5,
+      output: 30,
+    },
+    {
+      key: 'openai-gpt-5.6-terra',
+      matches: includes('gpt-5.6-terra'),
       input: 2.5,
       cachedInput: 0.25,
       output: 15,
     },
     {
-      key: 'openai-gpt-5.6-terra',
-      matches: includes('gpt-5.6-terra'),
-      input: 1.25,
-      cachedInput: 0.125,
-      output: 7.5,
-    },
-    {
       key: 'openai-gpt-5.6-luna',
       matches: includes('gpt-5.6-luna'),
-      input: 0.5,
-      cachedInput: 0.05,
-      output: 3,
+      input: 1,
+      cachedInput: 0.1,
+      output: 6,
     },
     {
       key: 'openai-gpt-5.5-pro',
@@ -215,14 +233,33 @@ const RATES: Record<HarnessId, readonly PricingRate[]> = {
   cursor: [],
 };
 
+let refreshedCatalog: PricingCatalogSnapshot | null = null;
+
+/**
+ * Install a validated runtime catalogue. Main calls this after startup refresh/cache
+ * loading; the renderer installs the same snapshot through typed IPC.
+ */
+export function installPricingCatalog(
+  catalog: PricingCatalogSnapshot | null,
+): void {
+  refreshedCatalog = catalog;
+}
+
 export function calculateTurnBilling(
   harness: HarnessId,
   model: string | undefined,
   usage: Usage | undefined,
 ): TurnBilling | null {
   if (!model || !usage) return null;
-  const rate = RATES[harness].find((candidate) => candidate.matches(model));
-  if (!rate) return null;
+  const bundledRate = RATES[harness].find((candidate) =>
+    candidate.matches(model),
+  );
+  if (!bundledRate) return null;
+  const refreshedRate = refreshedCatalog?.rates.find(
+    (candidate) =>
+      candidate.harness === harness && candidate.key === bundledRate.key,
+  );
+  const rate = refreshedRate ?? bundledRate;
   const cached = usage.cachedInputTokens ?? 0;
   const cacheWrite = usage.cacheWriteInputTokens ?? 0;
   const totalInput = usage.inputTokens ?? 0;
@@ -236,7 +273,7 @@ export function calculateTurnBilling(
   return {
     harness,
     model,
-    pricingKey: `${PRICING_VERSION}:${rate.key}`,
+    pricingKey: `${refreshedRate ? refreshedCatalog?.version : PRICING_VERSION}:${rate.key}`,
     costMicros,
   };
 }

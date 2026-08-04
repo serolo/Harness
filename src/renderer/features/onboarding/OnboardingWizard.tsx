@@ -4,7 +4,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import type { OnboardingState } from '@shared/ipc';
+import type { OnboardingLoginProvider, OnboardingState } from '@shared/ipc';
+import type { HarnessId } from '@shared/harness';
 import {
   APPEARANCE_THEMES,
   COMPLETION_SOUNDS,
@@ -15,6 +16,7 @@ import {
 } from '@shared/settings';
 import { invoke } from '@renderer/ipc';
 import { useSettings } from '@renderer/features/settings/useSettings';
+import { OnboardingLoginTerminal } from './OnboardingLoginTerminal';
 
 export function OnboardingWizard(): React.JSX.Element | null {
   const [state, setState] = useState<OnboardingState | null>(null);
@@ -82,29 +84,45 @@ function OnboardingWizardContent({
 }): React.JSX.Element {
   const { effective, set: setSetting } = useSettings();
   const [busyAction, setBusyAction] = useState<
-    'github' | 'refresh' | 'qmd' | null
+    'github' | 'claude' | 'codex' | 'qmd' | null
   >(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [loginProvider, setLoginProvider] =
+    useState<OnboardingLoginProvider | null>(null);
   const completionSound = effective?.notifications.completionSound ?? 'none';
   const appearanceTheme = effective?.appearance.theme ?? 'dark';
-
-  const refreshState = (): void => {
-    setBusyAction('refresh');
-    setActionError(null);
-    void invoke('onboarding:state', undefined)
-      .then(setState)
-      .catch((err: unknown) => {
-        setActionError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => setBusyAction(null));
-  };
 
   const connectGithub = async (): Promise<void> => {
     setBusyAction('github');
     setActionError(null);
     try {
-      await invoke('github:connectGhCli', undefined);
-      loadState();
+      const status = await invoke('github:cliStatus', undefined);
+      if (status.authenticated) {
+        await invoke('github:connectGhCli', undefined);
+        loadState();
+      } else {
+        setLoginProvider('github');
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const signInProvider = async (
+    provider: 'claude' | 'codex',
+    harness: HarnessId,
+  ): Promise<void> => {
+    setBusyAction(provider);
+    setActionError(null);
+    try {
+      const detected = await invoke('harness:detect', { id: harness });
+      if (detected.installed && detected.authenticated) {
+        loadState();
+      } else {
+        setLoginProvider(provider);
+      }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -161,7 +179,7 @@ function OnboardingWizardContent({
           </header>
 
           <ol
-            className="mt-9 grid max-w-[760px] grid-cols-1 gap-3 md:grid-cols-2"
+            className="mt-9 grid max-w-[1180px] grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4"
             data-testid="onboarding-steps"
           >
             <ProviderCard
@@ -170,21 +188,32 @@ function OnboardingWizardContent({
               icon={<GitHubMark />}
               title="GitHub"
               description="Push branches and open PRs."
-              action={state.githubConnected ? 'Connected' : 'Connect gh CLI'}
+              action={state.githubConnected ? 'Connected' : 'Sign in'}
               onAction={() => void connectGithub()}
               busy={busyAction === 'github'}
-              status={state.githubConnected ? undefined : 'Optional'}
+              status={state.githubConnected ? undefined : 'Required'}
             />
             <ProviderCard
-              testId="onboarding-step-harness"
-              done={state.harnessReady}
-              icon={<HarnessMark />}
-              title="Agent CLI"
-              description="Claude Code, Codex, or Cursor."
-              action={state.harnessReady ? 'Agent ready' : 'Detect again'}
-              onAction={refreshState}
-              busy={busyAction === 'refresh'}
-              status={state.harnessReady ? undefined : 'Required'}
+              testId="onboarding-step-claude"
+              done={state.claudeReady}
+              icon={<ClaudeMark />}
+              title="Claude Code"
+              description="Anthropic's coding agent."
+              action={state.claudeReady ? 'Signed in' : 'Sign in'}
+              onAction={() => void signInProvider('claude', 'claude_code')}
+              busy={busyAction === 'claude'}
+              status={state.harnessReady ? undefined : 'One required'}
+            />
+            <ProviderCard
+              testId="onboarding-step-codex"
+              done={state.codexReady}
+              icon={<CodexMark />}
+              title="Codex"
+              description="OpenAI's coding agent."
+              action={state.codexReady ? 'Signed in' : 'Sign in'}
+              onAction={() => void signInProvider('codex', 'codex')}
+              busy={busyAction === 'codex'}
+              status={state.harnessReady ? undefined : 'One required'}
             />
             <ProviderCard
               testId="onboarding-step-qmd"
@@ -198,6 +227,22 @@ function OnboardingWizardContent({
               status={state.qmdInstalled ? undefined : 'Optional'}
             />
           </ol>
+
+          {loginProvider ? (
+            <OnboardingLoginTerminal
+              provider={loginProvider}
+              onFinished={(authenticated) => {
+                loadState();
+                if (!authenticated) {
+                  setActionError(
+                    `Sign-in for ${loginProvider} was not completed.`,
+                  );
+                }
+              }}
+              onClose={() => setLoginProvider(null)}
+              onError={setActionError}
+            />
+          ) : null}
 
           {actionError ? (
             <div className="mt-4 max-w-[1180px] rounded border border-danger bg-danger-muted px-3 py-2 text-sm text-danger">
@@ -309,7 +354,7 @@ function OnboardingWizardContent({
             type="button"
             className="h-10 rounded-md bg-accent px-5 text-sm font-semibold text-accent-fg shadow-sm hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-fg-disabled disabled:text-bg-2"
             data-testid="onboarding-continue"
-            disabled={!ackChecked}
+            disabled={!ackChecked || !state.complete}
             onClick={acknowledge}
           >
             Finish setup&nbsp; ⌘↵
@@ -347,20 +392,23 @@ function ProviderCard({
       data-testid={testId}
       data-done={done}
     >
-      <div className="flex min-h-[86px] flex-col justify-center px-4 py-3">
-        <div className="flex items-center gap-3">
-          {icon}
-          <div className="text-[17px] font-semibold text-fg-1">{title}</div>
+      <button
+        type="button"
+        className="flex min-h-[134px] w-full flex-col px-4 py-3 text-left transition-colors hover:bg-surface-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent disabled:cursor-default disabled:hover:bg-transparent"
+        disabled={done || !onAction || busy}
+        onClick={onAction}
+        aria-label={busy ? 'Working…' : action}
+      >
+        <div className="flex flex-1 flex-col justify-center">
+          <div className="flex items-center gap-3">
+            {icon}
+            <div className="text-[17px] font-semibold text-fg-1">{title}</div>
+          </div>
+          <div className="mt-2 text-sm font-medium text-fg-2">
+            {description}
+          </div>
         </div>
-        <div className="mt-2 text-sm font-medium text-fg-2">{description}</div>
-      </div>
-      <div className="flex h-12 items-center justify-between border-t border-border-1 bg-surface-panel px-4">
-        <button
-          type="button"
-          className="text-left text-sm font-medium text-fg-2 hover:text-fg-1 disabled:cursor-default disabled:hover:text-fg-2"
-          disabled={done || !onAction || busy}
-          onClick={onAction}
-        >
+        <div className="mt-3 flex w-full items-center justify-between text-sm font-medium text-fg-2">
           {done ? (
             <span className="flex items-center gap-2 text-fg-2">
               <CheckMark /> {action}
@@ -368,11 +416,11 @@ function ProviderCard({
           ) : (
             <span>{busy ? 'Working…' : action}</span>
           )}
-        </button>
-        {status ? (
-          <span className="text-sm font-semibold text-danger">{status}</span>
-        ) : null}
-      </div>
+          {status ? (
+            <span className="font-semibold text-danger">{status}</span>
+          ) : null}
+        </div>
+      </button>
     </li>
   );
 }
@@ -411,10 +459,18 @@ function GitHubMark(): React.JSX.Element {
   );
 }
 
-function HarnessMark(): React.JSX.Element {
+function ClaudeMark(): React.JSX.Element {
   return (
     <span className="flex h-6 w-6 items-center justify-center rounded-full border border-fg-2 text-[13px] font-bold text-fg-1">
-      H
+      C
+    </span>
+  );
+}
+
+function CodexMark(): React.JSX.Element {
+  return (
+    <span className="flex h-6 w-6 items-center justify-center rounded-full border border-fg-2 text-[13px] font-bold text-fg-1">
+      O
     </span>
   );
 }

@@ -12,6 +12,7 @@ import {
   filterCommands,
   type Command,
   type CommandActions,
+  type UpdateCommandActions,
 } from './useCommands';
 import { useUiStore } from '@renderer/stores/ui';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
@@ -36,8 +37,9 @@ function ws(id: string, name: string): Workspace {
   };
 }
 
-type MockCommandActions = CommandActions & {
-  [K in keyof CommandActions]: Mock<CommandActions[K]>;
+type AllActions = CommandActions & UpdateCommandActions;
+type MockCommandActions = AllActions & {
+  [K in keyof AllActions]: Mock<AllActions[K]>;
 };
 
 function makeActions(): MockCommandActions {
@@ -47,6 +49,7 @@ function makeActions(): MockCommandActions {
     newWorkspace: vi.fn<CommandActions['newWorkspace']>(),
     openPr: vi.fn<CommandActions['openPr']>(),
     selectWorkspace: vi.fn<CommandActions['selectWorkspace']>(),
+    checkForUpdates: vi.fn<UpdateCommandActions['checkForUpdates']>(),
   };
 }
 
@@ -138,5 +141,19 @@ describe('CommandPalette overlay', () => {
     const item = await screen.findByTestId('command-item-selectWorkspace:w2');
     fireEvent.click(item);
     expect(actions.selectWorkspace).toHaveBeenCalledWith('w2');
+  });
+
+  it('offers Check for Updates and runs the injected updater action', async () => {
+    const actions = makeActions();
+    useUiStore.getState().setPaletteOpen(true);
+    render(<CommandPalette actions={actions} />);
+
+    const input = await screen.findByTestId('command-palette-input');
+    fireEvent.change(input, { target: { value: 'upgrade software' } });
+    const item = await screen.findByTestId('command-item-checkForUpdates');
+    fireEvent.click(item);
+
+    expect(actions.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().paletteOpen).toBe(false);
   });
 });

@@ -45,12 +45,20 @@ export interface CommandActions {
   selectWorkspace: (id: string) => void;
 }
 
+/** Optional capability added by the global AppLayout update controller. */
+export interface UpdateCommandActions {
+  /** Open the updater modal and start a user-requested update check. */
+  checkForUpdates: () => void;
+}
+
 /**
  * Build the command registry for the current workspace list + injected actions. Returns
  * the ordered list (for display) and a by-id map (for the menu dispatcher). Memoized on
  * the inputs so identity is stable across renders that don't change them.
  */
-export function useCommands(actions: CommandActions): {
+export function useCommands(
+  actions: CommandActions & Partial<UpdateCommandActions>,
+): {
   commands: Command[];
   byId: Map<string, Command>;
 } {
@@ -97,6 +105,13 @@ export function useCommands(actions: CommandActions): {
         subtitle: 'View',
         keywords: 'preferences config',
         run: actions.openSettings,
+      },
+      {
+        id: 'checkForUpdates',
+        title: 'Check for Updates',
+        subtitle: 'Application',
+        keywords: 'upgrade version software',
+        run: () => actions.checkForUpdates?.(),
       },
     ];
 

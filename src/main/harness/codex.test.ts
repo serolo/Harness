@@ -19,7 +19,59 @@ import type {
   StartTurnOpts,
 } from '@shared/harness';
 import { createJsonLineSplitter } from './parser';
-import { buildArgs, normalizeCodex } from './codex';
+import {
+  buildArgs,
+  normalizeCodex,
+  parseCodexCliMetadata,
+  parseCodexAuthMethod,
+  resolveCodexAuthMethod,
+} from './codex';
+
+describe('Codex adapter — authentication status', () => {
+  it('distinguishes ChatGPT and API-key login', () => {
+    expect(parseCodexAuthMethod('Logged in using ChatGPT')).toBe('cli');
+    expect(parseCodexAuthMethod('Logged in using an API key')).toBe('api_key');
+    expect(parseCodexAuthMethod('Not logged in')).toBe('none');
+  });
+
+  it('prefers an environment API key over ChatGPT login status', () => {
+    expect(resolveCodexAuthMethod('Logged in using ChatGPT', true)).toBe(
+      'api_key',
+    );
+    expect(resolveCodexAuthMethod('', true, false)).toBe('api_key');
+    expect(resolveCodexAuthMethod('', false, false)).toBe('none');
+  });
+
+  it('detects CLI login from stderr and falls back to a successful status exit', () => {
+    expect(
+      resolveCodexAuthMethod(
+        'WARNING: PATH aliases unavailable\nLogged in using ChatGPT',
+        false,
+        true,
+      ),
+    ).toBe('cli');
+    expect(resolveCodexAuthMethod('', false, true)).toBe('cli');
+  });
+
+  it('reads non-secret account and plan metadata from the local ID token', () => {
+    const payload = Buffer.from(
+      JSON.stringify({
+        email: 'person@example.com',
+        'https://api.openai.com/auth.chatgpt_plan_type': 'plus',
+      }),
+    ).toString('base64url');
+    const metadata = parseCodexCliMetadata(
+      JSON.stringify({ tokens: { id_token: `header.${payload}.signature` } }),
+    );
+
+    expect(metadata).toEqual({
+      providerLabel: 'openai',
+      planLabel: 'Plus',
+      authLabel: 'ChatGPT login',
+      accountLabel: 'person@example.com',
+    });
+  });
+});
 
 /** Read a Codex fixture file (resolved relative to this test) as a raw string. */
 function readFixture(name: string): string {
@@ -298,6 +350,15 @@ describe('Codex adapter — buildArgs', () => {
       expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(args).not.toContain('--full-auto');
     }
+  });
+
+  it('passes the selected reasoning effort through a config override', () => {
+    const args = buildArgs(opts({ effort: 'xhigh' }));
+    const i = args.indexOf('-c');
+    expect(args.slice(i, i + 2)).toEqual([
+      '-c',
+      'model_reasoning_effort="xhigh"',
+    ]);
   });
 
   it('writes configured MCP servers to .mcp.json and passes --mcp-config', () => {

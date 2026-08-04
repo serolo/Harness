@@ -2,26 +2,53 @@
 // `gh` session without ever exposing the token to the renderer.
 
 import { execa } from 'execa';
+import { accessSync, constants } from 'node:fs';
 
 import { AppError } from '../../error';
+import { githubCliPath } from '../../paths';
+import { resolveExecutable } from '../../process/executable';
 import type { GithubCliAuthStatus } from '@shared/github';
+
+/** Prefer a system `gh`, then the verified app-managed onboarding installation. */
+export function githubCliExecutable(): string {
+  const system = resolveExecutable('gh');
+  if (system !== 'gh') return system;
+
+  const managed = githubCliPath();
+  try {
+    accessSync(managed, constants.X_OK);
+    return managed;
+  } catch {
+    return 'gh';
+  }
+}
 
 /** Inspect local `gh auth status` for github.com. Token-free. */
 export async function githubCliAuthStatus(): Promise<GithubCliAuthStatus> {
   try {
     const result = await execa(
-      'gh',
+      githubCliExecutable(),
       ['auth', 'status', '--hostname', 'github.com'],
       {
         reject: false,
         timeout: 10_000,
       },
     );
+    // Execa resolves spawn failures when `reject: false`; ENOENT therefore arrives
+    // as a failed result rather than entering the catch block.
+    if (isNotFound(result)) {
+      return {
+        available: false,
+        authenticated: false,
+        message: 'GitHub CLI is not installed.',
+      };
+    }
     const output = `${result.stdout}\n${result.stderr}`.trim();
     if (result.exitCode !== 0) {
       return {
         available: true,
         authenticated: false,
+        login: parseLogin(output),
         message: firstLine(output) ?? 'GitHub CLI is not authenticated.',
       };
     }
@@ -47,11 +74,33 @@ export async function githubCliAuthStatus(): Promise<GithubCliAuthStatus> {
   }
 }
 
+/** Remove the configured github.com account from the local GitHub CLI. */
+export async function githubCliLogout(): Promise<void> {
+  const status = await githubCliAuthStatus();
+  if (!status.available || status.login === undefined) return;
+
+  try {
+    const result = await execa(
+      githubCliExecutable(),
+      ['auth', 'logout', '--hostname', 'github.com', '--user', status.login],
+      { reject: false, timeout: 10_000 },
+    );
+    if (isNotFound(result)) return;
+    if (result.exitCode !== 0) {
+      throw new AppError('integration', 'GitHub CLI logout failed');
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    if (isNotFound(err)) return;
+    throw new AppError('integration', 'GitHub CLI logout failed');
+  }
+}
+
 /** Read the local `gh auth token`. The returned token must stay in main. */
 export async function githubCliToken(): Promise<string> {
   try {
     const result = await execa(
-      'gh',
+      githubCliExecutable(),
       ['auth', 'token', '--hostname', 'github.com'],
       {
         timeout: 10_000,

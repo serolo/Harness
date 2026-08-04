@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { runtimeProviderModel } from './modelCatalog';
 
 describe('runtimeProviderModel', () => {
-  it('uses the Claude CLI alias with its 1M context suffix', () => {
+  it('keeps the exact Claude version with its 1M context suffix', () => {
     expect(
       runtimeProviderModel({
         id: 'claude-opus-4-8-1m',
@@ -10,10 +10,10 @@ describe('runtimeProviderModel', () => {
         model: 'opus',
         harness: 'claude_code',
       }),
-    ).toBe('opus[1m]');
+    ).toBe('claude-opus-4-8[1m]');
   });
 
-  it('uses the plain Claude CLI alias for standard-context models', () => {
+  it('keeps the exact Claude version for standard-context models', () => {
     expect(
       runtimeProviderModel({
         id: 'claude-sonnet-4-6',
@@ -21,7 +21,7 @@ describe('runtimeProviderModel', () => {
         model: 'sonnet',
         harness: 'claude_code',
       }),
-    ).toBe('sonnet');
+    ).toBe('claude-sonnet-4-6');
   });
 
   it('leaves non-Claude model identifiers unchanged', () => {

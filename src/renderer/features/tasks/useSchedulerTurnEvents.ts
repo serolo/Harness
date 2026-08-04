@@ -19,27 +19,55 @@ import { useChatStore } from '@renderer/stores/chat';
  */
 export function useSchedulerTurnEvents(): void {
   useEffect(() => {
-    return onEvent('turn:event', ({ workspaceId, turnId, event }) => {
-      const store = useChatStore.getState();
+    const unsubscribeStarted = onEvent(
+      'task:turnStarted',
+      ({ workspaceId, taskId, turnId, sessionId, prompt }) => {
+        const store = useChatStore.getState();
+        store.startTaskTurn(workspaceId, taskId, turnId, sessionId, prompt);
+      },
+    );
+    const unsubscribeEvent = onEvent(
+      'turn:event',
+      ({ workspaceId, turnId, event }) => {
+        const store = useChatStore.getState();
 
-      // Start a new store turn the first time we see this turnId for the workspace.
-      const turns = store.byWorkspace[workspaceId] ?? [];
-      const last = turns[turns.length - 1];
-      if (!last || last.turnId !== turnId) {
-        store.startTurn(workspaceId, turnId, '');
-        store.setBusy(workspaceId, true);
-      }
+        // Start a new store turn the first time we see this turnId for the workspace.
+        const turns = store.byWorkspace[workspaceId] ?? [];
+        const last = turns[turns.length - 1];
+        if (!last || last.turnId !== turnId) {
+          store.startTurn(workspaceId, turnId, '');
+          store.setBusy(workspaceId, true);
+        }
 
-      if (event.kind === 'turn_end') {
-        store.endTurn(workspaceId, 'completed', event.usage as Usage);
-        store.setBusy(workspaceId, false);
-      } else if (event.kind === 'error') {
-        store.appendEvent(workspaceId, event);
-        store.endTurn(workspaceId, 'error');
-        store.setBusy(workspaceId, false);
-      } else {
-        store.appendEvent(workspaceId, event);
-      }
-    });
+        if (event.kind === 'turn_end') {
+          store.endTurn(
+            workspaceId,
+            'completed',
+            event.usage as Usage,
+            undefined,
+            undefined,
+            turnId,
+          );
+          store.setBusy(workspaceId, false);
+        } else if (event.kind === 'error') {
+          store.appendEvent(workspaceId, event, turnId);
+          store.endTurn(
+            workspaceId,
+            'error',
+            undefined,
+            undefined,
+            undefined,
+            turnId,
+          );
+          store.setBusy(workspaceId, false);
+        } else {
+          store.appendEvent(workspaceId, event, turnId);
+        }
+      },
+    );
+    return () => {
+      unsubscribeStarted();
+      unsubscribeEvent();
+    };
   }, []);
 }

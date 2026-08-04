@@ -1,0 +1,19 @@
+extends: electron-builder.yml
+
+# Production releases fail closed unless a Developer ID identity is available.
+forceCodeSigning: true
+
+publish:
+  provider: github
+  owner: serolo
+  repo: Harness
+  releaseType: draft
+
+mac:
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  notarize: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist

@@ -62,11 +62,11 @@ async function seedTurn(
 }
 
 describe('migration 0008 (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 12 (latest)', () => {
+  it('applies all migrations: user_version becomes 14 (latest)', () => {
     db = openDb(dbFile);
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(12);
+      expect(raw.pragma('user_version', { simple: true })).toBe(14);
     } finally {
       raw.close();
     }
@@ -116,6 +116,7 @@ describe('migration 0008 (fresh temp DB)', () => {
         error_message: null,
         created_at: now,
         updated_at: now,
+        attachments_json: '[]',
       })
       .execute();
     const timed = await db
@@ -150,6 +151,7 @@ describe('migration 0008 (fresh temp DB)', () => {
         error_message: null,
         created_at: now,
         updated_at: now,
+        attachments_json: '[]',
       })
       .execute();
     const untimed = await db
@@ -179,7 +181,7 @@ describe('migration 0008 (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(12);
+      expect(raw.pragma('user_version', { simple: true })).toBe(14);
       const count = raw
         .prepare(
           "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'",
@@ -214,7 +216,7 @@ describe('migration 0008 (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(12);
+      expect(raw.pragma('user_version', { simple: true })).toBe(14);
       const count = raw
         .prepare(
           "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'",

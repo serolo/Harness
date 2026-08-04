@@ -97,6 +97,22 @@ export class SecretStore {
     return tokenRef;
   }
 
+  /** Replace a named encrypted secret used by a singleton application credential. */
+  async putNamed(tokenRef: string, plaintext: string): Promise<void> {
+    if (!this.safeStorage.isEncryptionAvailable()) {
+      throw new AppError('integration', 'OS secure storage unavailable');
+    }
+    const ciphertext = this.safeStorage.encryptString(plaintext);
+    try {
+      await mkdir(this.dir, { recursive: true });
+      await writeFile(this.resolve(tokenRef), ciphertext, {
+        mode: SECRET_FILE_MODE,
+      });
+    } finally {
+      ciphertext.fill(0);
+    }
+  }
+
   /**
    * Read + decrypt the ciphertext for `tokenRef`, returning the plaintext token. Guards
    * against path traversal and against a missing/unavailable secure store (typed error,
@@ -108,6 +124,16 @@ export class SecretStore {
     }
     const ciphertext = await readFile(this.resolve(tokenRef));
     return this.safeStorage.decryptString(ciphertext);
+  }
+
+  /** Return a decrypted secret, or undefined when the named blob does not exist. */
+  async getOptional(tokenRef: string): Promise<string | undefined> {
+    try {
+      return await this.get(tokenRef);
+    } catch (err) {
+      if (isEnoent(err)) return undefined;
+      throw err;
+    }
   }
 
   /**

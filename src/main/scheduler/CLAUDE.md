@@ -35,6 +35,12 @@ demand), without ever bypassing the `HarnessSupervisor`. One `TaskScheduler` is 
   invariant).
 - **`turn:event` is scheduler-only.** See `src/main/ipc/CLAUDE.md` — user turns use the scoped
   `turn:start` stream; emitting `turn:event` for a user turn would double-render it in the renderer.
+- **Task turns own a chat tab.** Once `startTurn` returns and the persisted turn id is known, emit
+  `task:turnStarted` with the task, turn, provider session, and display prompt before flushing any
+  buffered `turn:event`s. This lets the renderer create a resumable task tab without assigning the
+  output to whichever ordinary chat happened to be active.
+- **Task execution settings are snapshotted.** Model, harness override, attachments, mode, and
+  reasoning effort are persisted on the task and copied into `StartTurnOpts` when it fires.
 
 ## Testing
 `scheduler.test.ts` uses a real `ScheduledTasksRepo` over a temp DB + a fake supervisor (records

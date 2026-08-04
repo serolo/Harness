@@ -86,10 +86,8 @@ function NewChatWorkspaceContext({
   const checkoutLabel =
     workspace.location === 'project' ? 'Project checkout' : 'Worktree';
   const checkoutName =
-    workspace.worktreePath
-      ?.split(/[\\/]/)
-      .filter(Boolean)
-      .at(-1) ?? 'Checkout unavailable';
+    workspace.worktreePath?.split(/[\\/]/).filter(Boolean).at(-1) ??
+    'Checkout unavailable';
 
   return (
     <section
@@ -123,10 +121,7 @@ function NewChatWorkspaceContext({
           </div>
         </div>
         <div className="flex min-w-0 items-start gap-2">
-          <GitFork
-            className="mt-0.5 h-4 w-4 shrink-0 text-fg-3"
-            aria-hidden
-          />
+          <GitFork className="mt-0.5 h-4 w-4 shrink-0 text-fg-3" aria-hidden />
           <div className="min-w-0">
             <dt className="text-xs text-fg-3">Base branch</dt>
             <dd
@@ -150,10 +145,7 @@ function NewChatWorkspaceContext({
           </div>
         </div>
         <div className="flex min-w-0 items-start gap-2">
-          <MapPin
-            className="mt-0.5 h-4 w-4 shrink-0 text-fg-3"
-            aria-hidden
-          />
+          <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-fg-3" aria-hidden />
           <div className="min-w-0">
             <dt className="text-xs text-fg-3">{checkoutLabel}</dt>
             <dd

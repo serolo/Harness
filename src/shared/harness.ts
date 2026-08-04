@@ -10,6 +10,9 @@
 import type { StreamSink } from './ipc';
 
 export type HarnessId = 'claude_code' | 'codex' | 'cursor';
+export type AgentAuthMethod = 'cli' | 'api_key' | 'none';
+/** Provider-neutral reasoning effort; adapters validate/map supported levels. */
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface Harness {
   id: HarnessId;
@@ -40,6 +43,8 @@ export interface StartTurnOpts {
   permissionPolicy: PermissionPolicy;
   /** Optional model override passed to the CLI (e.g. `--model sonnet`). APPEND-ONLY (Phase 12). */
   model?: string;
+  /** Optional reasoning-effort override passed to providers that support it. APPEND-ONLY. */
+  effort?: ReasoningEffort;
 }
 
 export interface TurnHandle {
@@ -138,6 +143,18 @@ export interface DetectResult {
   installed: boolean;
   version?: string;
   authenticated: boolean;
+  /** Active local authentication source when the provider exposes it. APPEND-ONLY. */
+  authMethod?: AgentAuthMethod;
+  /** Non-secret trailing credential characters for settings display. APPEND-ONLY. */
+  credentialHint?: string;
+  /** Human-readable provider name for connected-auth details. APPEND-ONLY. */
+  providerLabel?: string;
+  /** Human-readable subscription or billing plan when locally available. APPEND-ONLY. */
+  planLabel?: string;
+  /** Human-readable authentication mechanism. APPEND-ONLY. */
+  authLabel?: string;
+  /** Non-secret account identity such as an email address. APPEND-ONLY. */
+  accountLabel?: string;
 }
 
 /** Agent run mode (spec §4.1). */

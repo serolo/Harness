@@ -155,12 +155,20 @@ describe('AppLayout structure', () => {
       'flex-1',
       'basis-0',
     );
+    vi.spyOn(
+      screen.getByTestId('right-terminal-pane'),
+      'getBoundingClientRect',
+    ).mockReturnValue({ height: 180 } as DOMRect);
     fireEvent.keyDown(screen.getByTestId('tasks-resize-handle'), {
       key: 'ArrowUp',
     });
     expect(screen.getByTestId('right-tasks-pane')).toHaveStyle({
       height: '240px',
     });
+    expect(screen.getByTestId('right-terminal-pane')).toHaveStyle({
+      height: '180px',
+    });
+    expect(screen.getByTestId('right-terminal-pane')).toHaveClass('shrink-0');
     fireEvent.mouseDown(screen.getByTestId('tasks-resize-handle'), {
       clientY: 240,
     });
@@ -182,7 +190,7 @@ describe('AppLayout structure', () => {
       key: 'ArrowDown',
     });
     expect(screen.getByTestId('right-terminal-pane')).toHaveStyle({
-      height: '208px',
+      height: '164px',
     });
   });
 });

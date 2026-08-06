@@ -584,6 +584,11 @@ export interface Commands {
   };
   /** Delete Harness's encrypted Codex API key and remove it from child environments. */
   'agent:deleteCodexApiKey': { req: void; res: void };
+  /** List one directory in a workspace checkout for the lazy All files browser. */
+  'workspace:listDirectory': {
+    req: { workspaceId: string; path: string };
+    res: WorkspaceDirectoryEntry[];
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -934,3 +939,10 @@ export type OnboardingLoginChunk =
       authenticated: boolean;
     }
   | { kind: 'progress'; message: string };
+
+/** A direct child returned by the workspace's lazy directory browser. APPEND-ONLY. */
+export interface WorkspaceDirectoryEntry {
+  name: string;
+  path: string;
+  kind: 'directory' | 'file' | 'symlink';
+}

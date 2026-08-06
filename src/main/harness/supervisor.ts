@@ -34,6 +34,7 @@ import { AppError } from '@shared/errors';
 import { logger } from '../logging';
 import type { TurnRecorder } from './turns';
 import type { NotificationService } from './notifications';
+import { consumeKnowledgeTrace } from '../knowledge/retrieval';
 
 /** One in-flight turn. Cleared from the registry the instant a terminal event lands. */
 interface LiveTurn {
@@ -157,6 +158,11 @@ export class HarnessSupervisor {
     // persistence/finalize step on the per-turn write chain (order-preserving).
     const wrapped: StreamSink<AgentEvent> = {
       push: (event) => {
+        if (event.kind === 'turn_end' || event.kind === 'error') {
+          for (const traceEvent of consumeKnowledgeTrace(opts.knowledgeTrace)) {
+            wrapped.push(traceEvent);
+          }
+        }
         // Provider metadata belongs in persistence, not in the visible transcript.
         if (event.kind !== 'model_info') {
           sink.push(event);
@@ -217,10 +223,14 @@ export class HarnessSupervisor {
         wrapped.push({
           kind: 'knowledge_context',
           sources: opts.knowledgeSources,
+          ...(opts.knowledgeRetrieval === undefined
+            ? {}
+            : { retrieval: opts.knowledgeRetrieval }),
         });
       }
       handle = await adapter.startTurn(opts, wrapped);
     } catch (err) {
+      consumeKnowledgeTrace(opts.knowledgeTrace);
       // Spawn/start failure before any event: finalize as an error and clear.
       this.registry.delete(workspaceId);
       await this.safeEndTurn(turnId, 'error');

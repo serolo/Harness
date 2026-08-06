@@ -80,6 +80,15 @@ const WORK_PANE_RESIZE_FALLBACK_HEIGHT: Record<WorkPane, number> = {
   terminal: 224,
 };
 
+function measuredWorkPaneHeight(pane: WorkPane): number {
+  const measuredHeight = document
+    .querySelector<HTMLElement>(`[data-testid="right-${pane}-pane"]`)
+    ?.getBoundingClientRect().height;
+  return measuredHeight && measuredHeight > 0
+    ? measuredHeight
+    : WORK_PANE_RESIZE_FALLBACK_HEIGHT[pane];
+}
+
 function validSize(size: number): number {
   return Math.max(0, size);
 }
@@ -184,12 +193,7 @@ function WorkPaneResizeHandle({
 
   const currentHeight = (): number => {
     if (height !== null) return height;
-    const measuredHeight = document
-      .querySelector<HTMLElement>(`[data-testid="right-${pane}-pane"]`)
-      ?.getBoundingClientRect().height;
-    return measuredHeight && measuredHeight > 0
-      ? measuredHeight
-      : WORK_PANE_RESIZE_FALLBACK_HEIGHT[pane];
+    return measuredWorkPaneHeight(pane);
   };
 
   const startResize = (event: React.MouseEvent<HTMLDivElement>): void => {
@@ -279,6 +283,18 @@ export function AppLayout(): React.JSX.Element {
   const [inspectFileRequest, setInspectFileRequest] =
     useState<InspectFileRequest | null>(null);
   const [knowledgeReviewRequestId, setKnowledgeReviewRequestId] = useState(0);
+
+  const resizeTasksPane = (height: number): void => {
+    // Tasks/Knowledge shares its available flex space with Git and Terminal initially.
+    // Anchor Terminal at its rendered height before fixing the Tasks height so this
+    // divider changes only the two panes it separates: Git and Tasks/Knowledge.
+    if (!terminalCollapsed) {
+      setTerminalPaneHeight(
+        (current) => current ?? measuredWorkPaneHeight('terminal'),
+      );
+    }
+    setTasksPaneHeight(height);
+  };
 
   const navTarget = useNavStore((s) => s.target);
   const navigate = useNavStore((s) => s.navigate);
@@ -603,7 +619,7 @@ export function AppLayout(): React.JSX.Element {
                 <WorkPaneResizeHandle
                   pane="tasks"
                   height={tasksPaneHeight}
-                  onResize={setTasksPaneHeight}
+                  onResize={resizeTasksPane}
                 />
                 <section
                   className={

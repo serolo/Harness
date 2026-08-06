@@ -6,6 +6,7 @@ import { openDb, type AppDatabase } from '../db';
 import { ProjectsRepo } from '../db/repos/projects';
 import { knowledgeDir, setUserDataRoot } from '../paths';
 import { parseOkfMarkdown, WikiService } from './index';
+import { QmdSearchProvider } from './qmd';
 import { storedZip } from './zipFixture';
 
 let db: AppDatabase | undefined;
@@ -16,7 +17,12 @@ afterEach(async () => {
   setUserDataRoot(undefined);
 });
 
-async function fixture(): Promise<{
+async function fixture(
+  options: {
+    settings?: string;
+    qmd?: QmdSearchProvider;
+  } = {},
+): Promise<{
   service: WikiService;
   projectId: string;
   root: string;
@@ -26,7 +32,7 @@ async function fixture(): Promise<{
   await mkdir(join(repo, '.harness'), { recursive: true });
   await writeFile(
     join(repo, '.harness', 'settings.toml'),
-    '[knowledge]\nenabled = true\n',
+    options.settings ?? '[knowledge]\nenabled = true\n',
     'utf8',
   );
   setUserDataRoot(join(root, 'data'));
@@ -37,7 +43,11 @@ async function fixture(): Promise<{
     defaultBranch: 'main',
     repoPath: repo,
   });
-  return { service: new WikiService(db), projectId: project.id, root };
+  return {
+    service: new WikiService(db, options.qmd),
+    projectId: project.id,
+    root,
+  };
 }
 
 describe('OKF project knowledge', () => {
@@ -272,7 +282,7 @@ describe('OKF project knowledge', () => {
     );
 
     expect(context).toContain('<project_knowledge>');
-    expect(context).toContain('Catalog (index.md)');
+    expect(context).not.toContain('Catalog fallback (index.md)');
     expect(context).toContain('Payments (components/payments.md)');
     expect(context).toContain('payment worker retries failed invoices');
     expect(context).not.toContain('search worker indexes products');
@@ -284,11 +294,9 @@ describe('OKF project knowledge', () => {
       'How do failed invoices retry?',
       1_000,
     );
-    expect(selection.sources).toContainEqual({
-      path: 'index.md',
-      title: 'Project knowledge',
-      estimatedTokens: expect.any(Number),
-    });
+    expect(selection.sources).not.toContainEqual(
+      expect.objectContaining({ path: 'index.md' }),
+    );
     expect(selection.sources).toContainEqual({
       path: 'components/payments.md',
       title: 'Payments',
@@ -298,6 +306,13 @@ describe('OKF project knowledge', () => {
       path: 'components/search.md',
       title: 'Search',
     });
+    expect(selection.retrieval).toMatchObject({
+      requestedProvider: 'basic',
+      providerUsed: 'basic',
+      candidateCount: 1,
+      selectedCount: 1,
+      catalogFallback: false,
+    });
 
     const tiny = await service.contextForPrompt(
       projectId,
@@ -305,6 +320,93 @@ describe('OKF project knowledge', () => {
       64,
     );
     expect(tiny.length).toBeLessThanOrEqual(256);
+  });
+
+  it('uses QMD before loading pages and only injects its relevant matches', async () => {
+    const qmd = new QmdSearchProvider(async (args) => ({
+      stdout:
+        args[0] === 'query'
+          ? JSON.stringify([
+              {
+                file: 'components/payments.md',
+                title: 'Payments',
+                score: 0.98,
+              },
+            ])
+          : '',
+      stderr: '',
+    }));
+    const { service, projectId } = await fixture({
+      qmd,
+      settings:
+        '[knowledge]\nenabled = true\n\n[knowledge.search]\nprovider = "qmd"\n',
+    });
+    await service.initializeProject(projectId);
+    const proposal = await service.createProposal({
+      projectId,
+      title: 'Document payments',
+      summary: 'Adds payment retry behavior.',
+      operations: [
+        {
+          op: 'create',
+          path: 'components/payments.md',
+          content:
+            '---\ntype: Component\ntitle: Payments\nstatus: canonical\n---\n\n# Payments\n\nRetries failed invoices.\n',
+        },
+      ],
+    });
+    await service.acceptProposal(projectId, proposal.id);
+
+    const selection = await service.contextSelectionForPrompt(
+      projectId,
+      'How are failed invoices retried?',
+      12_000,
+    );
+
+    expect(selection.context).toContain('## Payments (components/payments.md)');
+    expect(selection.context).not.toContain('Catalog fallback (index.md)');
+    expect(selection.sources).toEqual([
+      {
+        path: 'components/payments.md',
+        title: 'Payments',
+        estimatedTokens: expect.any(Number),
+      },
+    ]);
+    expect(selection.retrieval).toEqual({
+      requestedProvider: 'qmd',
+      providerUsed: 'qmd',
+      searchEnabled: true,
+      searchStatus: 'completed',
+      candidateCount: 1,
+      selectedCount: 1,
+      catalogFallback: false,
+      maxContextTokens: 12_000,
+    });
+  });
+
+  it('caps index.md to a compact fallback when retrieval finds no page', async () => {
+    const { service, projectId } = await fixture();
+    await service.initializeProject(projectId);
+
+    const selection = await service.contextSelectionForPrompt(
+      projectId,
+      'zyxqv blorpt',
+      12_000,
+    );
+
+    expect(selection.sources).toEqual([
+      {
+        path: 'index.md',
+        title: 'Atlas knowledge',
+        estimatedTokens: expect.any(Number),
+      },
+    ]);
+    expect(selection.sources[0]?.estimatedTokens).toBeLessThanOrEqual(512);
+    expect(selection.retrieval).toMatchObject({
+      candidateCount: 0,
+      selectedCount: 1,
+      catalogFallback: true,
+    });
   });
 
   it('rejects ambiguous or oversized proposal operations', async () => {

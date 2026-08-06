@@ -11,7 +11,10 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/main/index.ts') },
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          'knowledge-mcp': resolve(__dirname, 'src/main/knowledge-mcp.ts'),
+        },
       },
     },
     resolve: {

@@ -226,6 +226,16 @@ describe('HarnessSupervisor turn lifecycle', () => {
           'hello\n\n<project_knowledge>private context</project_knowledge>',
         displayPrompt: 'hello',
         knowledgeSources: [{ path: 'index.md', title: 'Project knowledge' }],
+        knowledgeRetrieval: {
+          requestedProvider: 'qmd',
+          providerUsed: 'qmd',
+          searchEnabled: true,
+          searchStatus: 'completed',
+          candidateCount: 1,
+          selectedCount: 1,
+          catalogFallback: false,
+          maxContextTokens: 12_000,
+        },
       },
       sink,
     );
@@ -239,10 +249,30 @@ describe('HarnessSupervisor turn lifecycle', () => {
     expect(turns[0].events[1]?.event).toEqual({
       kind: 'knowledge_context',
       sources: [{ path: 'index.md', title: 'Project knowledge' }],
+      retrieval: {
+        requestedProvider: 'qmd',
+        providerUsed: 'qmd',
+        searchEnabled: true,
+        searchStatus: 'completed',
+        candidateCount: 1,
+        selectedCount: 1,
+        catalogFallback: false,
+        maxContextTokens: 12_000,
+      },
     });
     expect(events).toContainEqual({
       kind: 'knowledge_context',
       sources: [{ path: 'index.md', title: 'Project knowledge' }],
+      retrieval: {
+        requestedProvider: 'qmd',
+        providerUsed: 'qmd',
+        searchEnabled: true,
+        searchStatus: 'completed',
+        candidateCount: 1,
+        selectedCount: 1,
+        catalogFallback: false,
+        maxContextTokens: 12_000,
+      },
     });
   });
 

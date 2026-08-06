@@ -62,6 +62,7 @@ export interface TranscriptProps {
   workspaceId?: string | null;
   onOpenFile?: (path: string) => void;
   onApprovePlan?: () => void;
+  onHandoffPlan?: (plan: string) => void;
   onAnswerQuestion?: (answer: string) => void;
   isBusy?: boolean;
   workspace?: Workspace;
@@ -312,7 +313,39 @@ function renderEvent(
         />
       ) : null;
     case 'knowledge_context':
-      return <KnowledgeContextCard key={key} sources={event.sources} />;
+      return (
+        <KnowledgeContextCard
+          key={key}
+          sources={event.sources}
+          retrieval={event.retrieval}
+        />
+      );
+    case 'knowledge_retrieval':
+      return (
+        <div
+          key={key}
+          className="mx-2 rounded-2 border border-border-1 bg-surface-card px-3 py-2 text-xs text-fg-2"
+          data-testid="knowledge-retrieval-event"
+        >
+          {event.operation === 'search' ? (
+            <>
+              <span className="font-medium text-fg-1">Project knowledge search</span>
+              {' · local search is free · '}
+              {event.resultCount ?? 0} results returned
+              {event.contextTokens > 0
+                ? ` · ~${event.contextTokens.toLocaleString()} context tokens in ranked snippets`
+                : ''}
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-fg-1">Project knowledge read</span>
+              {event.path ? ` · ${event.path}` : ''}
+              {` · ~${event.contextTokens.toLocaleString()} context tokens returned`}
+              {event.truncated ? ' · truncated to the turn budget' : ''}
+            </>
+          )}
+        </div>
+      );
     case 'error':
       return (
         <div key={key}>
@@ -459,6 +492,13 @@ function endsWithUserResponseRequest(events: AgentEvent[]): boolean {
 
 function savedPlanPath(events: AgentEvent[]): string | null {
   for (const event of events.slice().reverse()) {
+    if (
+      event.kind === 'file_edit' &&
+      event.op !== 'delete' &&
+      /\/\.claude\/plans\/[^/]+\.md$/.test(event.path)
+    ) {
+      return event.path;
+    }
     if (event.kind !== 'text') continue;
     const match =
       /(?:`|^|\s)(\/[^\s`]*\/\.claude\/plans\/[^\s`]+\.md)(?:`|$|\s)/m.exec(
@@ -469,13 +509,27 @@ function savedPlanPath(events: AgentEvent[]): string | null {
   return null;
 }
 
+function inlinePlanContent(events: AgentEvent[]): string {
+  return events
+    .filter(
+      (event): event is Extract<AgentEvent, { kind: 'text' }> =>
+        event.kind === 'text',
+    )
+    .map((event) => visibleModelText(event.delta))
+    .filter((text) => text.trim() !== '')
+    .join('\n\n')
+    .trim();
+}
+
 function PlanReady({
   events,
   onApprove,
+  onHandoff,
   onOpenFile,
 }: {
   events: AgentEvent[];
   onApprove: () => void;
+  onHandoff: (plan: string) => void;
   onOpenFile?: (path: string) => void;
 }): React.JSX.Element {
   const path = savedPlanPath(events);
@@ -496,6 +550,8 @@ function PlanReady({
     };
   }, [path]);
 
+  const plan = content ?? (path ? '' : inlinePlanContent(events));
+
   return (
     <div className="space-y-3">
       {path && content ? (
@@ -506,7 +562,11 @@ function PlanReady({
           <Markdown text={content} onOpenFile={onOpenFile} />
         </section>
       ) : null}
-      <PlanApproval onApprove={onApprove} />
+      <PlanApproval
+        onApprove={onApprove}
+        onHandoff={() => onHandoff(plan)}
+        canHandoff={plan !== ''}
+      />
     </div>
   );
 }
@@ -700,6 +760,7 @@ export function Transcript({
   workspaceId,
   onOpenFile,
   onApprovePlan,
+  onHandoffPlan,
   onAnswerQuestion,
   isBusy = false,
   workspace,
@@ -769,10 +830,12 @@ export function Transcript({
             turn.events.some(
               (event) => event.kind === 'text' && event.delta.trim() !== '',
             ) &&
-            onApprovePlan ? (
+            onApprovePlan &&
+            onHandoffPlan ? (
               <PlanReady
                 events={turn.events}
                 onApprove={onApprovePlan}
+                onHandoff={onHandoffPlan}
                 onOpenFile={onOpenFile}
               />
             ) : null}

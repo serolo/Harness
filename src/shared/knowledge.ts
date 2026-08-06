@@ -172,3 +172,17 @@ export interface AgentMemoryProposalResult {
   skippedCount: number;
   excludedCount: number;
 }
+
+// --- Progressive knowledge retrieval (APPEND-ONLY) -------------------------
+
+/** Local retrieval metadata shown in chat but never included in the model prompt. */
+export interface KnowledgeRetrievalTrace {
+  requestedProvider: 'qmd' | 'basic' | 'none';
+  providerUsed: 'qmd' | 'basic' | 'none';
+  searchEnabled: boolean;
+  searchStatus: 'completed' | 'fallback' | 'failed' | 'disabled';
+  candidateCount: number;
+  selectedCount: number;
+  catalogFallback: boolean;
+  maxContextTokens: number;
+}

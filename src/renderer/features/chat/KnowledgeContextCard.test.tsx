@@ -6,6 +6,16 @@ describe('KnowledgeContextCard', () => {
   it('shows the selected knowledge sources on demand', () => {
     render(
       <KnowledgeContextCard
+        retrieval={{
+          requestedProvider: 'qmd',
+          providerUsed: 'qmd',
+          searchEnabled: true,
+          searchStatus: 'completed',
+          candidateCount: 4,
+          selectedCount: 2,
+          catalogFallback: false,
+          maxContextTokens: 12_000,
+        }}
         sources={[
           {
             path: 'index.md',
@@ -27,6 +37,21 @@ describe('KnowledgeContextCard', () => {
     expect(toggle).toHaveTextContent('~1,516 tokens');
     expect(screen.queryByText('API architecture')).not.toBeInTheDocument();
     fireEvent.click(toggle);
+    expect(screen.getByText('How knowledge was selected')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /steps shown here run locally and do not use model context/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/QMD.*searched canonical/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/4 relevant files were ranked/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /2 top-ranked files were selected within the 12,000-token/,
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.getByText("Included in this turn's context"),
     ).toBeInTheDocument();

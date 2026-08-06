@@ -4,6 +4,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const capturedHandlers = new Map<string, unknown>();
 vi.mock('electron', () => {
@@ -136,5 +139,48 @@ describe('diff IPC menu/query handlers', () => {
       },
       'pending.ts',
     );
+  });
+});
+
+describe('workspace directory browser IPC', () => {
+  it('lists directories first and confines traversal after following symlinks', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'harness-files-'));
+    const workspaceRoot = join(fixtureRoot, 'workspace');
+    const outsideRoot = join(fixtureRoot, 'outside');
+    await mkdir(join(workspaceRoot, 'src'), { recursive: true });
+    await mkdir(outsideRoot);
+    await writeFile(join(workspaceRoot, 'README.md'), '# fixture\n');
+    await writeFile(join(outsideRoot, 'secret.txt'), 'not workspace data\n');
+    await symlink(outsideRoot, join(workspaceRoot, 'outside-link'));
+
+    try {
+      registerIpc({
+        workspaces: {
+          get: async () => ({ id: 'ws1', worktreePath: workspaceRoot }),
+        },
+      } as unknown as AppContext);
+
+      await expect(
+        invoke('workspace:listDirectory', { workspaceId: 'ws1', path: '' }),
+      ).resolves.toEqual([
+        { name: 'src', path: 'src', kind: 'directory' },
+        { name: 'outside-link', path: 'outside-link', kind: 'symlink' },
+        { name: 'README.md', path: 'README.md', kind: 'file' },
+      ]);
+      await expect(
+        invoke('workspace:listDirectory', {
+          workspaceId: 'ws1',
+          path: '../outside',
+        }),
+      ).rejects.toThrow('file path must stay inside workspace');
+      await expect(
+        invoke('workspace:listDirectory', {
+          workspaceId: 'ws1',
+          path: 'outside-link',
+        }),
+      ).rejects.toThrow('file path must stay inside workspace');
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -2,6 +2,7 @@
 // opened on selection. Review comments and checkpoints remain available without crowding
 // the always-visible file list.
 
+import { useEffect, useState } from 'react';
 import { Eye } from 'lucide-react';
 import { Button } from '@renderer/components/ui';
 import { FileTree } from './FileTree';
@@ -9,6 +10,7 @@ import { DiffView } from './DiffView';
 import { CommentRail } from './CommentRail';
 import { CommitFilter } from './CommitFilter';
 import { useDiff } from './useDiff';
+import { WorkspaceFileTree } from './WorkspaceFileTree';
 
 export interface DiffPanelProps {
   workspaceId: string | null;
@@ -19,6 +21,7 @@ export function DiffPanel({
   workspaceId,
   onInspectFile,
 }: DiffPanelProps): React.JSX.Element {
+  const [view, setView] = useState<'all' | 'changes'>('changes');
   const {
     diffSet,
     selectedPath,
@@ -36,6 +39,10 @@ export function DiffPanel({
     sendCommentsToAgent,
     runReview,
   } = useDiff(workspaceId);
+
+  useEffect(() => {
+    setView('changes');
+  }, [workspaceId]);
 
   if (!workspaceId) {
     return (
@@ -62,41 +69,69 @@ export function DiffPanel({
       >
         <button
           type="button"
-          className="h-10 shrink-0 border-b-2 border-transparent px-3 text-xs font-medium text-fg-3 hover:text-fg-1"
-          onClick={() => selectFile(null)}
+          aria-pressed={view === 'all'}
+          className={`mb-1 h-8 shrink-0 rounded-3 px-3 text-xs font-medium transition-colors ${
+            view === 'all' ? 'bg-bg-3 text-fg-1' : 'text-fg-3 hover:text-fg-1'
+          }`}
+          onClick={() => {
+            selectFile(null);
+            setView('all');
+          }}
         >
           All files
         </button>
         <button
           type="button"
-          className="flex h-10 shrink-0 items-center gap-2 border-b-2 border-accent px-3 text-xs font-semibold text-accent"
-          aria-pressed={selectedPath === null}
-          onClick={() => selectFile(null)}
+          className={`mb-1 flex h-8 shrink-0 items-center gap-2 rounded-3 px-3 text-xs font-medium transition-colors ${
+            view === 'changes'
+              ? 'bg-bg-3 text-fg-1'
+              : 'text-fg-3 hover:text-fg-1'
+          }`}
+          aria-pressed={view === 'changes'}
+          onClick={() => {
+            selectFile(null);
+            setView('changes');
+          }}
         >
           Changes <span className="text-fg-2">{files.length}</span>
         </button>
 
-        <div className="ml-auto flex h-11 items-center gap-1 pb-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-fg-2"
-            data-testid="agent-review"
-            onClick={() => void runReview()}
-          >
-            <Eye className="h-4 w-4" aria-hidden="true" />
-            Review
-          </Button>
-          <CommitFilter
-            info={menuInfo}
-            scope={scope}
-            onTargetRefChange={setTargetRef}
-            onScopeChange={setScope}
-          />
-        </div>
+        {view === 'changes' ? (
+          <div className="ml-auto flex h-11 items-center gap-1 pb-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-fg-2"
+              data-testid="agent-review"
+              onClick={() => void runReview()}
+            >
+              <Eye className="h-4 w-4" aria-hidden="true" />
+              Review
+            </Button>
+            <CommitFilter
+              info={menuInfo}
+              scope={scope}
+              onTargetRefChange={setTargetRef}
+              onScopeChange={setScope}
+            />
+          </div>
+        ) : null}
       </header>
 
-      {!hasChanges ? (
+      {view === 'all' ? (
+        <div className="min-h-0 flex-1">
+          <WorkspaceFileTree
+            workspaceId={workspaceId}
+            onSelectFile={(path) => {
+              if (onInspectFile) onInspectFile(path);
+              else {
+                setView('changes');
+                selectFile(path);
+              }
+            }}
+          />
+        </div>
+      ) : !hasChanges ? (
         <div
           className="flex min-h-0 flex-1 items-center justify-center p-6 text-sm text-fg-3"
           data-testid="diff-no-changes"

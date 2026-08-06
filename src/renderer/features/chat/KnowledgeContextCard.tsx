@@ -1,10 +1,6 @@
 import { useState } from 'react';
-import {
-  BookOpen,
-  ChevronDown,
-  ChevronRight,
-  FileText,
-} from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronRight, FileText } from 'lucide-react';
+import type { KnowledgeRetrievalTrace } from '@shared/knowledge';
 
 function sourceLocation(path: string): string {
   const separator = path.lastIndexOf('/');
@@ -17,12 +13,14 @@ function sourceFileName(path: string): string {
 
 export function KnowledgeContextCard({
   sources,
+  retrieval,
 }: {
   sources: {
     path: string;
     title: string;
     estimatedTokens?: number;
   }[];
+  retrieval?: KnowledgeRetrievalTrace;
 }): React.JSX.Element | null {
   const [open, setOpen] = useState(false);
   if (sources.length === 0) return null;
@@ -53,13 +51,52 @@ export function KnowledgeContextCard({
       </button>
       {open ? (
         <div className="ml-8 mt-2 max-w-2xl rounded-3 border border-border-1 bg-surface-card">
+          {retrieval ? (
+            <div
+              className="border-b border-border-1 px-3 py-2.5"
+              data-testid="knowledge-retrieval-trace"
+            >
+              <div className="text-xs font-medium text-fg-1">
+                How knowledge was selected
+              </div>
+              <p className="mt-1 text-[11px] leading-4 text-fg-3">
+                Search, ranking, and the steps shown here run locally and do not
+                use model context. Only the source text listed below is added to
+                the prompt.
+              </p>
+              <ol className="mt-2 space-y-1.5 text-xs leading-5 text-fg-2">
+                <li>
+                  <span className="font-medium text-fg-1">1. Search — </span>
+                  {retrieval.searchStatus === 'failed'
+                    ? 'Local search failed, so Harness continued with the compact catalog fallback.'
+                    : retrieval.searchStatus === 'disabled'
+                      ? 'Knowledge search was disabled; no provider query ran.'
+                      : retrieval.searchStatus === 'fallback'
+                        ? 'QMD was unavailable, so Harness used basic local search.'
+                        : `${retrieval.providerUsed === 'qmd' ? 'QMD' : 'Basic local search'} searched canonical project knowledge.`}
+                </li>
+                <li>
+                  <span className="font-medium text-fg-1">2. Rank — </span>
+                  {retrieval.candidateCount.toLocaleString()} relevant{' '}
+                  {retrieval.candidateCount === 1 ? 'file was' : 'files were'}{' '}
+                  ranked for this message.
+                </li>
+                <li>
+                  <span className="font-medium text-fg-1">3. Select — </span>
+                  {retrieval.catalogFallback
+                    ? 'No relevant page could be selected, so a compact index.md fallback was used.'
+                    : `${retrieval.selectedCount.toLocaleString()} top-ranked ${retrieval.selectedCount === 1 ? 'file was' : 'files were'} selected within the ${retrieval.maxContextTokens.toLocaleString()}-token knowledge limit.`}
+                </li>
+              </ol>
+            </div>
+          ) : null}
           <div className="border-b border-border-1 px-3 py-2">
             <div className="text-xs font-medium text-fg-1">
               Included in this turn&apos;s context
             </div>
             <p className="mt-0.5 text-xs leading-5 text-fg-3">
-              Harness selected these project knowledge files before sending
-              your message to the agent.
+              Harness selected these project knowledge files before sending your
+              message to the agent.
             </p>
             {hasTokenEstimate ? (
               <p className="mt-1 text-[11px] leading-4 text-fg-3">
@@ -94,14 +131,14 @@ export function KnowledgeContextCard({
                     ) : null}
                   </div>
                   <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-fg-3">
-                    <span className="truncate" title={sourceLocation(source.path)}>
+                    <span
+                      className="truncate"
+                      title={sourceLocation(source.path)}
+                    >
                       {sourceLocation(source.path)}
                     </span>
                     <span aria-hidden="true">/</span>
-                    <span
-                      className="shrink-0 text-fg-2"
-                      title={source.path}
-                    >
+                    <span className="shrink-0 text-fg-2" title={source.path}>
                       {sourceFileName(source.path)}
                     </span>
                   </div>

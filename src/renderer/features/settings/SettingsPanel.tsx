@@ -936,8 +936,8 @@ function RepoSettingsContent({
             <>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <KnowledgeToggle
-                  label="Inject knowledge context"
-                  description="Include a bounded catalog-first selection in agent prompts."
+                  label="Allow project knowledge retrieval"
+                  description="Let agents search and read bounded canonical knowledge on demand."
                   checked={snapshot.settings.knowledge.inject_context}
                   onChange={(checked) =>
                     onSet('knowledge.inject_context', checked)
@@ -952,8 +952,8 @@ function RepoSettingsContent({
                   }
                 />
                 <KnowledgeToggle
-                  label="Enable retrieval"
-                  description="Search canonical pages after loading the catalog."
+                  label="Enable local search"
+                  description="Search canonical pages locally before any page can be read."
                   checked={snapshot.settings.knowledge.search.enabled}
                   onChange={(checked) =>
                     onSet('knowledge.search.enabled', checked)

@@ -130,6 +130,18 @@ function installApi(opts: {
         return Promise.resolve(FILE_DIFF);
       case 'diff:fileQuery':
         return Promise.resolve(FILE_DIFF);
+      case 'workspace:listDirectory': {
+        const path = (req as { path?: string } | undefined)?.path ?? '';
+        return Promise.resolve(
+          path === 'src'
+            ? [{ name: 'foo.ts', path: 'src/foo.ts', kind: 'file' }]
+            : [
+                { name: 'ci', path: 'ci', kind: 'directory' },
+                { name: 'src', path: 'src', kind: 'directory' },
+                { name: 'package.json', path: 'package.json', kind: 'file' },
+              ],
+        );
+      }
       case 'comment:list':
         return Promise.resolve(opts.comments ?? []);
       case 'comment:create': {
@@ -203,6 +215,38 @@ afterEach(() => {
 });
 
 describe('DiffPanel file list + diff view', () => {
+  it('opens a lazy workspace tree from All files and sends file selections to the inspector', async () => {
+    const api = installApi({});
+    const onInspectFile = vi.fn();
+
+    render(<DiffPanel workspaceId="ws1" onInspectFile={onInspectFile} />);
+    await screen.findByTestId('diff-file-src/foo.ts');
+
+    fireEvent.click(screen.getByRole('button', { name: 'All files' }));
+
+    expect(
+      await screen.findByTestId('workspace-file-tree'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'All files' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(api.invoke).toHaveBeenCalledWith('workspace:listDirectory', {
+      workspaceId: 'ws1',
+      path: '',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'src' }));
+    expect(await screen.findByText('foo.ts')).toBeInTheDocument();
+    expect(api.invoke).toHaveBeenCalledWith('workspace:listDirectory', {
+      workspaceId: 'ws1',
+      path: 'src',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'foo.ts' }));
+    expect(onInspectFile).toHaveBeenCalledWith('src/foo.ts');
+  });
+
   it('renders the file list from diff:get, then fetches diff:file and mounts the DiffEditor on selection', async () => {
     installApi({});
 

@@ -243,6 +243,16 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('closes when pressing Cancel', async () => {
+    installApi();
+    const onClose = vi.fn();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it('keeps PR and issue results at the same fixed scrollable height', async () => {
     installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
@@ -277,7 +287,7 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     expect(screen.getByTestId('create-workspace-submit')).toBeEnabled();
   });
 
-  it('closes as soon as the workspace is created and selected', async () => {
+  it('closes after the workspace is created and selected', async () => {
     const api = installApi();
     const onClose = vi.fn();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />);
@@ -289,7 +299,8 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(useWorkspacesStore.getState().selectedWorkspaceId).toBe('ws-new');
     expect(api.stream).toHaveBeenCalledWith(
       'workspace:create',
       expect.objectContaining({ projectId: PROJECT_ID }),

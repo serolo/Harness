@@ -1,8 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { projectDir } from '../paths';
 import { resolveExecutable } from '../process/executable';
 import { childProcessEnv } from '../process/childEnv';
 import type { QmdStatus } from '@shared/knowledge';
@@ -115,10 +114,13 @@ export class QmdSearchProvider {
     query: string;
     limit: number;
     rerank: boolean;
+    stateRoot?: string;
   }): Promise<QmdResult[]> {
     const collection = collectionName(options.projectId);
-    const configHome = join(projectDir(options.projectId), 'qmd-config');
-    const cacheHome = join(projectDir(options.projectId), 'qmd-cache');
+    // Derive from the already-confined knowledge root so the MCP entry graph stays Node-only.
+    const stateRoot = options.stateRoot ?? resolve(options.root, '..');
+    const configHome = join(stateRoot, 'qmd-config');
+    const cacheHome = join(stateRoot, 'qmd-cache');
     await Promise.all([
       mkdir(configHome, { recursive: true }),
       mkdir(cacheHome, { recursive: true }),

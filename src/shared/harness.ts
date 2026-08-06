@@ -8,6 +8,7 @@
 // Do not merge the two shapes; Phase 2 builds against this one.
 
 import type { StreamSink } from './ipc';
+import type { KnowledgeRetrievalTrace } from './knowledge';
 
 export type HarnessId = 'claude_code' | 'codex' | 'cursor';
 export type AgentAuthMethod = 'cli' | 'api_key' | 'none';
@@ -36,6 +37,10 @@ export interface StartTurnOpts {
     /** Approximate tokens contributed by this source's injected section. APPEND-ONLY. */
     estimatedTokens?: number;
   }[];
+  /** Local retrieval metadata for the transcript; never appended to `prompt`. APPEND-ONLY. */
+  knowledgeRetrieval?: KnowledgeRetrievalTrace;
+  /** Private main-process trace transport. Never persist, render, or expose over IPC. APPEND-ONLY. */
+  knowledgeTrace?: { filePath: string; cleanupDir: string };
   attachments: Attachment[]; // files, images, diff comments
   sessionId?: string; // resume previous session
   mode?: AgentMode; // "plan" | "default" | "auto_accept"
@@ -82,6 +87,8 @@ export type AgentEvent =
         /** Approximate tokens contributed by this source's injected section. APPEND-ONLY. */
         estimatedTokens?: number;
       }[];
+      /** Local selection trace rendered in chat, not model context. APPEND-ONLY. */
+      retrieval?: KnowledgeRetrievalTrace;
     }
   | { kind: 'turn_end'; usage?: Usage }
   | { kind: 'error'; message: string }
@@ -101,6 +108,16 @@ export type AgentEvent =
       description?: string;
       toolName?: string;
       input?: unknown;
+    }
+  | {
+      /** Sanitized usage emitted by Harness's read-only project-knowledge gateway. APPEND-ONLY. */
+      kind: 'knowledge_retrieval';
+      operation: 'search' | 'read';
+      provider: 'qmd' | 'basic' | 'none';
+      contextTokens: number;
+      resultCount?: number;
+      path?: string;
+      truncated?: boolean;
     };
 
 /** Provider-neutral shape used by Claude Code and Codex question prompts. */

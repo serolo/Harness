@@ -17,10 +17,14 @@
 - Canonical knowledge is a local, app-managed Git repository. `storage = "github"` is
   explicitly unsupported until a remote-storage implementation exists; never silently
   reinterpret it as local storage.
-- `index.md` is the catalog and retrieval starts there. Catalog generation is deterministic
-  (path-sorted) and may project `description`, `applies_when`, `globs`, `source`, and `links`
-  metadata. Search and page loading are bounded enrichments; retrieval failure must not block
-  an agent turn.
+- `index.md` is the deterministic navigation/fallback catalog (path-sorted) and may project
+  `description`, `applies_when`, `globs`, `source`, and `links` metadata. Search and page loading
+  are bounded enrichments; retrieval failure must not block an agent turn.
+- MCP-capable turns receive no page content before the turn. Harness appends its own read-only,
+  project-scoped MCP server and a compact search-before-read instruction. The per-turn server
+  excludes reserved files, enforces canonical status/path confinement, and cumulatively budgets
+  actual serialized search/read responses. Non-MCP turns may preselect at most two pages within
+  1,000 estimated tokens and never fall back to `index.md`.
 - Post-turn extraction runs through `PostTurnKnowledgeCurator`, a bounded seam. It currently
   preserves the legacy hidden proposal-block protocol. An autonomous provider turn is deferred
   until Harness has a non-recursive ephemeral-turn abstraction; do not run curation through the

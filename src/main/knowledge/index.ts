@@ -25,6 +25,7 @@ import type {
   AgentMemoryDiscovery,
   AgentMemoryProposalResult,
   AgentMemoryProvider,
+  KnowledgeRetrievalTrace,
 } from '@shared/knowledge';
 import { AppError } from '@shared/errors';
 import { ProjectsRepo } from '../db/repos/projects';
@@ -66,6 +67,55 @@ const MAX_PROPOSAL_CONTENT_CHARACTERS = 512_000;
 const MAX_PROPOSAL_TOTAL_CHARACTERS = 5 * 1024 * 1024;
 const MAX_PROPOSAL_TITLE_CHARACTERS = 200;
 const MAX_PROPOSAL_SUMMARY_CHARACTERS = 4_000;
+const CATALOG_FALLBACK_MAX_CHARACTERS = 2_048;
+const BASIC_SEARCH_STOP_WORDS = new Set([
+  'about',
+  'and',
+  'are',
+  'been',
+  'being',
+  'but',
+  'did',
+  'do',
+  'does',
+  'for',
+  'from',
+  'how',
+  'into',
+  'its',
+  'our',
+  'that',
+  'the',
+  'their',
+  'these',
+  'this',
+  'those',
+  'was',
+  'were',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'why',
+  'with',
+  'your',
+]);
+
+interface SearchSelection {
+  results: WikiSearchResult[];
+  requestedProvider: KnowledgeRetrievalTrace['requestedProvider'];
+  providerUsed: KnowledgeRetrievalTrace['providerUsed'];
+  searchEnabled: boolean;
+  searchStatus: KnowledgeRetrievalTrace['searchStatus'];
+}
+
+function truncateSection(section: string, maxCharacters: number): string {
+  if (section.length <= maxCharacters) return section;
+  const marker = '\n\n[truncated]';
+  if (maxCharacters <= marker.length) return section.slice(0, maxCharacters);
+  return `${section.slice(0, maxCharacters - marker.length)}${marker}`;
+}
 
 export const KNOWLEDGE_RECONCILIATION_INSTRUCTION = `
 After answering the user, reconcile whether this turn produced durable project knowledge.
@@ -528,10 +578,36 @@ export class WikiService {
     limit?: number,
   ): Promise<WikiSearchResult[]> {
     const config = await this.getConfig(projectId);
+    return (await this.searchSelection(projectId, query, limit, config))
+      .results;
+  }
+
+  private async searchSelection(
+    projectId: string,
+    query: string,
+    limit: number | undefined,
+    config: KnowledgeConfig,
+  ): Promise<SearchSelection> {
+    const requestedProvider = config.search.provider;
     if (!config.enabled || !config.search.enabled) {
-      return [];
+      return {
+        results: [],
+        requestedProvider,
+        providerUsed: 'none',
+        searchEnabled: false,
+        searchStatus: 'disabled',
+      };
     }
-    if (config.search.provider === 'none') return [];
+    if (requestedProvider === 'none') {
+      return {
+        results: [],
+        requestedProvider,
+        providerUsed: 'none',
+        searchEnabled: true,
+        searchStatus: 'disabled',
+      };
+    }
+    let qmdFellBack = false;
     if (config.search.provider === 'qmd') {
       try {
         const summaries = new Map(
@@ -547,7 +623,7 @@ export class WikiService {
           limit: limit ?? config.search.maxResults,
           rerank: config.search.rerank,
         });
-        return qmdResults.flatMap((result): WikiSearchResult[] => {
+        const results = qmdResults.flatMap((result): WikiSearchResult[] => {
           const page = summaries.get(result.path);
           if (page === undefined) return [];
           return [
@@ -561,7 +637,15 @@ export class WikiService {
             },
           ];
         });
+        return {
+          results,
+          requestedProvider,
+          providerUsed: 'qmd',
+          searchEnabled: true,
+          searchStatus: 'completed',
+        };
       } catch (error) {
+        qmdFellBack = true;
         logger.warn(
           `[knowledge:qmd] falling back to basic search: ${
             error instanceof Error ? error.message : String(error)
@@ -572,8 +656,16 @@ export class WikiService {
     const words = query
       .toLowerCase()
       .split(/\W+/)
-      .filter((word) => word.length > 1);
-    if (words.length === 0) return [];
+      .filter((word) => word.length > 1 && !BASIC_SEARCH_STOP_WORDS.has(word));
+    if (words.length === 0) {
+      return {
+        results: [],
+        requestedProvider,
+        providerUsed: 'basic',
+        searchEnabled: true,
+        searchStatus: qmdFellBack ? 'fallback' : 'completed',
+      };
+    }
     const results: WikiSearchResult[] = [];
     for (const summary of await this.listPages(projectId)) {
       if (summary.status !== 'canonical') continue;
@@ -610,12 +702,18 @@ export class WikiService {
         status: page.status,
       });
     }
-    return results
-      .sort(
-        (a, b) =>
-          (b.score ?? 0) - (a.score ?? 0) || a.path.localeCompare(b.path),
-      )
-      .slice(0, limit ?? config.search.maxResults);
+    return {
+      results: results
+        .sort(
+          (a, b) =>
+            (b.score ?? 0) - (a.score ?? 0) || a.path.localeCompare(b.path),
+        )
+        .slice(0, limit ?? config.search.maxResults),
+      requestedProvider,
+      providerUsed: 'basic',
+      searchEnabled: true,
+      searchStatus: qmdFellBack ? 'fallback' : 'completed',
+    };
   }
 
   async contextForPrompt(
@@ -631,6 +729,7 @@ export class WikiService {
     projectId: string,
     prompt: string,
     maxTokens: number,
+    options: { maxResults?: number; catalogFallback?: boolean } = {},
   ): Promise<{
     context: string;
     sources: {
@@ -638,49 +737,61 @@ export class WikiService {
       title: string;
       estimatedTokens?: number;
     }[];
+    retrieval: KnowledgeRetrievalTrace;
   }> {
     const config = await this.getConfig(projectId);
+    const emptyRetrieval: KnowledgeRetrievalTrace = {
+      requestedProvider: config.search.provider,
+      providerUsed: 'none',
+      searchEnabled: config.search.enabled,
+      searchStatus: config.search.enabled ? 'failed' : 'disabled',
+      candidateCount: 0,
+      selectedCount: 0,
+      catalogFallback: false,
+      maxContextTokens: maxTokens,
+    };
     if (!config.enabled || !config.injectContext) {
-      return { context: '', sources: [] };
+      return { context: '', sources: [], retrieval: emptyRetrieval };
     }
 
     const maxCharacters = Math.max(1, maxTokens * 4);
     // Reserve space for the trust-boundary wrapper so the complete injected
     // string, not just page bodies, respects the configured context budget.
     const contentCharacters = Math.max(1, maxCharacters - 256);
-    let catalog: WikiPage;
-    try {
-      catalog = await this.getPage(projectId, 'index.md');
-    } catch {
-      // Retrieval is best-effort. A missing/corrupt catalog must not block a turn.
-      return { context: '', sources: [] };
-    }
-    const catalogHeading = '## Catalog (index.md)\n\n';
-    const catalogBody = catalog.body.trim();
-    const catalogSection =
-      catalogHeading.length + catalogBody.length <= contentCharacters
-        ? `${catalogHeading}${catalogBody}`
-        : `${catalogHeading}${catalogBody.slice(
-            0,
-            Math.max(0, contentCharacters - catalogHeading.length - 13),
-          )}\n\n[truncated]`.slice(0, contentCharacters);
-    const sections = [catalogSection];
-    const sources = [
-      {
-        path: 'index.md',
-        title: catalog.title,
-        estimatedTokens: Math.ceil(catalogSection.length / 4),
-      },
-    ];
-    let usedCharacters = catalogSection.length;
+    const sections: string[] = [];
+    const sources: {
+      path: string;
+      title: string;
+      estimatedTokens?: number;
+    }[] = [];
+    let usedCharacters = 0;
 
-    let results: WikiSearchResult[] = [];
+    let searchSelection: SearchSelection;
     try {
-      results = await this.search(projectId, prompt, config.search.maxResults);
+      searchSelection = await this.searchSelection(
+        projectId,
+        prompt,
+        options.maxResults ?? config.search.maxResults,
+        config,
+      );
     } catch {
-      // The catalog remains useful even when an optional index or page read fails.
+      searchSelection = {
+        results: [],
+        requestedProvider: config.search.provider,
+        providerUsed: 'none',
+        searchEnabled: config.search.enabled,
+        searchStatus: 'failed',
+      };
     }
-    for (const result of results) {
+
+    const seenPaths = new Set<string>();
+    const candidates = searchSelection.results.filter((result) => {
+      if (RESERVED.has(result.path.split('/').at(-1) ?? '')) return false;
+      if (seenPaths.has(result.path)) return false;
+      seenPaths.add(result.path);
+      return true;
+    });
+    for (const result of candidates) {
       let page: WikiPage;
       try {
         page = await this.getPage(projectId, result.path);
@@ -692,23 +803,50 @@ export class WikiService {
       const section = `## ${page.title} (${page.path})\n\n${page.body.trim()}`;
       const remaining = contentCharacters - usedCharacters;
       if (remaining <= 0) break;
-      if (section.length > remaining) {
-        const truncatedSection = `${section.slice(0, remaining)}\n\n[truncated]`;
-        sections.push(truncatedSection);
-        sources.push({
-          path: page.path,
-          title: page.title,
-          estimatedTokens: Math.ceil(truncatedSection.length / 4),
-        });
-        break;
-      }
-      sections.push(section);
+      const injectedSection = truncateSection(section, remaining);
+      sections.push(injectedSection);
       sources.push({
         path: page.path,
         title: page.title,
-        estimatedTokens: Math.ceil(section.length / 4),
+        estimatedTokens: Math.ceil(injectedSection.length / 4),
       });
-      usedCharacters += section.length;
+      usedCharacters += injectedSection.length;
+      if (injectedSection.length < section.length) break;
+    }
+
+    let catalogFallback = false;
+    if (sources.length === 0 && options.catalogFallback !== false) {
+      try {
+        const catalog = await this.getPage(projectId, 'index.md');
+        const catalogSection = truncateSection(
+          `## Catalog fallback (index.md)\n\n${catalog.body.trim()}`,
+          Math.min(contentCharacters, CATALOG_FALLBACK_MAX_CHARACTERS),
+        );
+        sections.push(catalogSection);
+        sources.push({
+          path: 'index.md',
+          title: catalog.title,
+          estimatedTokens: Math.ceil(catalogSection.length / 4),
+        });
+        catalogFallback = true;
+      } catch {
+        // Retrieval is best-effort. Missing knowledge must not block a turn.
+      }
+    }
+
+    const retrieval: KnowledgeRetrievalTrace = {
+      requestedProvider: searchSelection.requestedProvider,
+      providerUsed: searchSelection.providerUsed,
+      searchEnabled: searchSelection.searchEnabled,
+      searchStatus: searchSelection.searchStatus,
+      candidateCount: candidates.length,
+      selectedCount: sources.length,
+      catalogFallback,
+      maxContextTokens: maxTokens,
+    };
+
+    if (sections.length === 0) {
+      return { context: '', sources, retrieval };
     }
 
     return {
@@ -721,6 +859,7 @@ export class WikiService {
         '</project_knowledge>',
       ].join('\n'),
       sources,
+      retrieval,
     };
   }
 

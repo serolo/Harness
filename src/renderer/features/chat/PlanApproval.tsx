@@ -1,9 +1,13 @@
-import { Check, Play } from 'lucide-react';
+import { Check, ExternalLink, Play } from 'lucide-react';
 
 export function PlanApproval({
   onApprove,
+  onHandoff,
+  canHandoff,
 }: {
   onApprove: () => void;
+  onHandoff: () => void;
+  canHandoff: boolean;
 }): React.JSX.Element {
   return (
     <div
@@ -21,15 +25,27 @@ export function PlanApproval({
           </div>
         </div>
       </div>
-      <button
-        type="button"
-        className="flex shrink-0 items-center gap-2 rounded-1 bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
-        data-testid="plan-approve"
-        onClick={onApprove}
-      >
-        <Play className="h-3.5 w-3.5" aria-hidden />
-        Approve plan &amp; start
-      </button>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          className="flex items-center gap-2 rounded-1 border border-border-2 px-3 py-2 text-sm font-medium text-fg-2 transition-colors hover:bg-bg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-40"
+          data-testid="plan-handoff"
+          disabled={!canHandoff}
+          onClick={onHandoff}
+        >
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+          Hand off to new session
+        </button>
+        <button
+          type="button"
+          className="flex items-center gap-2 rounded-1 bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
+          data-testid="plan-approve"
+          onClick={onApprove}
+        >
+          <Play className="h-3.5 w-3.5" aria-hidden />
+          Approve plan &amp; start
+        </button>
+      </div>
     </div>
   );
 }

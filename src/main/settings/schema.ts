@@ -205,7 +205,7 @@ const knowledgeSchema = z
         enabled: z.boolean().default(true),
         provider: z.enum(['qmd', 'basic', 'none']).default('basic'),
         max_results: z.number().int().min(1).max(100).default(12),
-        max_context_tokens: z.number().int().min(256).default(12_000),
+        max_context_tokens: z.number().int().min(256).default(4_000),
         index_sources: z.boolean().default(false),
         rerank: z.boolean().default(true),
       })

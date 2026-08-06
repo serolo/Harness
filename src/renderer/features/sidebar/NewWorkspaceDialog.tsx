@@ -12,9 +12,9 @@
 //               creates a normal (branch-from-base) workspace tagged `github_issue` AND
 //               seeds a one-time `pendingPrompt` (the issue text) for the chat composer.
 //
-// All three funnel through `runCreate`, which drives the `workspace:create` stream:
-// Creation is handed to the app-level workspace-creation store and the modal closes
-// immediately. That store keeps the stream alive and renders progress in chat.
+// All three funnel through `runCreate`, which drives the `workspace:create` stream.
+// Creation is handed to the app-level workspace-creation store. The dialog closes only
+// after successful creation, explicit cancellation, or a click outside the modal panel.
 //
 // The PR/issue lists degrade gracefully: when no GitHub account is connected the
 // `invoke` rejects with a typed AppError and an inline "Connect GitHub" empty state is
@@ -40,7 +40,7 @@ import {
   createWorkspaceInBackground,
   useWorkspaceCreationStore,
 } from '@renderer/stores/workspaceCreation';
-import { Button, IconButton, Input } from '@renderer/components/ui';
+import { Button, Input } from '@renderer/components/ui';
 
 type SourceTab = 'branch' | 'pr' | 'issue';
 
@@ -143,7 +143,7 @@ function isValidBranchName(branch: string): boolean {
 export interface NewWorkspaceDialogProps {
   /** The project to create the workspace under. Must be set before submission. */
   projectId: string | null;
-  /** Called when the user cancels or the workspace is successfully created. */
+  /** Called when creation succeeds, the user cancels, or clicks outside the modal panel. */
   onClose: () => void;
 }
 
@@ -350,7 +350,7 @@ export function NewWorkspaceDialog({
   /**
    * Drive the `workspace:create` stream for a request. Shared by all three tabs.
    * `onCreated` runs (with the new workspace id) on the persisted `created` frame,
-   * before selection + close — used by the issue flow to stash the pending prompt.
+   * before selection and close — used by the issue flow to stash the pending prompt.
    */
   const runCreate = useCallback(
     (
@@ -558,11 +558,8 @@ export function NewWorkspaceDialog({
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-border-1 px-4 py-3">
+          <div className="border-b border-border-1 px-4 py-3">
             <h2 className="text-md font-semibold text-fg-1">New Workspace</h2>
-            <IconButton label="Close" size="sm" onClick={handleClose}>
-              ✕
-            </IconButton>
           </div>
 
           {/* Body */}

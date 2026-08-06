@@ -552,6 +552,7 @@ export function Composer({
   const sentTextHistoryRef = useRef<string[]>([]);
   const sentTextHistoryIndexRef = useRef(-1);
   const preHistoryDraftRef = useRef('');
+  const modelSelectionInitializedRef = useRef(false);
   const activeDraftWorkspaceRef = useRef<string | null>(null);
   const draftsByWorkspaceRef = useRef<
     Record<
@@ -675,10 +676,19 @@ export function Composer({
         option.model === preferences.defaultModel,
     );
     const harness = preferred?.harness ?? selectedWorkspace?.harness;
-    setSelectedHarness(harness);
-    setSelectedProviderModel(
-      preferred?.id ?? defaultModelIdForHarness(selectedWorkspace?.harness),
-    );
+    const initialProviderModel =
+      preferred?.id ?? defaultModelIdForHarness(selectedWorkspace?.harness);
+    // The saved preference seeds a newly mounted composer, but an explicit model
+    // choice is sticky while navigating between chat contexts and workspaces. Those
+    // transitions reuse this component and must not silently restore the default.
+    if (
+      !modelSelectionInitializedRef.current &&
+      initialProviderModel !== undefined
+    ) {
+      modelSelectionInitializedRef.current = true;
+      setSelectedHarness(harness);
+      setSelectedProviderModel(initialProviderModel);
+    }
     const preferredEffort = (
       harness === 'codex' ? CODEX_EFFORT_OPTIONS : CLAUDE_EFFORT_OPTIONS
     ).find((option) => option.id === preferences.defaultEffort);

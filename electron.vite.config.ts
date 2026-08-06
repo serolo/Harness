@@ -14,6 +14,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
           'mcp-stdio': resolve(__dirname, 'src/main/meta-harness/mcp-stdio.ts'),
+          'knowledge-mcp': resolve(__dirname, 'src/main/knowledge-mcp.ts'),
         },
       },
     },

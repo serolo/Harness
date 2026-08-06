@@ -597,7 +597,6 @@ export interface Commands {
   };
   /** Delete Harness's encrypted Codex API key and remove it from child environments. */
   'agent:deleteCodexApiKey': { req: void; res: void };
-
   // --- Project-scoped meta agents and supervised runs (APPEND-ONLY) ---
   'metaAgent:list': { req: { projectId: string }; res: MetaAgentSummary[] };
   'metaAgent:get': {
@@ -654,6 +653,12 @@ export interface Commands {
   'metaRun:takeOver': {
     req: { projectId: string; runId: string };
     res: MetaRunDetail;
+  };
+
+  /** List one directory in a workspace checkout for the lazy All files browser. */
+  'workspace:listDirectory': {
+    req: { workspaceId: string; path: string };
+    res: WorkspaceDirectoryEntry[];
   };
 }
 
@@ -1011,3 +1016,10 @@ export type OnboardingLoginChunk =
       authenticated: boolean;
     }
   | { kind: 'progress'; message: string };
+
+/** A direct child returned by the workspace's lazy directory browser. APPEND-ONLY. */
+export interface WorkspaceDirectoryEntry {
+  name: string;
+  path: string;
+  kind: 'directory' | 'file' | 'symlink';
+}

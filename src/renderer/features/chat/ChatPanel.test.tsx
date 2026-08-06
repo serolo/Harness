@@ -713,6 +713,7 @@ describe('ChatPanel reconstruction', () => {
           workspaceId: 'ws1',
           prompt: 'The plan is approved. Start implementing it now.',
           mode: 'default',
+          sessionId: 'plan-session',
         }),
         expect.any(Function),
         expect.anything(),
@@ -1004,6 +1005,90 @@ describe('ChatPanel reconstruction', () => {
       'reconciliation.md',
     );
     expect(api.invoke).toHaveBeenCalledWith('plan:read', { path: planPath });
+  });
+
+  it('shows a tool-written plan and hands it to a fresh session', async () => {
+    const planPath = '/Users/test/.claude/plans/tool-written.md';
+    const plan = '# Tool-written plan\n\n1. Fix plan rendering.';
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: 'fresh-implementation-turn',
+          sessionId: 'fresh-session',
+          mode: 'default',
+        });
+        onChunk({ kind: 'event', event: { kind: 'turn_end' } });
+        return Promise.resolve();
+      },
+    );
+    installApi({
+      plans: { [planPath]: plan },
+      stream,
+      history: {
+        turns: [
+          {
+            id: 't-tool-written-plan',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'old-plan-session',
+            mode: 'plan',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            events: [
+              {
+                id: 'plan-write',
+                turnId: 't-tool-written-plan',
+                kind: 'file_edit',
+                ts: 1,
+                event: { kind: 'file_edit', path: planPath, op: 'create' },
+              },
+              {
+                id: 'plan-ready-text',
+                turnId: 't-tool-written-plan',
+                kind: 'text',
+                ts: 2,
+                event: {
+                  kind: 'text',
+                  delta: 'Plan is ready for your review.',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByTestId('plan-preview')).toHaveTextContent(
+      'Tool-written plan',
+    );
+    fireEvent.click(screen.getByTestId('plan-handoff'));
+
+    await waitFor(() =>
+      expect(stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          prompt: expect.stringContaining(plan),
+          mode: 'default',
+          sessionId: null,
+        }),
+        expect.any(Function),
+        expect.anything(),
+      ),
+    );
+    expect(
+      screen.getByRole('tab', { name: /Plan implementation/i }),
+    ).toHaveAttribute('aria-selected', 'true');
   });
 
   it('turns lettered prose choices into clickable answers', async () => {
@@ -1824,6 +1909,46 @@ describe('ChatPanel streaming', () => {
         expect.anything(),
       ),
     );
+  });
+
+  it('keeps the selected model across contexts, workspaces, and prompt submission', async () => {
+    const api = installApi({});
+    const { rerender } = render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-model'));
+    fireEvent.click(
+      await screen.findByTestId('composer-model-option-claude-fable-5'),
+    );
+    expect(screen.getByTestId('composer-model')).toHaveTextContent('Fable 5');
+
+    fireEvent.click(screen.getByTestId('chat-new'));
+    expect(await screen.findByTestId('composer-model')).toHaveTextContent(
+      'Fable 5',
+    );
+
+    rerender(<ChatPanel workspaceId="ws2" />);
+    expect(await screen.findByTestId('composer-model')).toHaveTextContent(
+      'Fable 5',
+    );
+
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Keep using my selected model' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() =>
+      expect(api.stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          workspaceId: 'ws2',
+          harness: 'claude_code',
+          model: 'claude-fable-5',
+        }),
+        expect.any(Function),
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByTestId('composer-model')).toHaveTextContent('Fable 5');
   });
 
   it('shows OpenCode models only after OpenCode has been configured', async () => {

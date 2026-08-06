@@ -610,6 +610,27 @@ export function ChatPanel({
     setActiveTab(id);
   };
 
+  const handoffPlan = (plan: string): void => {
+    const id = `chat:${Date.now()}:plan`;
+    setChatContexts((contexts) => [
+      ...contexts,
+      {
+        id,
+        label: 'Plan implementation',
+        turnIds: [],
+        initialSessionId: null,
+      },
+    ]);
+    setActiveTab(id);
+    void sendTurn(
+      `Implement the following approved plan in this workspace.\n\n${plan}`,
+      [],
+      'default',
+      undefined,
+      null,
+    );
+  };
+
   const closeChatContext = (id: string): void => {
     if (isBusy) return;
     const closingIndex = chatContexts.findIndex((context) => context.id === id);
@@ -816,6 +837,7 @@ export function ChatPanel({
                 contextSessionId,
               )
             }
+            onHandoffPlan={handoffPlan}
           />
           <WorkspaceCreationTerminal workspaceId={workspaceId} />
           <WorkspaceArchiveTerminal workspaceId={workspaceId} />

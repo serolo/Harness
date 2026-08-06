@@ -27,7 +27,7 @@ import type {
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn as spawnChild } from 'node:child_process';
-import { readFile, rm, stat } from 'node:fs/promises';
+import { readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { v7 as uuidv7 } from 'uuid';
 import { Octokit } from '@octokit/rest';
 import type {
@@ -88,6 +88,11 @@ import {
 import { EffectiveSettingsSchema } from '../settings/schema';
 import { SettingsService } from '../settings';
 import { KNOWLEDGE_RECONCILIATION_INSTRUCTION } from '../knowledge';
+import {
+  consumeKnowledgeTrace,
+  prepareMcpTurnKnowledge,
+  usesKnowledgeMcp,
+} from '../knowledge/retrieval';
 import {
   loadStoredProjectSettings,
   saveStoredProjectSetting,
@@ -263,6 +268,33 @@ function resolveWorkspaceFile(worktreePath: string, filePath: string): string {
   const target = resolve(root, filePath);
   const rel = relative(root, target);
   if (rel === '' || rel.startsWith('..') || rel.includes(`..${sep}`)) {
+    throw new AppError('invalid_input', 'file path must stay inside workspace');
+  }
+  return target;
+}
+
+/**
+ * Resolve a workspace path after following symlinks, then confine the real target to
+ * the real checkout root. This closes the symlink variant of `..` traversal for every
+ * filesystem read added to the workspace browser.
+ */
+async function resolveRealWorkspacePath(
+  worktreePath: string,
+  filePath: string,
+): Promise<string> {
+  const root = await realpath(resolve(worktreePath));
+  const candidate = resolve(root, filePath);
+  const candidateRelative = relative(root, candidate);
+  if (
+    candidateRelative.startsWith('..') ||
+    candidateRelative.includes(`..${sep}`)
+  ) {
+    throw new AppError('invalid_input', 'file path must stay inside workspace');
+  }
+
+  const target = await realpath(candidate);
+  const targetRelative = relative(root, target);
+  if (targetRelative.startsWith('..') || targetRelative.includes(`..${sep}`)) {
     throw new AppError('invalid_input', 'file path must stay inside workspace');
   }
   return target;
@@ -962,6 +994,8 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
   // event; failures route to `sink.error(...)`.
   'turn:start': (arg, ctx, sink) => {
     void (async () => {
+      let preparedKnowledgeTrace:
+        ReturnType<typeof prepareMcpTurnKnowledge>['trace'] | undefined;
       try {
         // Validate + narrow the untrusted payload before acting.
         if (typeof arg.workspaceId !== 'string' || arg.workspaceId === '') {
@@ -1005,13 +1039,31 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
 
         const settings = await settingsForProject(ctx, workspace.projectId);
-        const knowledgeSelection = settings.knowledge.inject_context
-          ? await ctx.knowledge.contextSelectionForPrompt(
-              workspace.projectId,
-              arg.prompt,
-              settings.knowledge.search.max_context_tokens,
-            )
-          : { context: '', sources: [] };
+        const selectedHarness = harnessOverride ?? workspace.harness;
+        const knowledgeConfig =
+          settings.knowledge.enabled && settings.knowledge.inject_context
+            ? await ctx.knowledge.getConfig(workspace.projectId)
+            : undefined;
+        const mcpKnowledge =
+          knowledgeConfig !== undefined && usesKnowledgeMcp(selectedHarness)
+            ? prepareMcpTurnKnowledge(
+                workspace.projectId,
+                knowledgeConfig,
+                settings.knowledge.search.max_context_tokens,
+              )
+            : undefined;
+        preparedKnowledgeTrace = mcpKnowledge?.trace;
+        const knowledgeSelection =
+          settings.knowledge.enabled &&
+          settings.knowledge.inject_context &&
+          !usesKnowledgeMcp(selectedHarness)
+            ? await ctx.knowledge.contextSelectionForPrompt(
+                workspace.projectId,
+                arg.prompt,
+                Math.min(1_000, settings.knowledge.search.max_context_tokens),
+                { maxResults: 2, catalogFallback: false },
+              )
+            : { context: '', sources: [], retrieval: undefined };
         const hasExplicitSession = Object.prototype.hasOwnProperty.call(
           arg,
           'sessionId',
@@ -1028,8 +1080,15 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           workspaceDir: workspace.worktreePath,
           displayPrompt: arg.prompt,
           knowledgeSources: knowledgeSelection.sources,
+          ...(knowledgeSelection.retrieval === undefined
+            ? {}
+            : { knowledgeRetrieval: knowledgeSelection.retrieval }),
+          ...(mcpKnowledge === undefined
+            ? {}
+            : { knowledgeTrace: mcpKnowledge.trace }),
           prompt: [
             arg.prompt,
+            mcpKnowledge?.instruction ?? '',
             knowledgeSelection.context,
             settings.knowledge.enabled && settings.knowledge.extract_after_turn
               ? KNOWLEDGE_RECONCILIATION_INSTRUCTION
@@ -1040,7 +1099,10 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           attachments,
           sessionId,
           mode: arg.mode ?? settings.agent.mode,
-          mcpConfig: settings.mcp,
+          mcpConfig:
+            mcpKnowledge === undefined
+              ? settings.mcp
+              : [...settings.mcp, mcpKnowledge.server],
           permissionPolicy: settings.agent.permissionPolicy,
           model: arg.model,
           effort: arg.effort,
@@ -1076,6 +1138,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           sink.push({ kind: 'event', event });
         }
       } catch (e) {
+        consumeKnowledgeTrace(preparedKnowledgeTrace);
         sink.error(toAppError(e));
       }
     })();
@@ -1789,7 +1852,10 @@ export function registerIpc(ctx: AppContext): void {
     if (workspace === null || workspace.worktreePath === null) {
       throw new AppError('not_found', 'workspace checkout is unavailable');
     }
-    const absolutePath = resolveWorkspaceFile(workspace.worktreePath, req.path);
+    const absolutePath = await resolveRealWorkspacePath(
+      workspace.worktreePath,
+      req.path,
+    );
     const fileStat = await stat(absolutePath);
     if (!fileStat.isFile()) {
       throw new AppError('invalid_input', 'path is not a file');
@@ -1801,6 +1867,55 @@ export function registerIpc(ctx: AppContext): void {
       path: workspaceRelativePath(workspace.worktreePath, req.path),
       content: await readFile(absolutePath, 'utf8'),
     };
+  });
+
+  // workspace:listDirectory — lazy, read-only backing for the Git panel's All files
+  // tree. Renderer paths are untrusted; realpath confinement also rejects symlinks
+  // whose targets escape the selected checkout.
+  handle('workspace:listDirectory', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    if (
+      typeof req.path !== 'string' ||
+      req.path.includes('\0') ||
+      req.path.length > 4096
+    ) {
+      throw new AppError('invalid_input', 'invalid workspace directory path');
+    }
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (workspace === null || workspace.worktreePath === null) {
+      throw new AppError('not_found', 'workspace checkout is unavailable');
+    }
+    const absolutePath = await resolveRealWorkspacePath(
+      workspace.worktreePath,
+      req.path,
+    );
+    const directoryStat = await stat(absolutePath);
+    if (!directoryStat.isDirectory()) {
+      throw new AppError('invalid_input', 'path is not a directory');
+    }
+
+    const entries = await readdir(absolutePath, { withFileTypes: true });
+    const realWorkspaceRoot = await realpath(resolve(workspace.worktreePath));
+    const parentPath = relative(realWorkspaceRoot, absolutePath)
+      .split(sep)
+      .join('/');
+    return entries
+      .map((entry) => ({
+        name: entry.name,
+        path: [parentPath, entry.name].filter(Boolean).join('/'),
+        kind: entry.isDirectory()
+          ? ('directory' as const)
+          : entry.isFile()
+            ? ('file' as const)
+            : ('symlink' as const),
+      }))
+      .sort((left, right) => {
+        if (left.kind === 'directory' && right.kind !== 'directory') return -1;
+        if (left.kind !== 'directory' && right.kind === 'directory') return 1;
+        return left.name.localeCompare(right.name, undefined, {
+          sensitivity: 'base',
+        });
+      });
   });
 
   // plan:read — narrowly scoped read-only access for Claude's saved plan handoff.

@@ -41,6 +41,7 @@ describe('QmdSearchProvider', () => {
       query: 'authentication',
       limit: 4,
       rerank: false,
+      stateRoot: root,
     });
 
     expect(results).toEqual([
@@ -97,6 +98,7 @@ describe('QmdSearchProvider', () => {
       query: 'api',
       limit: 4,
       rerank: true,
+      stateRoot: root,
     };
 
     await provider.search(options);

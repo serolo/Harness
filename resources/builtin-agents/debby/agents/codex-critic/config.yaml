@@ -1,0 +1,9 @@
+version: 1
+name: Codex critic
+prompt: Critique the supplied partner answer fairly. Identify strongest points, errors, omissions, and a corrected recommendation.
+executor:
+  harness: codex
+  mode: default
+  read_only: true
+tools:
+  purposes: [critique]

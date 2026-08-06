@@ -112,6 +112,8 @@ export interface OpenPrOptions {
   body?: string;
   /** Base branch to target; defaults to the project default branch, then `baseBranch`. */
   base?: string;
+  /** Abort Git/GitHub publication when the owning meta run stops or expires. */
+  signal?: AbortSignal;
 }
 
 /** The composed input for a renderer-driven "fix" turn (reviews or checks). */
@@ -138,6 +140,17 @@ export class PrWorkflow {
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
+  /** Commit pending work and publish exactly the workspace's named branch. */
+  async pushBranch(
+    workspaceId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<void> {
+    options.signal?.throwIfAborted();
+    const { workspace, wt } = await this.resolve(workspaceId);
+    options.signal?.throwIfAborted();
+    await this.commitAndPush(wt, workspace.branch, options.signal);
+  }
+
   /**
    * Open (or re-open the summary of) a pull request for a workspace's branch (spec §5.6).
    *
@@ -150,6 +163,7 @@ export class PrWorkflow {
     workspaceId: string,
     opts: OpenPrOptions = {},
   ): Promise<PrSummary> {
+    opts.signal?.throwIfAborted();
     const { workspace, project, wt } = await this.resolve(workspaceId);
     const branch = workspace.branch;
 
@@ -157,25 +171,15 @@ export class PrWorkflow {
     //    tells us whether there is anything to commit; `git.commit` is itself no-op-safe
     //    (throws a typed 'nothing to commit'), which we tolerate to cover the race where
     //    the tree goes clean between the status check and the commit.
-    const status = await this.deps.git.status(wt);
-    if (!status.clean) {
-      try {
-        await this.deps.git.commit(wt, `WIP: ${branch}`);
-      } catch (err) {
-        if (!isNothingToCommit(err)) throw err;
-      }
-    }
-
-    // 2. Publish the branch (and ONLY the branch — see file header). Set upstream on the
-    //    first push so subsequent pushes track `origin/<branch>`.
-    const setUpstream = !(await this.deps.git.hasUpstream(wt));
-    await this.deps.git.push(wt, 'origin', branch, { setUpstream });
+    opts.signal?.throwIfAborted();
+    await this.commitAndPush(wt, branch, opts.signal);
 
     // 3. If this branch already has an open PR, return it instead of trying to create a
     //    duplicate. This happens after commit/push so the "Commit & push" action still
     //    publishes the latest local tree before the PR summary is returned.
     const client = await this.clientFor(project);
-    const existing = await client.getPr(branch);
+    opts.signal?.throwIfAborted();
+    const existing = await client.getPr(branch, { signal: opts.signal });
     if (existing !== null) {
       if (workspace.prNumber !== existing.number) {
         await this.deps.workspaces.update(workspaceId, {
@@ -191,15 +195,48 @@ export class PrWorkflow {
     const body = opts.body ?? (await this.deriveBody(workspaceId));
 
     // 5. Create the PR via the per-repo client, then persist its number on the workspace.
+    opts.signal?.throwIfAborted();
     const pr = await client.createPr({
       head: branch,
       base,
       title,
       body,
       draft: opts.draft ?? false,
+      signal: opts.signal,
     });
     await this.deps.workspaces.update(workspaceId, { prNumber: pr.number });
+    opts.signal?.throwIfAborted();
     return pr;
+  }
+
+  private async commitAndPush(
+    wt: string,
+    branch: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    const status = signal
+      ? await this.deps.git.status(wt, { signal })
+      : await this.deps.git.status(wt);
+    if (!status.clean) {
+      try {
+        if (signal)
+          await this.deps.git.commit(wt, `WIP: ${branch}`, { signal });
+        else await this.deps.git.commit(wt, `WIP: ${branch}`);
+      } catch (err) {
+        if (!isNothingToCommit(err)) throw err;
+      }
+    }
+    signal?.throwIfAborted();
+    const hasUpstream = signal
+      ? await this.deps.git.hasUpstream(wt, { signal })
+      : await this.deps.git.hasUpstream(wt);
+    const setUpstream = !hasUpstream;
+    await this.deps.git.push(wt, 'origin', branch, {
+      setUpstream,
+      ...(signal ? { signal } : {}),
+    });
+    signal?.throwIfAborted();
   }
 
   /**

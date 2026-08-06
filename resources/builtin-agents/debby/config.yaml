@@ -1,0 +1,22 @@
+version: 1
+name: Debby
+protocol: debby
+description: Independent Claude and Codex answers, bounded mutual critique, and synthesis.
+prompt: Dispatch both partners independently before sharing results. Run the configured critique round and synthesize without erasing disagreement.
+executor:
+  harness: claude_code
+  mode: plan
+  read_only: true
+tools:
+  agents: [claude-partner, codex-partner, claude-critic, codex-critic]
+  skills: [debate]
+requires:
+  providers: [claude_code, codex]
+policy:
+  max_dispatches: 6
+  max_parallel: 2
+  turn_timeout_ms: 1800000
+  run_timeout_ms: 7200000
+  max_request_bytes: 65536
+  max_result_bytes: 131072
+  critique_rounds: 1

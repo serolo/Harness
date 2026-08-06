@@ -19,5 +19,7 @@ phases build against.
   Note the `security-guard` hook hard-blocks `git clean -d/-f/-x` and `rm -rf`.
 - Parse porcelain output defensively; normalize into the typed `GitStatusEntry`/`DiffFile` shapes
   rather than leaking raw git strings upward.
+- Publication callers pass an `AbortSignal` through status/commit/upstream/push. Keep the signal on
+  every `gitExeca` call (including PTY fallback) so meta-run timeout/cancel cannot leave a push live.
 - This app's own checkout may be a **detached worktree** — don't assume `git` commands succeed from
   the app's cwd; operate against explicit workspace paths.

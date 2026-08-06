@@ -1,0 +1,10 @@
+version: 1
+name: Investigator
+description: Performs read-only investigation before implementation.
+prompt: Investigate the bounded question, cite concrete repository evidence, and propose options without changing files.
+executor:
+  harness: codex
+  mode: default
+  read_only: true
+tools:
+  purposes: [research, plan]

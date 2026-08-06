@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +19,7 @@ import { openDb, type AppDatabase } from '../db';
 import { ProjectsRepo } from '../db/repos/projects';
 import { WorkspacesRepo } from '../db/repos/workspaces';
 import { ScheduledTasksRepo } from '../db/repos/tasks';
+import { AgentRunsRepo } from '../db/repos/agentRuns';
 import { TurnsRepo } from '../db/repos/turns';
 import { TaskScheduler, type TaskSchedulerDeps } from './index';
 import { AppError } from '@shared/errors';
@@ -25,6 +27,11 @@ import type { AgentEvent, StartTurnOpts } from '@shared/harness';
 import type { StreamSink } from '@shared/ipc';
 import type { EffectiveSettings } from '@shared/settings';
 import type { Workspace } from '@shared/models';
+import type {
+  MetaRunDetail,
+  MetaRunSummary,
+  NormalizedAgentSnapshot,
+} from '@shared/agents';
 
 /** A minimal settings snapshot exposing just what runTask reads. */
 const SETTINGS = {
@@ -78,6 +85,7 @@ class FakeHarness {
 let tmpDir: string;
 let db: AppDatabase;
 let repo: ScheduledTasksRepo;
+let projectId: string;
 let workspaceId: string;
 let worktreePath: string;
 let fakeTurnId: string;
@@ -86,13 +94,86 @@ let emitted: { event: string; payload: unknown }[];
 let scheduler: TaskScheduler;
 const NOW = 1_000_000;
 
+const META_SNAPSHOT: NormalizedAgentSnapshot = {
+  schemaVersion: 1,
+  slug: 'scheduled-agent',
+  name: 'Scheduled agent',
+  description: 'Runs scheduled work',
+  revision: 'revision-1',
+  prompt: 'Coordinate the task.',
+  coordinator: { harness: 'claude_code', mode: 'plan' },
+  roles: [],
+  skills: [],
+  capabilities: ['delegate'],
+  requiredProviders: ['claude_code'],
+  policy: {
+    maxDispatches: 1,
+    maxParallel: 1,
+    maxDepth: 1,
+    turnTimeoutMs: 10_000,
+    runTimeoutMs: 60_000,
+    maxRequestBytes: 1_024,
+    maxResultBytes: 1_024,
+    critiqueRounds: 0,
+  },
+};
+
+async function metaRun(
+  status: MetaRunSummary['status'],
+): Promise<MetaRunDetail> {
+  const runRepo = new AgentRunsRepo(db);
+  const durable = await runRepo.create({
+    projectId,
+    sourceWorkspaceId: workspaceId,
+    agentId: 'project:demo:scheduled-agent',
+    snapshot: META_SNAPSHOT,
+    goal: 'go',
+    allowPush: false,
+    allowOpenPr: false,
+  });
+  if (status === 'running') {
+    await runRepo.setCoordinator(durable.id, workspaceId);
+  } else if (status !== 'starting') {
+    await runRepo.transition(
+      durable.id,
+      status,
+      status === 'completed'
+        ? { summary: 'done' }
+        : status === 'failed'
+          ? { error: 'provider failed' }
+          : {},
+    );
+  }
+  const stored = await runRepo.get(durable.id);
+  return {
+    ...stored,
+    dispatches: [],
+  };
+}
+
+function agentRecord() {
+  const snapshotJson = JSON.stringify(META_SNAPSHOT);
+  return {
+    id: 'project:demo:scheduled-agent',
+    name: META_SNAPSHOT.name,
+    revision: META_SNAPSHOT.revision,
+    snapshotJson,
+    digest: createHash('sha256').update(snapshotJson).digest('hex'),
+  };
+}
+
 function makeScheduler(overrides?: Partial<TaskSchedulerDeps>): TaskScheduler {
   return new TaskScheduler({
     repo,
     harness: harness as unknown as TaskSchedulerDeps['harness'],
     getWorkspace: async (id): Promise<Workspace | null> =>
       id === workspaceId
-        ? ({ id, worktreePath, harness: 'claude_code' } as unknown as Workspace)
+        ? ({
+            id,
+            projectId,
+            worktreePath,
+            harness: 'claude_code',
+          } as unknown as Workspace)
         : null,
     settings: { get: () => SETTINGS },
     emit: (event, payload) => emitted.push({ event, payload }),
@@ -113,6 +194,7 @@ beforeEach(async () => {
     defaultBranch: 'main',
     repoPath: '/tmp/repo/demo',
   });
+  projectId = project.id;
   const workspace = await new WorkspacesRepo(db).create({
     projectId: project.id,
     name: 'paris',
@@ -366,7 +448,218 @@ describe('TaskScheduler.onWorkspaceTurnEnd — FIFO drain', () => {
   });
 });
 
+describe('TaskScheduler — scheduled meta agents', () => {
+  it('rejects a digest-valid but structurally invalid stored snapshot before meta start', async () => {
+    const meta = {
+      start: vi.fn(),
+      onTerminal: vi.fn(async () => () => {}),
+      onClaimsReleased: vi.fn(() => () => {}),
+      isWorkspaceClaimed: vi.fn(() => false),
+    };
+    scheduler.setMetaHarness(
+      meta as unknown as Parameters<TaskScheduler['setMetaHarness']>[0],
+    );
+    const task = await repo.create(
+      {
+        workspaceId,
+        prompt: 'must not run malformed config',
+        agentId: agentRecord().id,
+      },
+      agentRecord(),
+    );
+    const malformed = JSON.stringify({
+      ...META_SNAPSHOT,
+      coordinator: { ...META_SNAPSHOT.coordinator, command: '/bin/sh' },
+    });
+    await db
+      .updateTable('scheduled_tasks')
+      .set({
+        agent_snapshot_json: malformed,
+        agent_snapshot_digest: createHash('sha256')
+          .update(malformed)
+          .digest('hex'),
+      })
+      .where('id', '=', task.id)
+      .execute();
+
+    await scheduler.runNow(task.id);
+
+    expect(await repo.get(task.id)).toMatchObject({
+      state: 'error',
+      errorMessage: 'scheduled agent snapshot schema is invalid',
+      metaRunId: null,
+    });
+    expect(meta.start).not.toHaveBeenCalled();
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it('cannot miss a meta run that completes before terminal-listener registration returns', async () => {
+    const completed = await metaRun('completed');
+    const meta = {
+      start: vi.fn(async () => completed),
+      onTerminal: vi.fn(
+        async (_runId: string, listener: (run: MetaRunSummary) => void) => {
+          listener(completed);
+          return () => {};
+        },
+      ),
+      onClaimsReleased: vi.fn(() => () => {}),
+      isWorkspaceClaimed: vi.fn(() => false),
+    };
+    scheduler.setMetaHarness(
+      meta as unknown as Parameters<TaskScheduler['setMetaHarness']>[0],
+    );
+    const task = await repo.create(
+      {
+        workspaceId,
+        prompt: 'go',
+        agentId: agentRecord().id,
+      },
+      agentRecord(),
+    );
+
+    await scheduler.runNow(task.id);
+
+    await vi.waitFor(async () =>
+      expect(await repo.get(task.id)).toMatchObject({
+        state: 'done',
+        metaRunId: completed.id,
+        errorMessage: null,
+      }),
+    );
+    expect(meta.start).toHaveBeenCalledWith(
+      {
+        projectId,
+        agentId: agentRecord().id,
+        sourceWorkspaceId: workspaceId,
+        goal: 'go',
+      },
+      META_SNAPSHOT,
+    );
+    expect(meta.onTerminal).toHaveBeenCalledWith(
+      completed.id,
+      expect.any(Function),
+    );
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it('queues behind a claimed workspace and drains after the meta service releases it', async () => {
+    let claimed = true;
+    let releaseClaims: ((workspaceIds: string[]) => void) | undefined;
+    const running = await metaRun('running');
+    const meta = {
+      start: vi.fn(async () => running),
+      onTerminal: vi.fn(async () => () => {}),
+      onClaimsReleased: vi.fn((listener: (workspaceIds: string[]) => void) => {
+        releaseClaims = listener;
+        return () => {};
+      }),
+      isWorkspaceClaimed: vi.fn(() => claimed),
+    };
+    scheduler.setMetaHarness(
+      meta as unknown as Parameters<TaskScheduler['setMetaHarness']>[0],
+    );
+    const task = await repo.create(
+      {
+        workspaceId,
+        prompt: 'queued meta task',
+        agentId: agentRecord().id,
+      },
+      agentRecord(),
+    );
+
+    expect((await scheduler.runNow(task.id)).state).toBe('queued');
+    expect(meta.start).not.toHaveBeenCalled();
+
+    claimed = false;
+    releaseClaims?.([workspaceId]);
+
+    await vi.waitFor(() => expect(meta.start).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () =>
+      expect(await repo.get(task.id)).toMatchObject({
+        state: 'running',
+        metaRunId: running.id,
+        errorMessage: null,
+      }),
+    );
+  });
+});
+
 describe('TaskScheduler.start — boot reconcile + tick', () => {
+  it('maps terminal meta_run_id states without resuming them and preserves ordinary-turn reconciliation', async () => {
+    const meta = {
+      start: vi.fn(),
+      onTerminal: vi.fn(async () => () => {}),
+      onClaimsReleased: vi.fn(() => () => {}),
+      isWorkspaceClaimed: vi.fn(() => false),
+    };
+    scheduler.setMetaHarness(
+      meta as unknown as Parameters<TaskScheduler['setMetaHarness']>[0],
+    );
+    const statuses = [
+      'completed',
+      'failed',
+      'cancelled',
+      'interrupted',
+      'taken_over',
+    ] as const;
+    const metaTasks = new Map<
+      (typeof statuses)[number],
+      Awaited<ReturnType<ScheduledTasksRepo['create']>>
+    >();
+    for (const status of statuses) {
+      const run = await metaRun(status);
+      const task = await repo.create(
+        {
+          workspaceId,
+          prompt: `recover ${status}`,
+          agentId: agentRecord().id,
+        },
+        agentRecord(),
+      );
+      await repo.setState(task.id, 'running');
+      await repo.setMetaRunId(task.id, run.id);
+      metaTasks.set(status, task);
+    }
+    const completedTurn = await new TurnsRepo(db).create({
+      workspaceId,
+      idx: 99,
+      status: 'completed',
+    });
+    const ordinary = await repo.create({
+      workspaceId,
+      prompt: 'ordinary completed turn',
+    });
+    await repo.setState(ordinary.id, 'running', {
+      turnId: completedTurn.id,
+    });
+
+    await scheduler.start();
+    scheduler.stop();
+
+    expect(await repo.get(metaTasks.get('completed')!.id)).toMatchObject({
+      state: 'done',
+      errorMessage: null,
+    });
+    expect(await repo.get(metaTasks.get('failed')!.id)).toMatchObject({
+      state: 'error',
+      errorMessage: 'provider failed',
+    });
+    for (const status of ['cancelled', 'interrupted', 'taken_over'] as const) {
+      expect(await repo.get(metaTasks.get(status)!.id)).toMatchObject({
+        state: 'error',
+        errorMessage: `meta run ${status.replaceAll('_', ' ')}`,
+      });
+    }
+    expect(await repo.get(ordinary.id)).toMatchObject({
+      state: 'done',
+      errorMessage: null,
+      metaRunId: null,
+    });
+    expect(meta.start).not.toHaveBeenCalled();
+    expect(harness.calls).toHaveLength(0);
+  });
+
   it('reconciles an overdue scheduled task to missed and emits task:changed', async () => {
     const overdue = await repo.create({
       workspaceId,

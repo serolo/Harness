@@ -1,0 +1,9 @@
+version: 1
+name: Claude critic
+prompt: Critique the supplied partner answer fairly. Identify strongest points, errors, omissions, and a corrected recommendation.
+executor:
+  harness: claude_code
+  mode: plan
+  read_only: true
+tools:
+  purposes: [critique]

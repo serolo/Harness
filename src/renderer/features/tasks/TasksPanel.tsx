@@ -15,13 +15,14 @@ import type {
   WikiPageSummary,
   WikiProposal,
 } from '@shared/knowledge';
-import { invoke } from '@renderer/ipc';
+import { invoke, onEvent } from '@renderer/ipc';
 import { Button } from '@renderer/components/ui';
 import { useTasks } from './useTasks';
 import { TaskRow } from './TaskRow';
 import { TaskForm, type TaskFormValues } from './TaskForm';
 import { KnowledgeFolderBrowser } from '../knowledge/KnowledgeFolderBrowser';
 import { Markdown } from '../chat/markdown';
+import { AgentsPanel } from '../agents/AgentsPanel';
 
 export interface TasksPanelProps {
   workspaceId: string | null;
@@ -44,7 +45,13 @@ export function TasksPanel({
     useTasks(workspaceId);
   const [form, setForm] = useState<FormState>({ kind: 'closed' });
   const [defaultMode, setDefaultMode] = useState<AgentMode | undefined>();
-  const [activeTab, setActiveTab] = useState<'tasks' | 'knowledge'>('tasks');
+  const [agentRevisions, setAgentRevisions] = useState<Map<
+    string,
+    string
+  > | null>(null);
+  const [activeTab, setActiveTab] = useState<'tasks' | 'agents' | 'knowledge'>(
+    'tasks',
+  );
   const [expandedKnowledgeFolders, setExpandedKnowledgeFolders] = useState<
     Set<string>
   >(() => new Set());
@@ -72,6 +79,36 @@ export function TasksPanel({
     };
   }, []);
 
+  useEffect(() => {
+    if (!projectId) {
+      setAgentRevisions(new Map());
+      return;
+    }
+    let active = true;
+    const load = (): void => {
+      void invoke('metaAgent:list', { projectId })
+        .then((agents) => {
+          if (active)
+            setAgentRevisions(
+              new Map(agents.map((agent) => [agent.id, agent.revision])),
+            );
+        })
+        .catch(() => {
+          // Unknown is distinct from an authoritative empty registry; a transient
+          // load failure must not mark every scheduled snapshot stale.
+          if (active) setAgentRevisions(null);
+        });
+    };
+    load();
+    const off = onEvent('metaAgent:changed', (event) => {
+      if (event.projectId === projectId) load();
+    });
+    return () => {
+      active = false;
+      off();
+    };
+  }, [projectId]);
+
   if (!workspaceId) {
     return (
       <div
@@ -94,6 +131,7 @@ export function TasksPanel({
         harnessOverride: values.harnessOverride,
         attachments: values.attachments,
         effort: values.effort,
+        agentId: values.agentId,
       });
     } else {
       // Create: the request type uses optional fields (no null), so map null → undefined.
@@ -105,7 +143,8 @@ export function TasksPanel({
         scheduledAt: values.scheduledAt ?? undefined,
         harnessOverride: values.harnessOverride ?? undefined,
         attachments: values.attachments,
-        effort: values.effort,
+        effort: values.effort ?? undefined,
+        agentId: values.agentId ?? undefined,
       });
     }
   }
@@ -128,6 +167,12 @@ export function TasksPanel({
             onClick={() => setActiveTab('tasks')}
           />
           <WorkspaceToolTab
+            active={activeTab === 'agents'}
+            label="Agents"
+            testId="workspace-tab-agents"
+            onClick={() => setActiveTab('agents')}
+          />
+          <WorkspaceToolTab
             active={activeTab === 'knowledge'}
             label="Knowledge"
             testId="workspace-tab-knowledge"
@@ -147,7 +192,9 @@ export function TasksPanel({
         ) : null}
       </div>
 
-      {activeTab === 'knowledge' ? (
+      {activeTab === 'agents' ? (
+        <AgentsPanel projectId={projectId} workspaceId={workspaceId} />
+      ) : activeTab === 'knowledge' ? (
         <WorkspaceKnowledgeStatus
           projectId={projectId}
           reviewRequestId={knowledgeReviewRequestId}
@@ -195,6 +242,17 @@ export function TasksPanel({
                   })
                 }
                 onDelete={(id) => void deleteTask(id)}
+                onRefreshAgent={(task) =>
+                  task.agentId
+                    ? void updateTask({ id: task.id, agentId: task.agentId })
+                    : undefined
+                }
+                agentRevisionStale={
+                  task.agentId != null &&
+                  agentRevisions !== null &&
+                  agentRevisions.get(task.agentId) !== undefined &&
+                  agentRevisions.get(task.agentId) !== task.agentRevision
+                }
               />
             ))
           )}
@@ -208,6 +266,7 @@ export function TasksPanel({
           focusSchedule={form.kind === 'edit' ? form.focusSchedule : false}
           defaultAgentMode={defaultMode}
           workspaceId={workspaceId}
+          projectId={projectId}
           onSubmit={handleSubmit}
           onClose={() => setForm({ kind: 'closed' })}
         />

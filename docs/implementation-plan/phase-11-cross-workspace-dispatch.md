@@ -1,4 +1,4 @@
-# Phase 11 — Cross-Workspace Multi-Agent Dispatch (human-click only)
+# Phase 11 — Cross-Workspace Multi-Agent Dispatch (historical human-click foundation)
 
 > **Read [`README.md`](./README.md) (esp. §4 phase map, §6.3 Harness interface) and
 > [`phase-10-policy-engine.md`](./phase-10-policy-engine.md) first — this phase is a
@@ -12,6 +12,14 @@ inbox, with optional cross-vendor review — human always merges).
 **Estimated size:** ~2–3 weeks for 4a as scoped below. **Depends on:** Phase 1 (`WorkspaceManager`
 — worktree creation), Phase 5 (`pr:*` prepare-turn pattern this reuses), Phase 10 (`PolicyEngine`
 — gates `spawnBounds`/`purposeAllowlist`). **4b (see §9) is explicitly not scheduled.**
+
+> **Subsequent authorization:** file-configured meta agents now authorize the formerly deferred 4b
+> idea in a narrower, security-reviewed form: one coordinator plus direct children,
+> capability-scoped MCP tools, strict budgets and claims, supervised ordinary turns, crash
+> revocation, retained worktrees, and human-only merge authority. The sections below remain the
+> historical Phase 11 contract for human-click dispatch and the isolation primitives the new layer
+> reuses; they are not retroactively rewritten as autonomous behavior. See
+> [`../agent-config.md`](../agent-config.md).
 
 ---
 
@@ -63,9 +71,10 @@ invariant (§7).
 - `PolicyEngine` gating via `spawnBounds.maxDispatchesPerTurn` and `purposeAllowlist` (Phase 10's
   forward-declared fields, used for the first time here).
 
-**Out of scope (deferred — see §9, not designed further in this document)**
-- **"4b": a live MCP tool a running turn could call mid-conversation** to dispatch/check-inbox
-  itself, without a human click in the loop. Named and risk-flagged, not scheduled.
+**Out of scope for the original Phase 11 implementation (later authorized separately)**
+- **"4b": a live MCP tool a running turn could call mid-conversation** was deferred by this phase.
+  It is now separately authorized only through the bounded meta-harness contract above; generic
+  agent-controlled dispatch remains prohibited.
 - Any autonomous multi-turn loop where a dispatched turn can itself dispatch further turns
   without a human click at each step (no recursive auto-dispatch).
 - Cloud/remote execution of dispatched turns (all dispatched turns run as ordinary local

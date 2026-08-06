@@ -14,6 +14,7 @@ import type {
   ReasoningEffort,
 } from '@shared/harness';
 import type { ScheduledTask } from '@shared/tasks';
+import type { MetaAgentSummary } from '@shared/agents';
 import { MODEL_PATTERN } from '@shared/tasks';
 import {
   expandSlashTemplate,
@@ -29,6 +30,7 @@ import { ModelPicker } from './ModelPicker';
 import { visibleProviderModelGroups } from '../chat/modelCatalog';
 import { effortOptionsForHarness } from '../chat/effortCatalog';
 import { readModelPreferences } from '../settings/modelPreferences';
+import { AgentPicker } from '../agents/AgentPicker';
 
 /** The values a submit yields. `null` clears a nullable field (edit); create maps to undefined. */
 export interface TaskFormValues {
@@ -39,7 +41,8 @@ export interface TaskFormValues {
   workspaceId: string;
   harnessOverride: HarnessId | null;
   attachments: Attachment[];
-  effort: ReasoningEffort;
+  effort: ReasoningEffort | null;
+  agentId: string | null;
 }
 
 export interface TaskFormProps {
@@ -50,6 +53,7 @@ export interface TaskFormProps {
   /** The effective `agent.mode` shown for the inherited mode option. */
   defaultAgentMode?: AgentMode;
   workspaceId: string;
+  projectId?: string | null;
   onSubmit: (values: TaskFormValues) => Promise<void>;
   onClose: () => void;
 }
@@ -102,6 +106,7 @@ export function TaskForm({
   focusSchedule,
   defaultAgentMode,
   workspaceId,
+  projectId = null,
   onSubmit,
   onClose,
 }: TaskFormProps): React.JSX.Element {
@@ -147,11 +152,30 @@ export function TaskForm({
   const [relativeDelayMinutes, setRelativeDelayMinutes] = useState(5);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [agents, setAgents] = useState<MetaAgentSummary[]>([]);
+  const [agentId, setAgentId] = useState<string | null>(
+    initial?.agentId ?? null,
+  );
 
   const promptEmpty = prompt.trim() === '';
   const modelInvalid =
     model !== null && model !== '' && !MODEL_PATTERN.test(model);
   const canSubmit = !promptEmpty && !modelInvalid && !submitting;
+
+  useEffect(() => {
+    if (!projectId) return;
+    let active = true;
+    void invoke('metaAgent:list', { projectId })
+      .then((items) => {
+        if (active) setAgents(items);
+      })
+      .catch(() => {
+        if (active) setAgents([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
 
   const inheritedMode = defaultAgentMode ?? 'default';
   const planActive =
@@ -264,7 +288,8 @@ export function TaskForm({
         workspaceId,
         harnessOverride,
         attachments,
-        effort,
+        effort: agentId ? null : effort,
+        agentId,
       });
       onClose();
     } catch (e) {
@@ -296,6 +321,18 @@ export function TaskForm({
       }
     >
       <div className="flex flex-col gap-4">
+        <AgentPicker
+          agents={agents}
+          value={agentId}
+          onChange={(next) => {
+            setAgentId(next);
+            if (next) {
+              setModel(null);
+              setHarnessOverride(null);
+              setTaskMode(null);
+            }
+          }}
+        />
         <div
           className="relative rounded-4 border border-border-1 bg-surface-panel shadow-3"
           data-testid="task-composer"
@@ -382,7 +419,8 @@ export function TaskForm({
               }
             }}
           />
-          <div
+          <fieldset
+            disabled={agentId !== null}
             className="flex min-w-0 items-center gap-3 px-4 pb-4"
             data-testid="task-composer-controls"
           >
@@ -478,7 +516,7 @@ export function TaskForm({
                 </div>
               ) : null}
             </div>
-          </div>
+          </fieldset>
         </div>
 
         <fieldset className="flex flex-col gap-2">

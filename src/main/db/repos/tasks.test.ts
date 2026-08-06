@@ -361,3 +361,60 @@ describe('ScheduledTasksRepo.reconcileOnBoot — all four branches', () => {
     );
   });
 });
+
+describe('ScheduledTasksRepo agent snapshots', () => {
+  const first = {
+    id: 'project:p:agent',
+    name: 'Agent v1',
+    revision: 'revision-1',
+    snapshotJson: '{"schemaVersion":1,"revision":"revision-1"}',
+    digest: 'digest-1',
+  };
+
+  it('persists main-resolved metadata while keeping raw snapshots out of the DTO', async () => {
+    const task = await repo.create(
+      { workspaceId, prompt: 'agent task', agentId: first.id },
+      first,
+    );
+    expect(task).toMatchObject({
+      agentId: first.id,
+      agentName: first.name,
+      agentRevision: first.revision,
+      metaRunId: null,
+    });
+    expect(task).not.toHaveProperty('snapshotJson');
+    expect(await repo.getStoredAgentSnapshot(task.id)).toEqual({
+      json: first.snapshotJson,
+      digest: first.digest,
+    });
+    expect(await repo.hasAgentReference(first.id)).toBe(true);
+  });
+
+  it('refreshes or clears the complete snapshot atomically', async () => {
+    const task = await repo.create({ workspaceId, prompt: 'refresh' }, first);
+    const second = {
+      ...first,
+      name: 'Agent v2',
+      revision: 'revision-2',
+      snapshotJson: '{"schemaVersion":1,"revision":"revision-2"}',
+      digest: 'digest-2',
+    };
+    expect(await repo.setAgentSnapshot(task.id, second)).toMatchObject({
+      agentName: 'Agent v2',
+      agentRevision: 'revision-2',
+    });
+    expect(await repo.getStoredAgentSnapshot(task.id)).toEqual({
+      json: second.snapshotJson,
+      digest: second.digest,
+    });
+
+    expect(await repo.setAgentSnapshot(task.id, null)).toMatchObject({
+      agentId: null,
+      agentName: null,
+      agentRevision: null,
+      metaRunId: null,
+    });
+    expect(await repo.getStoredAgentSnapshot(task.id)).toBeNull();
+    expect(await repo.hasAgentReference(first.id)).toBe(false);
+  });
+});

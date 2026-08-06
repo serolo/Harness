@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
-import { GitService } from './index';
+import { GitService, gitPtyExec } from './index';
 
 const git = new GitService();
 
@@ -95,6 +95,17 @@ describe('GitService.clone', () => {
     });
     // A local clone may not emit many progress events, but the clone should succeed.
     expect(existsSync(progressDir)).toBe(true);
+  });
+});
+
+describe('git PTY fallback cancellation', () => {
+  it('does not spawn the EBADF fallback when its signal was already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      gitPtyExec(['status'], { cancelSignal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
 

@@ -34,6 +34,7 @@ import { AppError } from '@shared/errors';
 import { logger } from '../logging';
 import type { TurnRecorder } from './turns';
 import type { NotificationService } from './notifications';
+import { sanitizeErrorMessage } from '../security/sanitize-error';
 
 /** One in-flight turn. Cleared from the registry the instant a terminal event lands. */
 interface LiveTurn {
@@ -41,6 +42,8 @@ interface LiveTurn {
   handle?: TurnHandle;
   /** Set when the user (or quit) requested an interrupt — maps the terminal to `interrupted`. */
   interrupted: boolean;
+  /** True once the provider handle has received the interrupt request. */
+  interruptDelivered: boolean;
   /** Workspace name captured for secret-free notifications. */
   workspaceName?: string;
   /** Serializes per-turn persistence so event order is preserved. */
@@ -66,6 +69,9 @@ export interface HarnessSupervisorDeps {
 export class HarnessSupervisor {
   private readonly adapters = new Map<HarnessId, Harness>();
   private readonly registry = new Map<string, LiveTurn>();
+  private readonly starting = new Set<string>();
+  private workspaceClaimGuard:
+    ((workspaceId: string, metaRunId?: string) => void) | undefined;
   private readonly deps: HarnessSupervisorDeps;
 
   constructor(deps: HarnessSupervisorDeps) {
@@ -75,6 +81,13 @@ export class HarnessSupervisor {
   /** Register a harness adapter so it can be selected by `id`. */
   register(harness: Harness): void {
     this.adapters.set(harness.id, harness);
+  }
+
+  /** Install the main-only meta-run ownership gate at the definitive start boundary. */
+  setWorkspaceClaimGuard(
+    guard: (workspaceId: string, metaRunId?: string) => void,
+  ): void {
+    this.workspaceClaimGuard = guard;
   }
 
   /** List every registered harness with capabilities + a live detect summary. */
@@ -113,21 +126,33 @@ export class HarnessSupervisor {
     sink: StreamSink<AgentEvent>,
     harnessOverride?: HarnessId,
   ): Promise<TurnHandle> {
-    if (this.registry.has(workspaceId)) {
+    if (this.registry.has(workspaceId) || this.starting.has(workspaceId)) {
       throw new AppError(
         'conflict',
         'a turn is already active for this workspace',
         { workspaceId },
       );
     }
+    // Guard and reservation are synchronous: no ordinary IPC/scheduler turn can slip
+    // through between a claim check and the first awaited persistence operation.
+    this.workspaceClaimGuard?.(workspaceId, opts.metaRunId);
+    this.starting.add(workspaceId);
 
-    const workspace = await this.deps.getWorkspace(workspaceId);
+    let workspace: Workspace | null;
+    try {
+      workspace = await this.deps.getWorkspace(workspaceId);
+    } catch (error) {
+      this.starting.delete(workspaceId);
+      throw error;
+    }
     if (!workspace) {
+      this.starting.delete(workspaceId);
       throw new AppError('not_found', 'workspace not found', { workspaceId });
     }
     const harnessId = harnessOverride ?? workspace.harness;
     const adapter = this.adapters.get(harnessId);
     if (!adapter) {
+      this.starting.delete(workspaceId);
       throw new AppError(
         'harness',
         `no harness registered for id "${harnessId}"`,
@@ -135,59 +160,78 @@ export class HarnessSupervisor {
       );
     }
 
-    const turnId = await this.deps.recorder.beginTurn(workspaceId, {
-      sessionId: opts.sessionId,
-      mode: opts.mode,
-      harness: harnessId,
-      model: opts.model,
-    });
+    let turnId: string;
+    try {
+      turnId = await this.deps.recorder.beginTurn(workspaceId, {
+        sessionId: opts.sessionId,
+        mode: opts.mode,
+        harness: harnessId,
+        model: opts.model,
+      });
+    } catch (error) {
+      this.starting.delete(workspaceId);
+      throw error;
+    }
 
     const live: LiveTurn = {
       turnId,
       interrupted: false,
+      interruptDelivered: false,
       workspaceName: workspace.name,
       writeChain: Promise.resolve(),
     };
     // Register + flip to `working` BEFORE the adapter can emit, so a terminal event
     // (which flips to needs_attention) can never be overtaken by a late `working`.
     this.registry.set(workspaceId, live);
-    await this.deps.setStatus(workspaceId, 'working');
+    this.starting.delete(workspaceId);
+    try {
+      await this.deps.setStatus(workspaceId, 'working');
+    } catch (error) {
+      this.registry.delete(workspaceId);
+      await this.safeEndTurn(turnId, 'error');
+      throw error;
+    }
 
     // The sink the adapter pushes into: forward to the renderer, then enqueue the
     // persistence/finalize step on the per-turn write chain (order-preserving).
     const wrapped: StreamSink<AgentEvent> = {
       push: (event) => {
+        const safeEvent: AgentEvent =
+          event.kind === 'error'
+            ? { ...event, message: sanitizeErrorMessage(event.message) }
+            : event;
         // Provider metadata belongs in persistence, not in the visible transcript.
-        if (event.kind !== 'model_info') {
-          sink.push(event);
+        if (safeEvent.kind !== 'model_info') {
+          sink.push(safeEvent);
         }
         const current = this.registry.get(workspaceId);
         if (!current || current !== live) return; // already finalized
-        if (event.kind === 'turn_end' || event.kind === 'error') {
+        if (safeEvent.kind === 'turn_end' || safeEvent.kind === 'error') {
           // Restore the single-turn invariant immediately (before async finalize).
           this.registry.delete(workspaceId);
           live.writeChain = live.writeChain
-            .then(() => this.finalize(workspaceId, live, event))
+            .then(() => this.finalize(workspaceId, live, safeEvent))
             .catch((err) => this.logFinalizeError(workspaceId, err));
         } else {
           // Best-effort side-hook: persist the agent's current todo set. Fired inline
           // (synchronously) and guarded so a hook failure can never wedge the write chain
           // or the turn. Event RECORDING below is unchanged.
-          if (event.kind === 'todo_update' && this.deps.onTodoUpdate) {
+          if (safeEvent.kind === 'todo_update' && this.deps.onTodoUpdate) {
             try {
-              this.deps.onTodoUpdate(workspaceId, event.todos);
+              this.deps.onTodoUpdate(workspaceId, safeEvent.todos);
             } catch (err) {
               this.logHookError('onTodoUpdate', workspaceId, err);
             }
           }
           live.writeChain = live.writeChain
-            .then(() => this.deps.recorder.record(turnId, event))
+            .then(() => this.deps.recorder.record(turnId, safeEvent))
             .catch((err) => this.logRecordError(turnId, err));
         }
       },
       end: () => sink.end(),
       error: (e) => {
         // Adapter-level stream failure: ensure the turn is finalized as an error.
+        const safeMessage = sanitizeErrorMessage(e);
         const current = this.registry.get(workspaceId);
         if (current === live) {
           this.registry.delete(workspaceId);
@@ -195,12 +239,12 @@ export class HarnessSupervisor {
             .then(() =>
               this.finalize(workspaceId, live, {
                 kind: 'error',
-                message: e.message,
+                message: safeMessage,
               }),
             )
             .catch((err) => this.logFinalizeError(workspaceId, err));
         }
-        sink.error(e);
+        sink.error(new AppError('harness', safeMessage));
       },
     };
 
@@ -229,13 +273,20 @@ export class HarnessSupervisor {
         ? err
         : new AppError(
             'harness',
-            err instanceof Error ? err.message : 'failed to start turn',
+            sanitizeErrorMessage(err, 'failed to start turn'),
           );
     }
 
     // The handle may reference an already-finalized turn (instant turns) — still record
     // the captured session id so the NEXT turn can `--resume` it.
     live.handle = handle;
+    // An interrupt can arrive while the adapter is still starting. Remembering only the
+    // flag is insufficient: once the handle exists, immediately deliver the pending
+    // interrupt so a late-spawning child cannot outlive its deadline or cancellation.
+    if (live.interrupted && !live.interruptDelivered) {
+      live.interruptDelivered = true;
+      await handle.interrupt();
+    }
     if (handle.sessionId) {
       try {
         await this.deps.recorder.setSessionId(turnId, handle.sessionId);
@@ -258,14 +309,15 @@ export class HarnessSupervisor {
     const live = this.registry.get(workspaceId);
     if (!live) return;
     live.interrupted = true;
-    if (live.handle) {
+    if (live.handle && !live.interruptDelivered) {
+      live.interruptDelivered = true;
       await live.handle.interrupt();
     }
   }
 
   /** True when a turn is currently streaming for the workspace. */
   isActive(workspaceId: string): boolean {
-    return this.registry.has(workspaceId);
+    return this.registry.has(workspaceId) || this.starting.has(workspaceId);
   }
 
   /** The active turn id for a workspace, or undefined — used to frame the stream. */
@@ -283,7 +335,10 @@ export class HarnessSupervisor {
     await Promise.allSettled(
       live.map(async (t) => {
         t.interrupted = true;
-        if (t.handle) await t.handle.interrupt();
+        if (t.handle && !t.interruptDelivered) {
+          t.interruptDelivered = true;
+          await t.handle.interrupt();
+        }
       }),
     );
   }

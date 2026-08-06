@@ -17,6 +17,8 @@
 //     is always undefined. Ordinary chat turns own their separate resume semantics.
 
 import type { AgentEvent, StartTurnOpts } from '@shared/harness';
+import { createHash } from 'node:crypto';
+import type { MetaRunSummary } from '@shared/agents';
 import type { EventChannel, EventPayload, StreamSink } from '@shared/ipc';
 import type { EffectiveSettings } from '@shared/settings';
 import type { ScheduledTask } from '@shared/tasks';
@@ -25,6 +27,9 @@ import { AppError } from '@shared/errors';
 import { logger } from '../logging';
 import type { HarnessSupervisor } from '../harness/supervisor';
 import type { ScheduledTasksRepo } from '../db/repos/tasks';
+import type { MetaHarnessService } from '../meta-harness';
+import { parseStoredAgentSnapshot } from '../agents/snapshot';
+import { sanitizeErrorMessage } from '../security/sanitize-error';
 
 /** Default tick cadence — timestamp-compared so a task due during sleep fires on wake. */
 const DEFAULT_TICK_INTERVAL_MS = 30_000;
@@ -55,11 +60,32 @@ export class TaskScheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   /** Re-entrancy guard so a slow tick can't overlap the next interval fire. */
   private ticking = false;
+  private metaHarness:
+    | Pick<
+        MetaHarnessService,
+        'start' | 'onTerminal' | 'onClaimsReleased' | 'isWorkspaceClaimed'
+      >
+    | undefined;
+  private stopClaimListener: (() => void) | undefined;
 
   constructor(deps: TaskSchedulerDeps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
     this.tickIntervalMs = deps.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
+  }
+
+  setMetaHarness(
+    service: Pick<
+      MetaHarnessService,
+      'start' | 'onTerminal' | 'onClaimsReleased' | 'isWorkspaceClaimed'
+    >,
+  ): void {
+    this.stopClaimListener?.();
+    this.metaHarness = service;
+    this.stopClaimListener = service.onClaimsReleased((workspaceIds) => {
+      for (const workspaceId of workspaceIds)
+        this.onWorkspaceTurnEnd(workspaceId);
+    });
   }
 
   /**
@@ -88,6 +114,8 @@ export class TaskScheduler {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    this.stopClaimListener?.();
+    this.stopClaimListener = undefined;
   }
 
   /**
@@ -134,6 +162,7 @@ export class TaskScheduler {
       for (const task of due) {
         if (
           this.deps.harness.isActive(task.workspaceId) ||
+          this.metaHarness?.isWorkspaceClaimed(task.workspaceId) === true ||
           firedThisTick.has(task.workspaceId)
         ) {
           await this.deps.repo.setState(task.id, 'queued');
@@ -156,7 +185,10 @@ export class TaskScheduler {
 
   /** Queue when busy, else run. */
   private async fireOrQueue(task: ScheduledTask): Promise<void> {
-    if (this.deps.harness.isActive(task.workspaceId)) {
+    if (
+      this.deps.harness.isActive(task.workspaceId) ||
+      this.metaHarness?.isWorkspaceClaimed(task.workspaceId) === true
+    ) {
       await this.deps.repo.setState(task.id, 'queued');
       this.deps.emit('task:changed', { workspaceId: task.workspaceId });
     } else {
@@ -186,6 +218,11 @@ export class TaskScheduler {
         errorMessage: 'workspace unavailable (archived?)',
       });
       emit('task:changed', { workspaceId });
+      return;
+    }
+
+    if (task.agentId) {
+      await this.runMetaTask(task, workspace.projectId);
       return;
     }
 
@@ -232,7 +269,7 @@ export class TaskScheduler {
       } else if (event.kind === 'error') {
         await repo.setState(task.id, 'error', {
           ...(turnId ? { turnId } : {}),
-          errorMessage: event.message,
+          errorMessage: sanitizeErrorMessage(event.message),
         });
       }
       emit('task:changed', { workspaceId });
@@ -257,7 +294,10 @@ export class TaskScheduler {
         /* the supervisor owns turn persistence; nothing to flush here */
       },
       error: (e) => {
-        const event: AgentEvent = { kind: 'error', message: e.message };
+        const event: AgentEvent = {
+          kind: 'error',
+          message: sanitizeErrorMessage(e),
+        };
         mirror(event);
         if (turnId === undefined) {
           pendingTerminal = event;
@@ -302,16 +342,95 @@ export class TaskScheduler {
         await repo.setState(task.id, 'queued');
       } else {
         await repo.setState(task.id, 'error', {
-          errorMessage:
-            err instanceof Error ? err.message : 'failed to start turn',
+          errorMessage: sanitizeErrorMessage(err, 'failed to start turn'),
         });
       }
       emit('task:changed', { workspaceId });
+    }
+  }
+
+  private async runMetaTask(
+    task: ScheduledTask,
+    projectId: string,
+  ): Promise<void> {
+    const meta = this.metaHarness;
+    if (!meta) {
+      await this.deps.repo.setState(task.id, 'error', {
+        errorMessage: 'meta-agent service is unavailable',
+      });
+      this.deps.emit('task:changed', { workspaceId: task.workspaceId });
+      return;
+    }
+    const stored = await this.deps.repo.getStoredAgentSnapshot(task.id);
+    if (!stored) {
+      await this.deps.repo.setState(task.id, 'error', {
+        errorMessage: 'scheduled agent snapshot is missing',
+      });
+      this.deps.emit('task:changed', { workspaceId: task.workspaceId });
+      return;
+    }
+    if (
+      createHash('sha256').update(stored.json).digest('hex') !== stored.digest
+    ) {
+      await this.deps.repo.setState(task.id, 'error', {
+        errorMessage: 'scheduled agent snapshot digest mismatch',
+      });
+      this.deps.emit('task:changed', { workspaceId: task.workspaceId });
+      return;
+    }
+    let snapshot;
+    try {
+      snapshot = parseStoredAgentSnapshot(stored.json);
+    } catch {
+      await this.deps.repo.setState(task.id, 'error', {
+        errorMessage: 'scheduled agent snapshot schema is invalid',
+      });
+      this.deps.emit('task:changed', { workspaceId: task.workspaceId });
+      return;
+    }
+    try {
+      const run = await meta.start(
+        {
+          projectId,
+          agentId: task.agentId!,
+          sourceWorkspaceId: task.workspaceId,
+          goal: task.prompt,
+        },
+        snapshot,
+      );
+      await this.deps.repo.setMetaRunId(task.id, run.id);
+      const finish = (terminal: MetaRunSummary): void => {
+        void this.deps.repo
+          .setState(
+            task.id,
+            terminal.status === 'completed' ? 'done' : 'error',
+            terminal.status === 'completed'
+              ? { errorMessage: null }
+              : {
+                  errorMessage: sanitizeErrorMessage(
+                    terminal.error,
+                    `meta run ${terminal.status}`,
+                  ),
+                },
+          )
+          .then(() =>
+            this.deps.emit('task:changed', {
+              workspaceId: task.workspaceId,
+            }),
+          );
+      };
+      await meta.onTerminal(run.id, finish);
+      this.deps.emit('task:changed', { workspaceId: task.workspaceId });
+    } catch (error) {
+      await this.deps.repo.setState(task.id, 'error', {
+        errorMessage: sanitizeErrorMessage(error, 'failed to start meta run'),
+      });
+      this.deps.emit('task:changed', { workspaceId: task.workspaceId });
     }
   }
 }
 
 /** Secret-free error text for logs. */
 function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return sanitizeErrorMessage(err);
 }

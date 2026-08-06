@@ -8,10 +8,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { AgentEvent } from '@shared/harness';
+import type { AgentEvent, Harness, TurnHandle } from '@shared/harness';
 import type { StreamSink } from '@shared/ipc';
 import type { Workspace, WorkspaceStatus } from '@shared/models';
-import { type AppError } from '@shared/errors';
+import { AppError } from '@shared/errors';
 import { openDb, type AppDatabase } from '../db/index';
 import { ProjectsRepo } from '../db/repos/projects';
 import { WorkspacesRepo } from '../db/repos/workspaces';
@@ -67,7 +67,7 @@ interface Harness2 {
 
 async function makeHarness(
   handle: AppDatabase,
-  mock: MockHarness,
+  mock: Harness,
 ): Promise<Harness2> {
   const workspace = await seedWorkspace(handle);
   const recorder = new TurnRecorder({
@@ -96,18 +96,24 @@ async function makeHarness(
 function collectSink(): {
   sink: StreamSink<AgentEvent>;
   events: AgentEvent[];
+  errors: unknown[];
   done: Promise<void>;
 } {
   const events: AgentEvent[] = [];
+  const errors: unknown[] = [];
   let resolveEnd!: () => void;
   const done = new Promise<void>((r) => (resolveEnd = r));
   return {
     events,
+    errors,
     done,
     sink: {
       push: (e) => events.push(e),
       end: () => resolveEnd(),
-      error: () => resolveEnd(),
+      error: (error) => {
+        errors.push(error);
+        resolveEnd();
+      },
     },
   };
 }
@@ -213,6 +219,76 @@ describe('HarnessSupervisor turn lifecycle', () => {
     await waitForFinalized(h.recorder, h.workspace.id);
   });
 
+  it('sanitizes adapter stream failures before forwarding them to consumers', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (_opts, sink) => {
+        setTimeout(
+          () =>
+            sink.error(
+              new AppError(
+                'harness',
+                'Authorization: Bearer provider-secret at /tmp/private-turn',
+              ),
+            ),
+          0,
+        );
+        return { sessionId: 'error-session', interrupt: vi.fn() };
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const collected = collectSink();
+
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, collected.sink);
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(collected.errors).toHaveLength(1);
+    expect(collected.errors[0]).toMatchObject({
+      code: 'harness',
+      message: 'Authorization: Bearer [redacted] at [private path]',
+    });
+    expect(JSON.stringify(collected.errors[0])).not.toContain(
+      'provider-secret',
+    );
+  });
+
+  it('enforces meta workspace ownership at the definitive start boundary', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const h = await makeHarness(db, new MockHarness({ defaultDelayMs: 0 }));
+    const guard = vi.fn((workspaceId: string, metaRunId?: string) => {
+      expect(workspaceId).toBe(h.workspace.id);
+      if (metaRunId !== 'run-owner') {
+        throw new Error('workspace is claimed by an active meta run');
+      }
+    });
+    h.supervisor.setWorkspaceClaimGuard(guard);
+
+    await expect(
+      h.supervisor.startTurn(h.workspace.id, baseOpts, collectSink().sink),
+    ).rejects.toThrow('workspace is claimed by an active meta run');
+    expect(await h.recorder.history(h.workspace.id)).toEqual([]);
+
+    const internal = collectSink();
+    await h.supervisor.startTurn(
+      h.workspace.id,
+      { ...baseOpts, metaRunId: 'run-owner' },
+      internal.sink,
+    );
+    await internal.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+    expect(guard).toHaveBeenLastCalledWith(h.workspace.id, 'run-owner');
+    expect(await h.recorder.history(h.workspace.id)).toHaveLength(1);
+  });
+
   it('persists the display prompt and selected knowledge separately', async () => {
     db = openDb(join(tmpDir, 'test.db'));
     const h = await makeHarness(db, new MockHarness());
@@ -246,6 +322,39 @@ describe('HarnessSupervisor turn lifecycle', () => {
     });
   });
 
+  it('sanitizes auth, workspace, control, and MCP temp paths before stream and persistence', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const mock = new MockHarness({
+      script: () => [
+        {
+          event: {
+            kind: 'error',
+            message:
+              'token=super-secret /tmp/repo/demo-paris /private/control.json /tmp/harness-mcp-123/mcp.json',
+          },
+        },
+      ],
+    });
+    const h = await makeHarness(db, mock);
+    const { sink, done, events } = collectSink();
+
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, sink);
+    await done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    const visibleError = events.find((event) => event.kind === 'error');
+    expect(visibleError).toEqual({
+      kind: 'error',
+      message: 'token=[redacted] [private path] [private path] [private path]',
+    });
+    const history = await h.recorder.history(h.workspace.id);
+    expect(history[0].events).toContainEqual(
+      expect.objectContaining({ event: visibleError }),
+    );
+    expect(JSON.stringify(history)).not.toContain('super-secret');
+    expect(JSON.stringify(history)).not.toMatch(/\/(?:private|tmp)\//);
+  });
+
   it('interrupt records an interrupted turn and clears the registry', async () => {
     db = openDb(join(tmpDir, 'test.db'));
     const mock = new MockHarness({
@@ -268,6 +377,83 @@ describe('HarnessSupervisor turn lifecycle', () => {
     const turns = await h.recorder.history(h.workspace.id);
     expect(turns[0].status).toBe('interrupted');
     expect(h.supervisor.isActive(h.workspace.id)).toBe(false);
+  });
+
+  it('delivers an interrupt requested while the adapter is still starting', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    let resolveStart!: (handle: TurnHandle) => void;
+    let activeSink: StreamSink<AgentEvent> | undefined;
+    const started = new Promise<TurnHandle>((resolve) => {
+      resolveStart = resolve;
+    });
+    const interrupt = vi.fn(async () => {
+      activeSink?.push({ kind: 'turn_end' });
+      activeSink?.end();
+    });
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (_opts, sink) => {
+        activeSink = sink;
+        return started;
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const collected = collectSink();
+    const startPromise = h.supervisor.startTurn(
+      h.workspace.id,
+      baseOpts,
+      collected.sink,
+    );
+
+    await waitUntil(
+      () => h.supervisor.getActiveTurnId(h.workspace.id) !== undefined,
+    );
+    await h.supervisor.interrupt(h.workspace.id);
+    expect(interrupt).not.toHaveBeenCalled();
+
+    resolveStart({ sessionId: 'late-session', interrupt });
+    await startPromise;
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(interrupt).toHaveBeenCalledOnce();
+    expect((await h.recorder.history(h.workspace.id))[0]?.status).toBe(
+      'interrupted',
+    );
+  });
+
+  it('delivers one provider interrupt across repeated interrupt and quit requests', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const interrupt = vi.fn(async () => undefined);
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async () => ({ sessionId: 'held-session', interrupt }),
+    };
+    const h = await makeHarness(db, adapter);
+    const collected = collectSink();
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, collected.sink);
+
+    await Promise.all([
+      h.supervisor.interrupt(h.workspace.id),
+      h.supervisor.interrupt(h.workspace.id),
+    ]);
+    await h.supervisor.quitAll();
+
+    expect(interrupt).toHaveBeenCalledOnce();
   });
 
   it('persists the captured session id and forwards an explicit resume id', async () => {

@@ -1,0 +1,10 @@
+version: 1
+name: Verifier
+prompt: Try to refute completion. Run gates, check every acceptance criterion against evidence, and report gaps.
+executor:
+  harness: codex
+  mode: default
+  read_only: true
+tools:
+  purposes: [verify]
+  independent_provider: true

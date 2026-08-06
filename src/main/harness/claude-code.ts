@@ -16,7 +16,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execa } from 'execa';
 
 import type {
@@ -47,6 +47,13 @@ const MIN_CLAUDE_VERSION = '0.2.0';
 
 /** How long to wait for the CLI's init/session line before resolving the handle anyway. */
 const SESSION_RESOLVE_TIMEOUT_MS = 15_000;
+const META_CONTROL_SERVER = 'harness-meta-control';
+const META_CONTROL_TOOLS = [
+  'dispatch',
+  'continue_dispatch',
+  'await_dispatches',
+  'cancel_dispatch',
+].map((tool) => `mcp__${META_CONTROL_SERVER}__${tool}`);
 
 export class ClaudeCodeHarness implements Harness {
   readonly id = 'claude_code' as const;
@@ -59,6 +66,9 @@ export class ClaudeCodeHarness implements Harness {
       supportsMcp: true,
       supportsPlanMode: true,
       rawTerminalFallback: true,
+      supportsReadOnlyMode: true,
+      supportsReadOnlyMcp: true,
+      supportsScopedWriteMode: true,
     };
   }
 
@@ -142,6 +152,7 @@ export class ClaudeCodeHarness implements Harness {
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
+    const cleanupMcp = mcpConfigCleanup(args);
     const command = resolveHarnessExecutable('claude');
     let child: ReturnType<typeof spawn>;
     try {
@@ -156,6 +167,7 @@ export class ClaudeCodeHarness implements Harness {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
+      cleanupMcp();
       throw new Error(
         formatSpawnFailure(command, args, opts.workspaceDir, err),
       );
@@ -180,6 +192,7 @@ export class ClaudeCodeHarness implements Harness {
         if (child.exitCode === null && !child.killed) {
           child.kill('SIGINT');
         }
+        cleanupMcp();
       };
 
       function resolveHandle(): void {
@@ -192,6 +205,7 @@ export class ClaudeCodeHarness implements Harness {
       function endStream(): void {
         if (ended) return;
         ended = true;
+        cleanupMcp();
         sink.end();
       }
 
@@ -276,6 +290,7 @@ export class ClaudeCodeHarness implements Harness {
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
     const args = buildArgs(opts);
+    const cleanupMcp = mcpConfigCleanup(args);
     const command = resolveHarnessExecutable('claude');
     const captureDir = mkdtempSync(join(tmpdir(), 'harness-claude-stream-'));
     const stdoutPath = join(captureDir, 'stdout');
@@ -303,6 +318,7 @@ export class ClaudeCodeHarness implements Harness {
       });
     } catch (err) {
       rmSync(captureDir, { recursive: true, force: true });
+      cleanupMcp();
       throw new Error(
         formatSpawnFailure(command, args, opts.workspaceDir, err),
       );
@@ -327,6 +343,7 @@ export class ClaudeCodeHarness implements Harness {
 
       const interrupt = async (): Promise<void> => {
         handle.kill();
+        cleanupMcp();
       };
 
       function resolveHandle(): void {
@@ -345,6 +362,7 @@ export class ClaudeCodeHarness implements Harness {
         }
         sink.end();
         rmSync(captureDir, { recursive: true, force: true });
+        cleanupMcp();
       }
 
       function consume(objects: unknown[]): void {
@@ -624,6 +642,19 @@ function fileSize(path: string): number {
 export function buildArgs(opts: StartTurnOpts): string[] {
   const prompt = opts.prompt + serializeAttachments(opts.attachments);
   const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
+  const isMetaCoordinator =
+    opts.metaRunId !== undefined &&
+    opts.mcpConfig.some((server) => server.name === META_CONTROL_SERVER);
+  if (
+    isMetaCoordinator &&
+    (opts.mcpConfig.length !== 1 ||
+      opts.mcpConfig[0]?.name !== META_CONTROL_SERVER)
+  ) {
+    throw new AppError(
+      'invalid_input',
+      'meta coordinator MCP configuration must contain only the control server',
+    );
+  }
 
   if (opts.sessionId) {
     args.push('--resume', opts.sessionId);
@@ -632,8 +663,33 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   // Plan mode must reach Claude as an actual read-only planning turn. The renderer
   // offers a separate approval action that resumes the session in default mode.
   // Other modes remain non-blocking because Harness has no generic permission bridge.
-  if (opts.mode === 'plan') {
+  if (opts.mode === 'plan' || opts.readOnlyMode) {
     args.push('--permission-mode', 'plan');
+  } else if (opts.scopedWriteMode || opts.metaRunId) {
+    // `acceptEdits` confines built-in writes to the working tree. Bash subprocesses
+    // receive an OS sandbox with no unsandboxed fallback; fail closed on hosts where
+    // that provider boundary is unavailable.
+    args.push(
+      '--permission-mode',
+      'acceptEdits',
+      '--settings',
+      JSON.stringify({
+        permissions: {
+          disableBypassPermissionsMode: 'disable',
+          deny: [
+            'Bash(git push *)',
+            'Bash(git merge *)',
+            'Bash(git rebase *)',
+            'Bash(gh pr *)',
+          ],
+        },
+        sandbox: {
+          enabled: true,
+          failIfUnavailable: true,
+          allowUnsandboxedCommands: false,
+        },
+      }),
+    );
   } else {
     args.push('--dangerously-skip-permissions');
   }
@@ -652,6 +708,15 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   const mcpConfigPath = writeMcpConfig(opts.mcpConfig);
   if (mcpConfigPath) {
     args.push('--mcp-config', mcpConfigPath);
+    if (isMetaCoordinator) {
+      // Ignore user/project/global MCP configuration and allow only the broker's four
+      // closed capabilities. This is the provider-side half of the broker boundary.
+      args.push(
+        '--strict-mcp-config',
+        '--allowedTools',
+        META_CONTROL_TOOLS.join(','),
+      );
+    }
   }
 
   return args;
@@ -683,6 +748,17 @@ function writeMcpConfig(servers: McpServerConfig[]): string | undefined {
     mode: 0o600,
   });
   return file;
+}
+
+function mcpConfigCleanup(args: readonly string[]): () => void {
+  const flag = args.indexOf('--mcp-config');
+  const file = flag >= 0 ? args[flag + 1] : undefined;
+  let cleaned = false;
+  return () => {
+    if (cleaned || file === undefined) return;
+    cleaned = true;
+    rmSync(dirname(file), { recursive: true, force: true });
+  };
 }
 
 // ---------------------------------------------------------------------------

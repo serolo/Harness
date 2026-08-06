@@ -32,6 +32,11 @@ import type { TaskScheduler } from './scheduler';
 import type { WikiService } from './knowledge';
 import type { PricingService } from './billing/pricing';
 import type { SecretStore } from './integrations/secrets';
+import type { AgentRegistry } from './agents/registry';
+import type { AgentRunsRepo } from './db/repos/agentRuns';
+import type { AgentDispatchesRepo } from './db/repos/agentDispatches';
+import type { ControlBroker } from './meta-harness/control-broker';
+import type { MetaHarnessService } from './meta-harness';
 
 /**
  * Service singletons + the typed DB handle, shared across the main process.
@@ -85,4 +90,10 @@ export interface AppContext {
   pricing: PricingService;
   /** OS-encrypted singleton credentials used by agent providers. */
   secrets: SecretStore;
+  /** Validated built-in and project-scoped agent definitions. */
+  agents: AgentRegistry;
+  agentRuns: AgentRunsRepo;
+  agentDispatches: AgentDispatchesRepo;
+  controlBroker: ControlBroker;
+  metaHarness: MetaHarnessService;
 }

@@ -55,6 +55,12 @@ export interface ScheduledTask {
   attachments?: Attachment[];
   /** Reasoning effort selected for this execution; null leaves the provider default. */
   effort?: ReasoningEffort | null;
+  /** Selected meta-agent identity and immutable revision metadata. APPEND-ONLY. */
+  agentId?: string | null;
+  agentName?: string | null;
+  agentRevision?: string | null;
+  /** Current/most-recent meta run started by this task. APPEND-ONLY. */
+  metaRunId?: string | null;
 }
 
 /**
@@ -74,6 +80,8 @@ export interface CreateTaskReq {
   /** Files to pass to the harness with the task prompt. */
   attachments?: Attachment[];
   effort?: ReasoningEffort;
+  /** Select a validated project/built-in agent; main resolves and snapshots it. */
+  agentId?: string;
 }
 
 /**
@@ -94,6 +102,8 @@ export interface UpdateTaskReq {
   attachments?: Attachment[];
   /** Change or clear the task-specific reasoning effort. */
   effort?: ReasoningEffort | null;
+  /** Change or clear the selected agent and refresh its immutable snapshot. */
+  agentId?: string | null;
 }
 
 /** Preset dropdown values — `claude --model` accepts these family aliases. */

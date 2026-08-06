@@ -231,11 +231,15 @@ export class GithubClient {
    * The PR whose head is `owner:branch`, mapped to a {@link PrSummary}, or `null` when
    * the branch has no open/closed PR. ETag-cached per branch.
    */
-  async getPr(branch: string): Promise<PrSummary | null> {
+  async getPr(
+    branch: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<PrSummary | null> {
     const data = await this.cachedGet<RestPull[]>(
       `getPr:${branch}`,
       'GET /repos/{owner}/{repo}/pulls',
       { head: `${this.owner}:${branch}`, state: 'open', per_page: 1 },
+      options.signal,
     );
     const first = data[0];
     return first ? this.toPrSummary(first) : null;
@@ -257,6 +261,7 @@ export class GithubClient {
     title: string;
     body: string;
     draft?: boolean;
+    signal?: AbortSignal;
   }): Promise<PrSummary> {
     const pr = await this.plainRequest<RestPull>(
       'POST /repos/{owner}/{repo}/pulls',
@@ -267,6 +272,7 @@ export class GithubClient {
         body: opts.body,
         draft: opts.draft ?? false,
       },
+      opts.signal,
     );
     return this.toPrSummary(pr);
   }
@@ -435,12 +441,13 @@ export class GithubClient {
     cacheKey: string,
     route: string,
     params: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const cached = this.etagCache.get(cacheKey);
     const headers: Record<string, string> = {};
     if (cached) headers['if-none-match'] = cached.etag;
     try {
-      const res = await this.send<T>(route, { ...params, headers });
+      const res = await this.send<T>(route, { ...params, headers }, signal);
       const etag = res.headers.etag;
       if (typeof etag === 'string' && etag.length > 0) {
         this.etagCache.set(cacheKey, { etag, body: res.data });
@@ -460,9 +467,10 @@ export class GithubClient {
   private async plainRequest<T>(
     route: string,
     params: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<T> {
     try {
-      const res = await this.send<T>(route, params);
+      const res = await this.send<T>(route, params, signal);
       return res.data;
     } catch (err) {
       throw this.wrap(err);
@@ -478,24 +486,25 @@ export class GithubClient {
   private async send<T>(
     route: string,
     params: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<OctokitResponseLike<T>> {
     let attempt = 0;
     for (;;) {
-      await this.awaitPrimaryRateBudget();
+      signal?.throwIfAborted();
+      await this.awaitPrimaryRateBudget(signal);
+      signal?.throwIfAborted();
       try {
         // Octokit types `request` loosely for a dynamic route string; we intentionally
         // map a small explicit field set, so narrow to our structural response view.
-        const res = (await this.octokit.request(
-          route,
-          {
-            ...params,
-            // Every REST route in this per-repository client uses these placeholders.
-            // Keeping them here makes it impossible for an endpoint method to forget
-            // them and accidentally request `/repos///…`.
-            owner: this.owner,
-            repo: this.repo,
-          },
-        )) as unknown as OctokitResponseLike<T>;
+        const res = (await this.octokit.request(route, {
+          ...params,
+          // Every REST route in this per-repository client uses these placeholders.
+          // Keeping them here makes it impossible for an endpoint method to forget
+          // them and accidentally request `/repos///…`.
+          owner: this.owner,
+          repo: this.repo,
+          ...(signal ? { request: { signal } } : {}),
+        })) as unknown as OctokitResponseLike<T>;
         this.updateRateFromHeaders(res.headers);
         return res;
       } catch (err) {
@@ -507,7 +516,10 @@ export class GithubClient {
           this.hasRetrySignal(err) &&
           attempt < SECONDARY_RATE_MAX_RETRIES
         ) {
-          await this.sleep(this.secondaryBackoffMs(err, attempt));
+          await this.sleepWithSignal(
+            this.secondaryBackoffMs(err, attempt),
+            signal,
+          );
           attempt += 1;
           continue;
         }
@@ -532,7 +544,7 @@ export class GithubClient {
    * If the primary budget is exhausted, wait until it resets (bounded by
    * {@link MAX_BACKOFF_MS}) so we don't spend the wait exceeding rate limits.
    */
-  private async awaitPrimaryRateBudget(): Promise<void> {
+  private async awaitPrimaryRateBudget(signal?: AbortSignal): Promise<void> {
     if (
       this.rateRemaining !== null &&
       this.rateRemaining <= 0 &&
@@ -540,11 +552,30 @@ export class GithubClient {
     ) {
       const waitMs = this.rateReset * 1_000 - this.now();
       const bounded = Math.min(Math.max(waitMs, 0), MAX_BACKOFF_MS);
-      if (bounded > 0) await this.sleep(bounded);
+      if (bounded > 0) await this.sleepWithSignal(bounded, signal);
       // Assume the window has rolled over; a stale value would just trigger a 403 the
       // retry path handles, rather than an unbounded wait.
       this.rateRemaining = null;
     }
+  }
+
+  private sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) return this.sleep(ms);
+    signal.throwIfAborted();
+    return new Promise<void>((resolve, reject) => {
+      const abort = (): void => reject(signal.reason);
+      signal.addEventListener('abort', abort, { once: true });
+      void this.sleep(ms).then(
+        () => {
+          signal.removeEventListener('abort', abort);
+          resolve();
+        },
+        (error) => {
+          signal.removeEventListener('abort', abort);
+          reject(error);
+        },
+      );
+    });
   }
 
   /** Record `x-ratelimit-remaining` / `-reset` from a successful response. */

@@ -1,0 +1,10 @@
+version: 1
+name: Code reviewer
+prompt: Review correctness, security, maintainability, and repository-rule compliance. Prioritize findings with evidence.
+executor:
+  harness: codex
+  mode: default
+  read_only: true
+tools:
+  purposes: [review]
+  independent_provider: true

@@ -1,0 +1,21 @@
+version: 1
+name: Polly
+description: Bounded implementation fan-out with independent cross-provider review.
+prompt: Coordinate the goal by delegating implementation and independent review. Preserve every branch for human inspection and never merge.
+executor:
+  harness: claude_code
+  mode: plan
+  read_only: true
+tools:
+  agents: [implementer, reviewer, investigator]
+  skills: [fanout, cross-review, investigate]
+requires:
+  providers: [claude_code, codex]
+policy:
+  max_dispatches: 8
+  max_parallel: 3
+  turn_timeout_ms: 1800000
+  run_timeout_ms: 7200000
+  max_request_bytes: 65536
+  max_result_bytes: 131072
+  critique_rounds: 0

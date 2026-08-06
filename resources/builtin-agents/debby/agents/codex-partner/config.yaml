@@ -1,0 +1,9 @@
+version: 1
+name: Codex partner
+prompt: Answer the question independently. State assumptions, reasoning, recommendation, and uncertainty.
+executor:
+  harness: codex
+  mode: default
+  read_only: true
+tools:
+  purposes: [research, plan]

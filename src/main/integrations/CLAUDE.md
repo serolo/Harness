@@ -26,6 +26,8 @@ direct **PAT** paste. Both end by persisting the encrypted token + a `token_ref`
 cache hit to stay under the rate limit. On `403`/`429` it honors `Retry-After` /
 `X-RateLimit-Reset` with bounded backoff. Callers (e.g. `ChecksService`) treat any client
 error as a graceful degrade, not a crash.
+Meta-run publication passes an `AbortSignal` through the Octokit request and every rate-limit wait;
+do not replace abortable waits with an unconditional sleep.
 
 ## Push is branch-only
 

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  builtinAgentsDir,
   defaultRootDirectory,
   projectDir,
   rootDirectory,
@@ -41,5 +42,14 @@ describe('managed root directory', () => {
     expect(() => setRootDirectory('relative/path')).toThrow(
       'must be an absolute path',
     );
+  });
+
+  it('resolves explicit development and packaged built-in resource layouts', () => {
+    expect(builtinAgentsDir({ packaged: false, appPath: '/checkout' })).toBe(
+      join('/checkout', 'resources', 'builtin-agents'),
+    );
+    expect(
+      builtinAgentsDir({ packaged: true, resourcesPath: '/app/resources' }),
+    ).toBe(join('/app/resources', 'builtin-agents'));
   });
 });

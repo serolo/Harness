@@ -221,6 +221,36 @@ describe('GithubClient PRs', () => {
     expect(params).toMatchObject({ draft: false });
   });
 
+  it('passes an abort signal to the underlying GitHub request', async () => {
+    const octokit = fakeOctokit();
+    const controller = new AbortController();
+    octokit.request.mockImplementationOnce(
+      async (_route: string, params: { request?: { signal?: AbortSignal } }) =>
+        new Promise((_resolve, reject) => {
+          params.request?.signal?.addEventListener(
+            'abort',
+            () => reject(params.request?.signal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    const client = makeClient(octokit);
+
+    const pending = client.createPr({
+      head: 'feature',
+      base: 'main',
+      title: 'T',
+      body: 'B',
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(octokit.request).toHaveBeenCalledOnce());
+    const [, params] = octokit.request.mock.calls[0];
+    expect(params.request.signal).toBe(controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toThrow('operation was aborted');
+  });
+
   it('mergePr issues a PUT .../merge with the given merge_method', async () => {
     const octokit = fakeOctokit();
     octokit.request.mockResolvedValueOnce(ok({}));

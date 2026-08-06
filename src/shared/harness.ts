@@ -45,6 +45,12 @@ export interface StartTurnOpts {
   model?: string;
   /** Optional reasoning-effort override passed to providers that support it. APPEND-ONLY. */
   effort?: ReasoningEffort;
+  /** Enforce provider-native read-only execution independently of plan semantics. APPEND-ONLY. */
+  readOnlyMode?: boolean;
+  /** Internal meta-run ownership proof; renderer stream input never forwards this. APPEND-ONLY. */
+  metaRunId?: string;
+  /** Require provider-enforced workspace-scoped writes for an internal meta child. APPEND-ONLY. */
+  scopedWriteMode?: boolean;
 }
 
 export interface TurnHandle {
@@ -136,6 +142,12 @@ export interface HarnessCapabilities {
   supportsMcp: boolean;
   supportsPlanMode: boolean;
   rawTerminalFallback: boolean;
+  /** Adapter can enforce a filesystem read-only turn without claiming plan mode. APPEND-ONLY. */
+  supportsReadOnlyMode?: boolean;
+  /** Adapter can invoke MCP tools non-interactively while remaining read-only. APPEND-ONLY. */
+  supportsReadOnlyMcp?: boolean;
+  /** Adapter can write inside the current workspace without unsandboxed bypass. APPEND-ONLY. */
+  supportsScopedWriteMode?: boolean;
 }
 
 /** Result of probing whether a harness CLI is installed/authenticated. */

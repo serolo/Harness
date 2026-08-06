@@ -106,6 +106,8 @@ import {
 } from './stream';
 import { emitAll } from './events';
 import { installQmd, qmdStatus } from '../knowledge/qmd';
+import { snapshotDigest } from '../db/repos/agentRuns';
+import { sanitizeErrorMessage } from '../security/sanitize-error';
 
 /** Control channel the renderer invokes to begin a scoped stream. */
 const STREAM_START_CHANNEL = 'stream:start';
@@ -433,6 +435,21 @@ function toBoundaryError(channelLabel: string, e: unknown): Error {
   const appError = toAppError(e);
   logger.error(`[ipc:${channelLabel}] ${appError.code}: ${appError.message}`);
   return new Error(encodeAppErrorMessage(appError.toJSON()));
+}
+
+async function confinedAgentOperation<T>(
+  label: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    logger.error(
+      `[agents:${label}] ${sanitizeErrorMessage(error, 'bundle operation failed')}`,
+    );
+    throw new AppError('io', 'agent bundle operation failed');
+  }
 }
 
 /**
@@ -928,6 +945,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         if (typeof arg.id !== 'string' || arg.id === '') {
           throw new AppError('invalid_input', 'workspace id is required');
         }
+        await ctx.metaHarness.assertWorkspaceAvailable(arg.id);
         await ctx.workspaces.archive(arg.id, (event) => sink.push(event));
         sink.end();
       } catch (error) {
@@ -971,6 +989,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
             { workspaceId: arg.workspaceId },
           );
         }
+        await ctx.metaHarness.assertWorkspaceAvailable(arg.workspaceId);
 
         const harnessOverride =
           typeof arg.harness === 'string'
@@ -1694,6 +1713,7 @@ export function registerIpc(ctx: AppContext): void {
   );
   handle('workspace:get', async (req) => ctx.workspaces.get(req.id));
   handle('workspace:archive', async (req) => {
+    await ctx.metaHarness.assertWorkspaceAvailable(req.id);
     await ctx.workspaces.archive(req.id);
   });
   handle('workspace:restore', async (req) => ctx.workspaces.restore(req.id));
@@ -2223,17 +2243,47 @@ export function registerIpc(ctx: AppContext): void {
         workspaceId: req.workspaceId,
       });
     }
-    const task = await ctx.tasks.create({
-      workspaceId: req.workspaceId,
-      prompt: req.prompt,
-      model: req.model,
-      mode: req.mode,
-      scheduledAt: req.scheduledAt,
-      origin: req.origin,
-      harnessOverride: req.harnessOverride,
-      attachments: req.attachments,
-      effort: req.effort,
-    });
+    if (
+      req.agentId !== undefined &&
+      (req.model !== undefined ||
+        req.mode !== undefined ||
+        req.harnessOverride !== undefined ||
+        req.effort !== undefined)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'agent tasks cannot include provider, model, mode, or effort overrides',
+      );
+    }
+    const agentSnapshot = req.agentId
+      ? await ctx.agents.resolveSnapshot(workspace.projectId, req.agentId)
+      : undefined;
+    const snapshotJson = agentSnapshot
+      ? JSON.stringify(agentSnapshot)
+      : undefined;
+    const task = await ctx.tasks.create(
+      {
+        workspaceId: req.workspaceId,
+        prompt: req.prompt,
+        model: req.model,
+        mode: req.mode,
+        scheduledAt: req.scheduledAt,
+        origin: req.origin,
+        harnessOverride: req.harnessOverride,
+        attachments: req.attachments,
+        effort: req.effort,
+        agentId: req.agentId,
+      },
+      agentSnapshot && snapshotJson
+        ? {
+            id: req.agentId!,
+            name: agentSnapshot.name,
+            revision: agentSnapshot.revision,
+            snapshotJson,
+            digest: snapshotDigest(snapshotJson),
+          }
+        : undefined,
+    );
     emitTaskChanged(task.workspaceId);
     return task;
   });
@@ -2257,15 +2307,53 @@ export function registerIpc(ctx: AppContext): void {
     if (req.scheduledAt !== undefined && req.scheduledAt !== null) {
       assertScheduledAt(req.scheduledAt);
     }
-    const task = await ctx.tasks.update(req.id, {
-      prompt: req.prompt,
-      model: req.model,
-      mode: req.mode,
-      scheduledAt: req.scheduledAt,
-      harnessOverride: req.harnessOverride,
-      attachments: req.attachments,
-      effort: req.effort,
-    });
+    const existingTask = await ctx.tasks.get(req.id);
+    const workspace = await ctx.workspaces.get(existingTask.workspaceId);
+    if (!workspace) throw new AppError('not_found', 'workspace not found');
+    const selectedAgentId =
+      req.agentId === undefined ? existingTask.agentId : req.agentId;
+    if (
+      selectedAgentId &&
+      (req.model != null ||
+        req.mode != null ||
+        req.harnessOverride != null ||
+        req.effort != null)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'agent tasks cannot include provider, model, mode, or effort overrides',
+      );
+    }
+    const agentSnapshot = req.agentId
+      ? await ctx.agents.resolveSnapshot(workspace.projectId, req.agentId)
+      : undefined;
+    const snapshotJson = agentSnapshot
+      ? JSON.stringify(agentSnapshot)
+      : undefined;
+    const task = await ctx.tasks.update(
+      req.id,
+      {
+        prompt: req.prompt,
+        model: req.model,
+        mode: req.mode,
+        scheduledAt: req.scheduledAt,
+        harnessOverride: req.harnessOverride,
+        attachments: req.attachments,
+        effort: req.effort,
+        agentId: req.agentId,
+      },
+      agentSnapshot && snapshotJson
+        ? {
+            id: req.agentId!,
+            name: agentSnapshot.name,
+            revision: agentSnapshot.revision,
+            snapshotJson,
+            digest: snapshotDigest(snapshotJson),
+          }
+        : req.agentId === null
+          ? null
+          : undefined,
+    );
     emitTaskChanged(task.workspaceId);
     return task;
   });
@@ -2888,6 +2976,147 @@ export function registerIpc(ctx: AppContext): void {
       return clarifyGithubRepoError(error, repo);
     }
   });
+
+  // --- File-configured meta agents and supervised runs ---
+  const assertBoundedId = (value: unknown, label: string): string => {
+    if (
+      typeof value !== 'string' ||
+      value.length === 0 ||
+      value.length > 200 ||
+      /[\p{Cc}\p{Cf}]/u.test(value)
+    ) {
+      throw new AppError('invalid_input', `${label} is invalid`);
+    }
+    return value;
+  };
+  const assertProject = async (projectId: unknown): Promise<string> => {
+    const id = assertBoundedId(projectId, 'projectId');
+    if ((await new ProjectsRepo(ctx.db).getById(id)) === null) {
+      throw new AppError('not_found', 'project not found', { projectId: id });
+    }
+    return id;
+  };
+
+  handle('metaAgent:list', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    return confinedAgentOperation('list', () => ctx.agents.list(projectId));
+  });
+  handle('metaAgent:get', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    const agentId = assertBoundedId(req.agentId, 'agentId');
+    return confinedAgentOperation('get', () =>
+      ctx.agents.get(projectId, agentId),
+    );
+  });
+  handle('metaAgent:create', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    if (typeof req.slug !== 'string' || typeof req.name !== 'string') {
+      throw new AppError('invalid_input', 'slug and name are required');
+    }
+    return confinedAgentOperation('create', () =>
+      ctx.agents.create(projectId, req.slug, req.name),
+    );
+  });
+  handle('metaAgent:duplicate', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    const agentId = assertBoundedId(req.agentId, 'agentId');
+    return confinedAgentOperation('duplicate', () =>
+      ctx.agents.duplicate(projectId, agentId, req.slug),
+    );
+  });
+  handle('metaAgent:import', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    const selected = await dialog.showOpenDialog({
+      title: 'Import agent bundle',
+      properties: ['openDirectory'],
+    });
+    const source = selected.canceled ? undefined : selected.filePaths[0];
+    return source
+      ? confinedAgentOperation('import', () =>
+          ctx.agents.importBundle(projectId, source),
+        )
+      : null;
+  });
+  handle('metaAgent:readFile', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    const agentId = assertBoundedId(req.agentId, 'agentId');
+    return confinedAgentOperation('read', () =>
+      ctx.agents.readFile(projectId, agentId, req.path),
+    );
+  });
+  handle('metaAgent:validateFile', async (req) => {
+    await assertProject(req.projectId);
+    if (typeof req.path !== 'string' || typeof req.content !== 'string') {
+      throw new AppError('invalid_input', 'path and content are required');
+    }
+    return confinedAgentOperation('validate', () =>
+      ctx.agents.validateFile(req.path, req.content),
+    );
+  });
+  handle('metaAgent:saveFile', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    if (typeof req.path !== 'string' || typeof req.content !== 'string') {
+      throw new AppError('invalid_input', 'path and content are required');
+    }
+    const agentId = assertBoundedId(req.agentId, 'agentId');
+    return confinedAgentOperation('save', () =>
+      ctx.agents.saveFile(projectId, agentId, req.path, req.content),
+    );
+  });
+  handle('metaAgent:saveBundleFiles', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    if (
+      !Array.isArray(req.files) ||
+      req.files.some(
+        (file) =>
+          !file ||
+          typeof file.path !== 'string' ||
+          (typeof file.content !== 'string' && file.content !== null),
+      )
+    )
+      throw new AppError('invalid_input', 'files are required');
+    const agentId = assertBoundedId(req.agentId, 'agentId');
+    return confinedAgentOperation('save-bundle', () =>
+      ctx.agents.saveBundleFiles(projectId, agentId, req.files),
+    );
+  });
+  handle('metaAgent:delete', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    const agentId = assertBoundedId(req.agentId, 'agentId');
+    return confinedAgentOperation('delete', () =>
+      ctx.agents.delete(projectId, agentId),
+    );
+  });
+  handle('metaAgent:startRun', async (req) => {
+    const projectId = await assertProject(req.projectId);
+    assertBoundedId(req.agentId, 'agentId');
+    assertBoundedId(req.sourceWorkspaceId, 'sourceWorkspaceId');
+    if (typeof req.goal !== 'string') {
+      throw new AppError('invalid_input', 'goal is required');
+    }
+    return ctx.metaHarness.start({ ...req, projectId });
+  });
+  handle('metaRun:list', async (req) =>
+    ctx.metaHarness.list(await assertProject(req.projectId)),
+  );
+  handle('metaRun:get', async (req) =>
+    ctx.metaHarness.get(
+      await assertProject(req.projectId),
+      assertBoundedId(req.runId, 'runId'),
+    ),
+  );
+  handle('metaRun:cancel', async (req) =>
+    ctx.metaHarness.cancel(
+      await assertProject(req.projectId),
+      assertBoundedId(req.runId, 'runId'),
+    ),
+  );
+  handle('metaRun:takeOver', async (req) =>
+    ctx.metaHarness.takeOver(
+      await assertProject(req.projectId),
+      assertBoundedId(req.runId, 'runId'),
+    ),
+  );
 
   registerStreamControl(ctx);
 

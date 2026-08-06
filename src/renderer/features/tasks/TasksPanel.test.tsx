@@ -14,6 +14,7 @@ import { useTasksStore } from '@renderer/stores/tasks';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import type { ScheduledTask } from '@shared/tasks';
 import type { Project, Workspace } from '@shared/models';
+import type { MetaAgentSummary } from '@shared/agents';
 import type {
   KnowledgeConfig,
   WikiHistoryEntry,
@@ -65,6 +66,7 @@ function installApi(
     history?: WikiHistoryEntry[];
     proposals?: WikiProposal[];
   },
+  agents: MetaAgentSummary[] = [],
 ): Installed {
   const listeners: Record<string, ((payload: unknown) => void)[]> = {};
   const unsubscribe = vi.fn();
@@ -83,6 +85,8 @@ function installApi(
             description: 'Create an implementation plan',
           },
         ]);
+      case 'metaAgent:list':
+        return Promise.resolve(agents);
       case 'knowledge:config':
         return Promise.resolve(knowledge?.config);
       case 'knowledge:initialize':
@@ -244,6 +248,62 @@ describe('TasksPanel rendering', () => {
 
     expect(await screen.findByTestId('task-reschedule-b')).toBeInTheDocument();
     expect(screen.getByTestId('task-run-b')).toBeInTheDocument();
+  });
+
+  it('marks a scheduled agent snapshot stale and refreshes it only on explicit action', async () => {
+    const agent: MetaAgentSummary = {
+      id: 'project:project-1:reviewer',
+      projectId: 'project-1',
+      slug: 'reviewer',
+      origin: 'project',
+      name: 'Reviewer',
+      description: 'Reviews work',
+      revision: 'revision-new',
+      valid: true,
+      diagnostics: [],
+      requiredProviders: ['codex'],
+      capabilities: ['delegate'],
+      available: true,
+      unavailableReasons: [],
+      editable: true,
+    };
+    const task = makeTask({
+      id: 'agent-task',
+      agentId: agent.id,
+      agentName: agent.name,
+      agentRevision: 'revision-old',
+    });
+    const { api } = installApi([task], undefined, [agent]);
+    render(<TasksPanel workspaceId="ws1" projectId="project-1" />);
+
+    expect(await screen.findByText(/stale snapshot/)).toBeInTheDocument();
+    expect(api.invoke).not.toHaveBeenCalledWith(
+      'task:update',
+      expect.anything(),
+    );
+
+    fireEvent.click(screen.getByTestId('task-refresh-agent-agent-task'));
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('task:update', {
+        id: task.id,
+        agentId: agent.id,
+      }),
+    );
+  });
+
+  it('does not call a stored snapshot stale when the current registry revision is unknown', async () => {
+    const task = makeTask({
+      id: 'unknown-agent-revision',
+      agentId: 'project:project-1:missing-agent',
+      agentName: 'Removed or unavailable agent',
+      agentRevision: 'stored-revision',
+    });
+    installApi([task], undefined, []);
+
+    render(<TasksPanel workspaceId="ws1" projectId="project-1" />);
+
+    expect(await screen.findByText(/stored-r/)).toBeInTheDocument();
+    expect(screen.queryByText(/stale snapshot/)).toBeNull();
   });
 
   it('checks whether project knowledge is available in a neighboring tab', async () => {

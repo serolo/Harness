@@ -1,0 +1,21 @@
+version: 1
+name: Harness PIV
+description: Specification, planning, implementation, independent testing, verification, and review.
+prompt: Run the repository PIV workflow in dependency order. Keep implementation separate from test authorship and verification, retain all evidence branches, and require human merge authority.
+executor:
+  harness: claude_code
+  mode: plan
+  read_only: true
+tools:
+  agents: [analyst, coder, test-author, verifier, reviewer]
+  skills: [piv]
+requires:
+  providers: [claude_code, codex]
+policy:
+  max_dispatches: 10
+  max_parallel: 3
+  turn_timeout_ms: 2400000
+  run_timeout_ms: 10800000
+  max_request_bytes: 65536
+  max_result_bytes: 131072
+  critique_rounds: 0

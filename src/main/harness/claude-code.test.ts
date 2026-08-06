@@ -198,6 +198,42 @@ describe('Claude Code adapter — MCP passthrough (settings → .mcp.json)', () 
     }
   });
 
+  it('uses sandboxed accept-edits mode for writable meta children', () => {
+    const args = buildArgs(
+      opts([], {
+        mode: 'default',
+        scopedWriteMode: true,
+        metaRunId: 'run-1',
+      }),
+    );
+    const settingsIndex = args.indexOf('--settings');
+
+    expect(args).toContain('--permission-mode');
+    expect(args).toContain('acceptEdits');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(JSON.parse(args[settingsIndex + 1]!) as unknown).toMatchObject({
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        allowUnsandboxedCommands: false,
+      },
+    });
+  });
+
+  it('reports coordinator and scoped-write enforcement capabilities', () => {
+    expect(new ClaudeCodeHarness(fakeSpawner().spawner).capabilities()).toEqual(
+      {
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: true,
+        supportsReadOnlyMode: true,
+        supportsReadOnlyMcp: true,
+        supportsScopedWriteMode: true,
+      },
+    );
+  });
+
   it('writes the configured servers to .mcp.json and passes --mcp-config', () => {
     const servers: McpServerConfig[] = [
       {
@@ -223,6 +259,37 @@ describe('Claude Code adapter — MCP passthrough (settings → .mcp.json)', () 
       args: ['--flag'],
       env: { TOKEN: 'secret' },
     });
+  });
+
+  it('strictly isolates a meta coordinator to the four control broker tools', () => {
+    const control: McpServerConfig = {
+      name: 'harness-meta-control',
+      command: process.execPath,
+      args: ['/private/mcp-stdio.js'],
+    };
+    const args = buildArgs(
+      opts([control], {
+        mode: 'plan',
+        readOnlyMode: true,
+        metaRunId: 'run-1',
+      }),
+    );
+    const allowedIndex = args.indexOf('--allowedTools');
+
+    expect(args).toContain('--strict-mcp-config');
+    expect(args[allowedIndex + 1]?.split(',')).toEqual([
+      'mcp__harness-meta-control__dispatch',
+      'mcp__harness-meta-control__continue_dispatch',
+      'mcp__harness-meta-control__await_dispatches',
+      'mcp__harness-meta-control__cancel_dispatch',
+    ]);
+    expect(() =>
+      buildArgs(
+        opts([control, { name: 'extra', command: 'extra' }], {
+          metaRunId: 'run-1',
+        }),
+      ),
+    ).toThrow('must contain only the control server');
   });
 
   it('omits --mcp-config entirely when there are no MCP servers', () => {

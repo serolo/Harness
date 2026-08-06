@@ -87,6 +87,9 @@ export class MockHarness implements Harness {
       supportsMcp: true,
       supportsPlanMode: true,
       rawTerminalFallback: true,
+      supportsReadOnlyMode: true,
+      supportsReadOnlyMcp: true,
+      supportsScopedWriteMode: true,
     };
   }
 

@@ -85,6 +85,11 @@ export class CodexHarness implements Harness {
       supportsMcp: true,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsReadOnlyMode: true,
+      // Codex exec currently cannot authorize MCP calls non-interactively without
+      // the flag that also disables its sandbox. Keep coordinator eligibility false.
+      supportsReadOnlyMcp: false,
+      supportsScopedWriteMode: true,
     };
   }
 
@@ -842,15 +847,23 @@ export function buildArgs(opts: StartTurnOpts): string[] {
     ? ['exec', 'resume', '--json']
     : ['exec', '--json'];
 
-  // Conductor owns the local workspace boundary and launches Codex headlessly. Always
-  // bypass both approval prompts and Codex's sandbox so a turn cannot stall on an
-  // interaction that the non-interactive process cannot answer. This applies equally
-  // to new and resumed sessions.
-  args.push('--dangerously-bypass-approvals-and-sandbox');
+  if (opts.readOnlyMode) {
+    // Read-only is a sandbox policy, not Codex plan mode. Deny escalation requests
+    // non-interactively so review/investigation roles cannot modify the worktree.
+    args.push('--sandbox', 'read-only', '--ask-for-approval', 'never');
+  } else if (opts.scopedWriteMode || opts.metaRunId) {
+    // Meta children may edit only their isolated worktree. The provider sandbox also
+    // blocks network and protected git metadata, so push/merge authority cannot be
+    // recovered from a prompt injection or a user-level Codex policy.
+    args.push('--sandbox', 'workspace-write', '--ask-for-approval', 'never');
+  } else {
+    // Writable turns are explicitly isolated in their own worktree. They remain
+    // non-interactive so an unattended provider process cannot stall on approval.
+    args.push('--dangerously-bypass-approvals-and-sandbox');
+  }
 
-  // Codex has no distinct plan-mode (capabilities.supportsPlanMode=false). All app
-  // modes use the stronger always-on bypass above; a plan request therefore degrades
-  // to the normal agent behavior without changing its approval policy.
+  // Codex has no distinct plan mode. Callers must use readOnlyMode for roles that
+  // inspect without writing; a plan request remains unsupported at the capability gate.
 
   const mcpConfigPath = writeMcpConfig(opts.mcpConfig);
   if (mcpConfigPath) {

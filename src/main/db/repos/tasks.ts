@@ -22,6 +22,7 @@ import type {
 import type { Attachment } from '@shared/harness';
 import type { AppDatabase } from '../index';
 import type { ScheduledTasksTable } from '../schema';
+import { sanitizeErrorMessage } from '../../security/sanitize-error';
 
 /** States from which `update` is allowed (design doc §5.2 editable source states). */
 const EDITABLE_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
@@ -35,6 +36,14 @@ const EDITABLE_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
 const APP_CLOSED_MESSAGE = 'app closed while the task was running';
 /** Boot-reconcile message when the task's turn itself ended in an error. */
 const TURN_ERROR_MESSAGE = "the task's turn ended with an error";
+
+export interface TaskAgentSnapshotRecord {
+  id: string;
+  name: string;
+  revision: string;
+  snapshotJson: string;
+  digest: string;
+}
 
 /** Map a DB row to the shared `ScheduledTask` DTO (explicit, per the repo convention). */
 function parseAttachments(value: string): Attachment[] {
@@ -63,6 +72,10 @@ function rowToTask(row: ScheduledTasksTable): ScheduledTask {
     harnessOverride: row.harness_override,
     attachments: parseAttachments(row.attachments_json),
     effort: row.effort,
+    agentId: row.agent_id,
+    agentName: row.agent_name,
+    agentRevision: row.agent_revision,
+    metaRunId: row.meta_run_id,
   };
 }
 
@@ -91,7 +104,10 @@ export class ScheduledTasksRepo {
    * Insert a task. State is derived: a `scheduledAt` → `scheduled`, none → `pending`.
    * `origin` defaults to `'user'`. `model`/`mode`/`scheduledAt` default to NULL.
    */
-  async create(input: CreateTaskReq): Promise<ScheduledTask> {
+  async create(
+    input: CreateTaskReq,
+    agent?: TaskAgentSnapshotRecord,
+  ): Promise<ScheduledTask> {
     const now = Date.now();
     const scheduledAt = input.scheduledAt ?? null;
     const row: ScheduledTasksTable = {
@@ -110,6 +126,12 @@ export class ScheduledTasksRepo {
       harness_override: input.harnessOverride ?? null,
       attachments_json: JSON.stringify(input.attachments ?? []),
       effort: input.effort ?? null,
+      agent_id: agent?.id ?? input.agentId ?? null,
+      agent_name: agent?.name ?? null,
+      agent_revision: agent?.revision ?? null,
+      agent_snapshot_json: agent?.snapshotJson ?? null,
+      agent_snapshot_digest: agent?.digest ?? null,
+      meta_run_id: null,
     };
     await this.db.insertInto('scheduled_tasks').values(row).execute();
     return rowToTask(row);
@@ -123,6 +145,7 @@ export class ScheduledTasksRepo {
   async update(
     id: string,
     patch: Omit<UpdateTaskReq, 'id'>,
+    agent?: TaskAgentSnapshotRecord | null,
   ): Promise<ScheduledTask> {
     const existing = await this.requireRow(id);
     // Only the sanctioned source states are editable (design doc §5.2). Rejecting
@@ -145,6 +168,31 @@ export class ScheduledTasksRepo {
       set.attachments_json = JSON.stringify(patch.attachments);
     }
     if (patch.effort !== undefined) set.effort = patch.effort;
+    if (patch.agentId !== undefined) {
+      set.agent_id = patch.agentId;
+      if (patch.agentId === null) {
+        set.agent_name = null;
+        set.agent_revision = null;
+        set.agent_snapshot_json = null;
+        set.agent_snapshot_digest = null;
+        set.meta_run_id = null;
+      }
+    }
+    if (agent) {
+      set.agent_id = agent.id;
+      set.agent_name = agent.name;
+      set.agent_revision = agent.revision;
+      set.agent_snapshot_json = agent.snapshotJson;
+      set.agent_snapshot_digest = agent.digest;
+      set.meta_run_id = null;
+    } else if (agent === null) {
+      set.agent_id = null;
+      set.agent_name = null;
+      set.agent_revision = null;
+      set.agent_snapshot_json = null;
+      set.agent_snapshot_digest = null;
+      set.meta_run_id = null;
+    }
     // Re-derive state ONLY when the schedule itself changes (design doc §5.2):
     //   a time → 'scheduled'; cleared (null) → 'pending'.
     if (patch.scheduledAt !== undefined) {
@@ -185,6 +233,72 @@ export class ScheduledTasksRepo {
       .where('id', '=', id)
       .execute();
     return rowToTask({ ...existing, ...set });
+  }
+
+  /** Main-only immutable agent snapshot writer; renderer never supplies the snapshot. */
+  async setAgentSnapshot(
+    id: string,
+    agent: {
+      id: string;
+      name: string;
+      revision: string;
+      snapshotJson: string;
+      digest: string;
+    } | null,
+  ): Promise<ScheduledTask> {
+    const existing = await this.requireRow(id);
+    const set: Partial<ScheduledTasksTable> = agent
+      ? {
+          agent_id: agent.id,
+          agent_name: agent.name,
+          agent_revision: agent.revision,
+          agent_snapshot_json: agent.snapshotJson,
+          agent_snapshot_digest: agent.digest,
+          updated_at: Date.now(),
+        }
+      : {
+          agent_id: null,
+          agent_name: null,
+          agent_revision: null,
+          agent_snapshot_json: null,
+          agent_snapshot_digest: null,
+          meta_run_id: null,
+          updated_at: Date.now(),
+        };
+    await this.db
+      .updateTable('scheduled_tasks')
+      .set(set)
+      .where('id', '=', id)
+      .execute();
+    return rowToTask({ ...existing, ...set });
+  }
+
+  async setMetaRunId(id: string, metaRunId: string | null): Promise<void> {
+    await this.db
+      .updateTable('scheduled_tasks')
+      .set({ meta_run_id: metaRunId, updated_at: Date.now() })
+      .where('id', '=', id)
+      .execute();
+  }
+
+  async hasAgentReference(agentId: string): Promise<boolean> {
+    return (
+      (await this.db
+        .selectFrom('scheduled_tasks')
+        .select('id')
+        .where('agent_id', '=', agentId)
+        .limit(1)
+        .executeTakeFirst()) !== undefined
+    );
+  }
+
+  async getStoredAgentSnapshot(
+    id: string,
+  ): Promise<{ json: string; digest: string } | null> {
+    const row = await this.requireRow(id);
+    return row.agent_snapshot_json && row.agent_snapshot_digest
+      ? { json: row.agent_snapshot_json, digest: row.agent_snapshot_digest }
+      : null;
   }
 
   /** Delete a task. Rejected with `conflict` while `running`. */
@@ -261,7 +375,8 @@ export class ScheduledTasksRepo {
         for (const r of toMissed) affected.add(r.workspace_id);
       }
 
-      // Stale `running` rows → reconcile from the joined turn's status.
+      // Stale `running` rows → reconcile from the durable meta run when present,
+      // otherwise retain the ordinary turn reconciliation path.
       const running = await trx
         .selectFrom('scheduled_tasks')
         .selectAll()
@@ -270,7 +385,23 @@ export class ScheduledTasksRepo {
       for (const task of running) {
         let target: TaskState = 'error';
         let errorMessage: string | null = APP_CLOSED_MESSAGE;
-        if (task.turn_id) {
+        if (task.meta_run_id) {
+          const run = await trx
+            .selectFrom('agent_runs')
+            .select(['status', 'error'])
+            .where('id', '=', task.meta_run_id)
+            .executeTakeFirst();
+          if (run?.status === 'completed') {
+            target = 'done';
+            errorMessage = null;
+          } else if (run) {
+            target = 'error';
+            errorMessage = sanitizeErrorMessage(
+              run.error,
+              `meta run ${run.status.replaceAll('_', ' ')}`,
+            );
+          }
+        } else if (task.turn_id) {
           const turn = await trx
             .selectFrom('turns')
             .select(['status'])

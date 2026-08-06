@@ -239,6 +239,22 @@ type AgentEvent =
 
 Same interface; each maps to its CLI's headless/JSON mode. Capability flags (`supportsResume`, `supportsMcp`, `supportsPlanMode`) let the UI degrade gracefully per harness.
 
+### 4.4 Bounded coordinator orchestration
+
+“We orchestrate existing CLIs” remains true. Harness does not implement a model runtime or bypass
+provider adapters. A file-configured meta run starts a coordinator as an ordinary supervised CLI
+turn in an isolated workspace, then gives only that turn a run-scoped MCP server with four bounded
+delegation operations. Each child is another ordinary `HarnessSupervisor` turn in its own claimed
+worktree. Main validates role, provider, purpose, and ownership and enforces fan-out, parallelism,
+depth, deadline, request, and result limits independently of prompts.
+
+This is an explicitly authorized post-v1 extension to the original human-click Phase 11 design,
+not a relaxation of the v1 non-goal. It adds orchestration glue around installed Claude Code,
+Codex, and Cursor CLIs; it adds no direct model calls, arbitrary executable tools, recursive agent
+runtime, cross-worktree writes, generic IPC/filesystem/database authority, or autonomous merge.
+Humans retain push/PR consent and exclusive merge authority. See
+[`agent-config.md`](./agent-config.md) for the supported grammar and security boundary.
+
 ---
 
 ## 5. Core subsystems

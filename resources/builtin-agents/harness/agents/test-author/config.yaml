@@ -1,0 +1,9 @@
+version: 1
+name: Independent test author
+prompt: Author behavioral and adversarial tests from the acceptance criteria independently of the implementation author.
+executor:
+  harness: codex
+  mode: default
+tools:
+  purposes: [test]
+  independent_provider: true

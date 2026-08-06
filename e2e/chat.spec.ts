@@ -43,7 +43,10 @@ test.beforeAll(async () => {
   initRepo(repoDir);
 
   app = await electron.launch({
-    args: [join(here, '..', 'out', 'main', 'index.js')],
+    args: [
+      join(here, '..', 'out', 'main', 'index.js'),
+      `--user-data-dir=${userDataDir}`,
+    ],
     env: {
       ...process.env,
       AGENTAPP_USER_DATA: userDataDir,
@@ -68,6 +71,7 @@ test('send a prompt → tokens stream → turn ends → history reconstructs', a
         ch: string,
         arg: unknown,
         onChunk: (c: unknown) => void,
+        opts: { id: string },
       ): Promise<void>;
     }
     const api = (window as unknown as { api: Api }).api;
@@ -77,12 +81,17 @@ test('send a prompt → tokens stream → turn ends → history reconstructs', a
       id: string;
     };
     let workspaceId = '';
-    await api.stream('workspace:create', { projectId: project.id }, (c) => {
-      const frame = c as { kind: string; workspace?: { id: string } };
-      if (frame.kind === 'created' && frame.workspace) {
-        workspaceId = frame.workspace.id;
-      }
-    });
+    await api.stream(
+      'workspace:create',
+      { projectId: project.id },
+      (c) => {
+        const frame = c as { kind: string; workspace?: { id: string } };
+        if (frame.kind === 'created' && frame.workspace) {
+          workspaceId = frame.workspace.id;
+        }
+      },
+      { id: crypto.randomUUID() },
+    );
 
     // 2. Stream a turn.
     const streamed: string[] = [];
@@ -104,6 +113,7 @@ test('send a prompt → tokens stream → turn ends → history reconstructs', a
           if (frame.event.kind === 'turn_end') sawTurnEnd = true;
         }
       },
+      { id: crypto.randomUUID() },
     );
 
     // 3. Reconstruct from persistence.

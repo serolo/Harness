@@ -60,6 +60,19 @@ import type { SlashCommand } from './slash';
 import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
 import type { MonthlyUsage, PricingCatalogSnapshot } from './billing';
 import type {
+  AgentFileResult,
+  AgentValidationDiagnostic,
+  MetaAgentChangeEvent,
+  MetaAgentDetail,
+  MetaAgentSummary,
+  MetaRunChangeEvent,
+  MetaRunDetail,
+  MetaRunSummary,
+  MetaRunTurnStartedEvent,
+  StartMetaRunRequest,
+  ValidateAgentFileRequest,
+} from './agents';
+import type {
   CreateWikiProposalInput,
   KnowledgeConfig,
   QmdStatus,
@@ -584,6 +597,64 @@ export interface Commands {
   };
   /** Delete Harness's encrypted Codex API key and remove it from child environments. */
   'agent:deleteCodexApiKey': { req: void; res: void };
+
+  // --- Project-scoped meta agents and supervised runs (APPEND-ONLY) ---
+  'metaAgent:list': { req: { projectId: string }; res: MetaAgentSummary[] };
+  'metaAgent:get': {
+    req: { projectId: string; agentId: string };
+    res: MetaAgentDetail;
+  };
+  'metaAgent:create': {
+    req: { projectId: string; slug: string; name: string };
+    res: MetaAgentDetail;
+  };
+  'metaAgent:duplicate': {
+    req: { projectId: string; agentId: string; slug: string };
+    res: MetaAgentDetail;
+  };
+  'metaAgent:import': {
+    req: { projectId: string };
+    res: MetaAgentDetail | null;
+  };
+  'metaAgent:readFile': {
+    req: { projectId: string; agentId: string; path: string };
+    res: AgentFileResult;
+  };
+  'metaAgent:validateFile': {
+    req: ValidateAgentFileRequest;
+    res: AgentValidationDiagnostic[];
+  };
+  'metaAgent:saveFile': {
+    req: ValidateAgentFileRequest & { agentId: string };
+    res: MetaAgentDetail;
+  };
+  /** Atomically create, edit, or delete a validated set of confined bundle files. APPEND-ONLY. */
+  'metaAgent:saveBundleFiles': {
+    req: {
+      projectId: string;
+      agentId: string;
+      files: { path: string; content: string | null }[];
+    };
+    res: MetaAgentDetail;
+  };
+  'metaAgent:delete': {
+    req: { projectId: string; agentId: string };
+    res: void;
+  };
+  'metaAgent:startRun': { req: StartMetaRunRequest; res: MetaRunDetail };
+  'metaRun:list': { req: { projectId: string }; res: MetaRunSummary[] };
+  'metaRun:get': {
+    req: { projectId: string; runId: string };
+    res: MetaRunDetail;
+  };
+  'metaRun:cancel': {
+    req: { projectId: string; runId: string };
+    res: MetaRunDetail;
+  };
+  'metaRun:takeOver': {
+    req: { projectId: string; runId: string };
+    res: MetaRunDetail;
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -655,6 +726,12 @@ export interface Events {
   };
   /** The application updater transitioned to a new observable state. */
   'update:status': UpdateStatus;
+  /** A managed agent definition changed or produced new validation diagnostics. */
+  'metaAgent:changed': MetaAgentChangeEvent;
+  /** A meta run or one of its dispatches changed. */
+  'metaRun:changed': MetaRunChangeEvent;
+  /** Coordinator/child turn metadata for navigation and live run inspection. */
+  'metaRun:turnStarted': MetaRunTurnStartedEvent;
 }
 
 export type EventChannel = keyof Events;

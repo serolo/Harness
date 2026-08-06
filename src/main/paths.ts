@@ -5,7 +5,7 @@
 // app-ready) would throw or resolve to the wrong place. See spec §2.3 for the layout.
 
 import { isAbsolute, join, resolve } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { app } from 'electron';
 
 /**
@@ -48,7 +48,7 @@ function userDataRoot(): string {
  * time — so nothing touches the filesystem before the app is ready.
  */
 function ensureDir(dir: string): string {
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
@@ -177,6 +177,11 @@ export function worktreesDir(id: string): string {
   return ensureDir(join(projectDir(id), 'worktrees'));
 }
 
+/** Legacy pre-root-preference worktree path, used only to adopt interrupted creates. */
+export function legacyWorktreePath(id: string, name: string): string {
+  return join(userDataRoot(), 'projects', id, 'worktrees', name);
+}
+
 /** `<userData>/projects/<id>/worktrees/<name>` — one workspace's git worktree. */
 export function worktreeDir(id: string, name: string): string {
   return ensureDir(join(worktreesDir(id), name));
@@ -190,4 +195,35 @@ export function knowledgeDir(id: string): string {
 /** `<userData>/projects/<id>/knowledge-proposals` — isolated review proposals. */
 export function knowledgeProposalsDir(id: string): string {
   return ensureDir(join(projectDir(id), 'knowledge-proposals'));
+}
+
+/** App-managed, project-scoped custom agent bundles. */
+export function projectAgentsDir(projectId: string): string {
+  return ensureDir(join(projectDir(projectId), 'agents'));
+}
+
+/** Private root for one meta run's broker socket and token file. */
+export function metaRunControlDir(runId: string): string {
+  return ensureDir(join(userDataRoot(), 'meta-runs', runId));
+}
+
+/** Immutable built-ins, resolved identically for source and packaged builds. */
+export function builtinAgentsDir(options?: {
+  packaged?: boolean;
+  resourcesPath?: string;
+  appPath?: string;
+}): string {
+  const packaged = options?.packaged ?? app.isPackaged;
+  if (packaged) {
+    return join(
+      options?.resourcesPath ?? process.resourcesPath,
+      'builtin-agents',
+    );
+  }
+  const appPath = options?.appPath ?? app.getAppPath();
+  const direct = join(appPath, 'resources', 'builtin-agents');
+  if (options?.appPath !== undefined || existsSync(direct)) return direct;
+  // A built entry launched directly by Playwright/Electron reports `out/main` as
+  // appPath. Walk back to the checkout while keeping normal dev/package paths stable.
+  return join(appPath, '..', '..', 'resources', 'builtin-agents');
 }

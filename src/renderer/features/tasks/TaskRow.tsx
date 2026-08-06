@@ -17,6 +17,8 @@ export interface TaskRowProps {
   onMarkDone: (id: string) => void;
   onEdit: (task: ScheduledTask, focusSchedule?: boolean) => void;
   onDelete: (id: string) => void;
+  onRefreshAgent: (task: ScheduledTask) => void;
+  agentRevisionStale?: boolean;
 }
 
 /** States from which a task can be run / marked done (mirrors the server gate). */
@@ -38,6 +40,8 @@ export function TaskRow({
   onMarkDone,
   onEdit,
   onDelete,
+  onRefreshAgent,
+  agentRevisionStale = false,
 }: TaskRowProps): React.JSX.Element {
   const runnable = RUNNABLE.has(task.state);
   const editable = EDITABLE.has(task.state);
@@ -59,6 +63,15 @@ export function TaskRow({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-fg-3">
         <span>Model: {task.model ?? 'default'}</span>
         <span>Mode: {task.mode ?? 'workspace default'}</span>
+        {task.agentId ? (
+          <span data-testid="task-agent-revision">
+            Agent: {task.agentName ?? task.agentId} ·{' '}
+            {task.agentRevision?.slice(0, 8) ?? 'unknown revision'}
+            {agentRevisionStale ? (
+              <span className="ml-1 text-warning">· stale snapshot</span>
+            ) : null}
+          </span>
+        ) : null}
         {task.scheduledAt != null ? (
           <span data-testid="task-schedule-label">
             {formatSchedule(task.scheduledAt)}
@@ -110,6 +123,16 @@ export function TaskRow({
             onClick={() => onEdit(task)}
           >
             Edit
+          </Button>
+        ) : null}
+        {editable && task.agentId ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid={`task-refresh-agent-${task.id}`}
+            onClick={() => onRefreshAgent(task)}
+          >
+            Refresh agent version
           </Button>
         ) : null}
         {!isRunning ? (

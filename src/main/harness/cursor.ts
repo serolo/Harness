@@ -83,6 +83,9 @@ export class CursorHarness implements Harness {
       supportsMcp: false,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsReadOnlyMode: false,
+      supportsReadOnlyMcp: false,
+      supportsScopedWriteMode: false,
     };
   }
 

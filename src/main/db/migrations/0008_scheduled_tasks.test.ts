@@ -62,11 +62,11 @@ async function seedTurn(
 }
 
 describe('migration 0008 (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 14 (latest)', () => {
+  it('applies all migrations: user_version becomes 15 (latest)', () => {
     db = openDb(dbFile);
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(14);
+      expect(raw.pragma('user_version', { simple: true })).toBe(15);
     } finally {
       raw.close();
     }
@@ -181,7 +181,7 @@ describe('migration 0008 (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(14);
+      expect(raw.pragma('user_version', { simple: true })).toBe(15);
       const count = raw
         .prepare(
           "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'",
@@ -216,7 +216,7 @@ describe('migration 0008 (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(14);
+      expect(raw.pragma('user_version', { simple: true })).toBe(15);
       const count = raw
         .prepare(
           "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'",

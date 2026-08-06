@@ -117,6 +117,9 @@ describe('CursorHarness — capabilities & identity', () => {
       supportsMcp: false,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsReadOnlyMode: false,
+      supportsReadOnlyMcp: false,
+      supportsScopedWriteMode: false,
     });
   });
 

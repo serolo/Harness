@@ -27,10 +27,18 @@ let userDataDir: string;
 test.beforeAll(async () => {
   userDataDir = mkdtempSync(join(tmpdir(), 'harness-e2e-'));
   app = await electron.launch({
-    args: [join(here, '..', 'out', 'main', 'index.js')],
+    args: [
+      join(here, '..', 'out', 'main', 'index.js'),
+      `--user-data-dir=${userDataDir}`,
+    ],
     // Point the app's on-disk data at a throwaway dir (paths.ts test seam) so the
     // boot test never touches the developer's real Application Support data.
-    env: { ...process.env, AGENTAPP_USER_DATA: userDataDir },
+    env: {
+      ...process.env,
+      AGENTAPP_USER_DATA: userDataDir,
+      AGENTAPP_E2E: '1',
+      ELECTRON_RENDERER_URL: '',
+    },
   });
 });
 
@@ -39,22 +47,26 @@ test.afterAll(async () => {
   if (userDataDir) rmSync(userDataDir, { recursive: true, force: true });
 });
 
-test('boots, exposes window.api, and flips the IPC indicator to OK', async () => {
+test('boots, exposes window.api, and completes the IPC health round trip', async () => {
   const window = await app.firstWindow();
   await window.waitForLoadState('domcontentloaded');
 
-  // The IpcHealth indicator reaches "ok" only after invoke('app:ping') → 'ok'
-  // has round-tripped renderer → preload → main → back.
-  const health = window.locator('[data-testid="ipc-health"]');
-  await expect(health).toHaveAttribute('data-state', 'ok', { timeout: 20_000 });
-
-  // window.api is the ONLY bridge, and it must be a real function.
-  const apiIsFn = await window.evaluate(
-    () =>
-      typeof (window as unknown as { api?: { invoke?: unknown } }).api
-        ?.invoke === 'function',
-  );
-  expect(apiIsFn).toBe(true);
+  // Exercise the bridge directly. The old visual indicator is intentionally absent
+  // from the production layout, but this still proves renderer → preload → main → back.
+  const result = await window.evaluate(async () => {
+    const api = (
+      window as unknown as {
+        api?: {
+          invoke?: (channel: string, request: unknown) => Promise<unknown>;
+        };
+      }
+    ).api;
+    return {
+      apiIsFn: typeof api?.invoke === 'function',
+      pong: await api?.invoke?.('app:ping', undefined),
+    };
+  });
+  expect(result).toEqual({ apiIsFn: true, pong: 'ok' });
 });
 
 test('does not leak ipcRenderer or Node globals into the renderer', async () => {

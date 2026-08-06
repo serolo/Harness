@@ -1,0 +1,11 @@
+version: 1
+name: Independent reviewer
+description: Reviews another provider's work without modifying it.
+prompt: Inspect the assigned branch and report prioritized correctness, security, and maintainability findings with evidence.
+executor:
+  harness: codex
+  mode: default
+  read_only: true
+tools:
+  purposes: [review, verify]
+  independent_provider: true

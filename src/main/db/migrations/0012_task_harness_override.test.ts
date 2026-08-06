@@ -29,7 +29,7 @@ describe('migration 0012 task harness override', () => {
   it('creates the nullable harness_override column on a fresh schema', () => {
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(14);
+    expect(db.pragma('user_version', { simple: true })).toBe(15);
     expect(taskColumns()).toContain('harness_override');
   });
 
@@ -90,7 +90,7 @@ describe('migration 0012 task harness override', () => {
 
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(14);
+    expect(db.pragma('user_version', { simple: true })).toBe(15);
     expect(
       db
         .prepare(

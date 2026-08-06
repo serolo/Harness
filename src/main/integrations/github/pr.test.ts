@@ -127,7 +127,7 @@ function setup(opts: SetupOptions = {}) {
         wt: string,
         remote: string,
         branch: string,
-        opts?: { setUpstream?: boolean },
+        opts?: { setUpstream?: boolean; signal?: AbortSignal },
       ) => Promise<void>
     >(),
     headInfo: vi.fn<(wt: string, baseRef?: string) => Promise<HeadInfo>>(),
@@ -213,6 +213,78 @@ function mockNoExistingPr(octokit: ReturnType<typeof fakeOctokit>): void {
 // ---------------------------------------------------------------------------
 // openPr
 // ---------------------------------------------------------------------------
+
+describe('PrWorkflow.pushBranch', () => {
+  it('commits pending work and pushes only the named workspace branch', async () => {
+    const { workflow, git, workspace } = setup();
+    git.status.mockResolvedValueOnce({
+      branch: workspace.branch,
+      files: [],
+      clean: false,
+      ahead: 0,
+      behind: 0,
+    });
+    git.commit.mockResolvedValueOnce({ sha: 'abc123' });
+    git.hasUpstream.mockResolvedValueOnce(false);
+    git.push.mockResolvedValueOnce(undefined);
+
+    await workflow.pushBranch(workspace.id);
+
+    expect(git.commit).toHaveBeenCalledWith(
+      workspace.worktreePath,
+      `WIP: ${workspace.branch}`,
+    );
+    expect(git.push).toHaveBeenCalledWith(
+      workspace.worktreePath,
+      'origin',
+      workspace.branch,
+      { setUpstream: true },
+    );
+  });
+
+  it('threads cancellation through every Git publication operation', async () => {
+    const { workflow, git, workspace } = setup();
+    const controller = new AbortController();
+    git.status.mockResolvedValueOnce({
+      branch: workspace.branch,
+      files: [],
+      clean: true,
+      ahead: 0,
+      behind: 0,
+    });
+    git.hasUpstream.mockResolvedValueOnce(true);
+    git.push.mockImplementationOnce(
+      async (_wt, _remote, _branch, options) =>
+        new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            'abort',
+            () => reject(options.signal?.reason),
+            { once: true },
+          );
+        }),
+    );
+
+    const pending = workflow.pushBranch(workspace.id, {
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(git.push).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(git.status).toHaveBeenCalledWith(workspace.worktreePath, {
+      signal: controller.signal,
+    });
+    expect(git.hasUpstream).toHaveBeenCalledWith(workspace.worktreePath, {
+      signal: controller.signal,
+    });
+    expect(git.push).toHaveBeenCalledWith(
+      workspace.worktreePath,
+      'origin',
+      workspace.branch,
+      { setUpstream: false, signal: controller.signal },
+    );
+  });
+});
 
 describe('PrWorkflow.openPr', () => {
   it('commits when dirty, pushes ONLY the branch, creates the PR, and persists prNumber', async () => {
@@ -361,6 +433,27 @@ describe('PrWorkflow.openPr', () => {
       title: 'Exact Title',
       body: 'Exact Body',
     });
+  });
+
+  it('treats an explicit empty body as authoritative without deriving from diff', async () => {
+    const { workflow, git, octokit, diff, workspace } = setup();
+    git.status.mockResolvedValueOnce({
+      branch: workspace.branch,
+      files: [],
+      clean: true,
+      ahead: 0,
+      behind: 0,
+    });
+    git.hasUpstream.mockResolvedValueOnce(true);
+    git.push.mockResolvedValueOnce(undefined);
+    mockNoExistingPr(octokit);
+    octokit.request.mockResolvedValueOnce(ok(restPull({ number: 10 })));
+
+    await workflow.openPr(workspace.id, { draft: true, body: '' });
+
+    expect(diff.getDiff).not.toHaveBeenCalled();
+    const [, params] = octokit.request.mock.calls[1];
+    expect(params).toMatchObject({ body: '', draft: true });
   });
 
   it('returns an existing open PR for the branch after publishing, without creating a duplicate', async () => {

@@ -344,12 +344,38 @@ describe('Codex adapter — buildArgs', () => {
     expect(args.slice(-3)).toEqual(['--', 'codex-sess-1', 'do the thing']);
   });
 
-  it('always bypasses approvals and sandboxing in every app mode', () => {
+  it('does not pretend app plan mode is a Codex CLI capability', () => {
     for (const mode of ['default', 'plan', 'auto_accept'] as const) {
       const args = buildArgs(opts({ mode }));
       expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
-      expect(args).not.toContain('--full-auto');
+      expect(args).not.toContain('--sandbox');
+      expect(args).not.toContain('--ask-for-approval');
     }
+  });
+
+  it('uses provider-native non-interactive read-only args for review roles', () => {
+    const args = buildArgs(
+      opts({ mode: 'default', readOnlyMode: true, prompt: '--inspect-only' }),
+    );
+
+    expect(args).toContain('--sandbox');
+    expect(args).toContain('read-only');
+    expect(args).toContain('--ask-for-approval');
+    expect(args).toContain('never');
+    expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(args.slice(-2)).toEqual(['--', '--inspect-only']);
+  });
+
+  it('uses workspace-write sandboxing for writable meta children', () => {
+    const args = buildArgs(
+      opts({ mode: 'default', scopedWriteMode: true, metaRunId: 'run-1' }),
+    );
+
+    expect(args).toContain('--sandbox');
+    expect(args).toContain('workspace-write');
+    expect(args).toContain('--ask-for-approval');
+    expect(args).toContain('never');
+    expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
   it('passes the selected reasoning effort through a config override', () => {
@@ -406,6 +432,9 @@ describe('CodexHarness — capabilities', () => {
       supportsMcp: true,
       supportsPlanMode: false,
       rawTerminalFallback: true,
+      supportsReadOnlyMode: true,
+      supportsReadOnlyMcp: false,
+      supportsScopedWriteMode: true,
     });
   });
 });

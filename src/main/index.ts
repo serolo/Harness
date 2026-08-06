@@ -23,6 +23,7 @@ import {
   BrowserWindow,
   Menu,
   session,
+  shell,
   type MenuItemConstructorOptions,
   type OnHeadersReceivedListenerDetails,
   type HeadersReceivedResponse,
@@ -43,6 +44,7 @@ import { CodexHarness } from './harness/codex';
 import { CursorHarness } from './harness/cursor';
 import type { RawPtySpawner } from './harness/raw-terminal';
 import { MockHarness } from './harness/mock';
+import { E2EMetaHarness } from './harness/e2e-meta';
 import type { Harness } from '@shared/harness';
 import { PtyService } from './pty';
 import { ProcessRegistry, ProcessRunner } from './process';
@@ -53,6 +55,10 @@ import { CheckpointsRepo } from './db/repos/checkpoints';
 import { TodosRepo } from './db/repos/todos';
 import { ScheduledTasksRepo } from './db/repos/tasks';
 import { TaskScheduler } from './scheduler';
+import { AgentRegistry } from './agents/registry';
+import { AgentRunsRepo } from './db/repos/agentRuns';
+import { AgentDispatchesRepo } from './db/repos/agentDispatches';
+import { createMetaHarnessService } from './meta-harness';
 import { ChecksService } from './checks';
 import { IntegrationService } from './integrations';
 import { githubCliAuthStatus } from './integrations/github/ghCli';
@@ -91,6 +97,7 @@ import {
   type ShortcutAction,
 } from './shortcuts';
 import { initLogging } from './logging';
+import { sanitizeErrorMessage } from './security/sanitize-error';
 
 ensureStandardFileDescriptors();
 
@@ -576,9 +583,12 @@ async function createAppContext(): Promise<AppContext> {
     settings.get().agent.harnessImpl === 'mock' ||
     process.env['AGENTAPP_MOCK_HARNESS'] === '1' ||
     process.env['AGENTAPP_E2E'] === '1';
-  const adapter: Harness = useMock
-    ? new MockHarness()
-    : new ClaudeCodeHarness(rawPtySpawner);
+  const isE2EHarness = process.env['AGENTAPP_E2E'] === '1';
+  const adapter: Harness = isE2EHarness
+    ? new E2EMetaHarness('claude_code')
+    : useMock
+      ? new MockHarness()
+      : new ClaudeCodeHarness(rawPtySpawner);
   harness.register(adapter);
   logger.info(
     `[startup] harness registered: ${adapter.id} (${useMock ? 'mock' : 'claude-code'})`,
@@ -592,11 +602,48 @@ async function createAppContext(): Promise<AppContext> {
   // injected `RawPtySpawner` (it surfaces the exit code the transcript needs), so it is
   // passed straight in with no adapter glue. Teardown of a raw Cursor turn goes through
   // the supervisor's `quitAll`→`interrupt`→`kill` path, same as the other adapters.
-  if (!useMock) {
+  if (isE2EHarness) {
+    harness.register(new E2EMetaHarness('codex'));
+    logger.info('[startup] harness registered: codex (deterministic E2E)');
+  } else if (!useMock) {
     harness.register(new CodexHarness(rawPtySpawner));
     harness.register(new CursorHarness(rawPtySpawner));
     logger.info('[startup] harness registered: codex, cursor (Phase 7)');
   }
+
+  const agentRuns = new AgentRunsRepo(db);
+  const agentDispatches = new AgentDispatchesRepo(db);
+  const agents = new AgentRegistry({
+    detectProviders: async () =>
+      (await harness.listHarnesses()).map((item) => ({
+        id: item.id,
+        installed: item.detect.installed,
+        authenticated: item.detect.authenticated,
+      })),
+    emitChanged: (projectId, agentId, reason) =>
+      emit('metaAgent:changed', { projectId, agentId, reason }),
+    trashItem: (path) => shell.trashItem(path),
+    isAgentReferenced: (_projectId, agentId) =>
+      tasks.hasAgentReference(agentId),
+  });
+  const { service: metaHarness, broker: controlBroker } =
+    createMetaHarnessService({
+      registry: agents,
+      runs: agentRuns,
+      dispatches: agentDispatches,
+      workspaces,
+      harness,
+      emit,
+      settings: () => ({
+        permissionPolicy: settings.get().agent.permissionPolicy,
+      }),
+      diff,
+      publisher: prWorkflow,
+    });
+  harness.setWorkspaceClaimGuard((workspaceId, metaRunId) =>
+    metaHarness.authorizeWorkspaceStart(workspaceId, metaRunId),
+  );
+  scheduler.setMetaHarness(metaHarness);
 
   // Phase 6: onboarding readiness composer (harness / GitHub / projects) for the first-run
   // wizard (spec §7). Reads existing signals only — no new persistence.
@@ -670,6 +717,11 @@ async function createAppContext(): Promise<AppContext> {
     knowledge,
     pricing,
     secrets,
+    agents,
+    agentRuns,
+    agentDispatches,
+    controlBroker,
+    metaHarness,
   };
 
   return ctx;
@@ -861,12 +913,16 @@ function buildAppMenu(actions: readonly ShortcutAction[]): Menu {
 
 // Single-instance lock: a second launch (e.g. from a deep link) must forward to the
 // running instance rather than spin up a duplicate. If we don't get the lock, quit.
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
+// Playwright launches isolated app instances with throwaway user-data roots. They must
+// not contend with a developer's already-running Harness process for the global lock,
+// otherwise Electron exits cleanly before the first test window is created.
+const isE2E = process.env['AGENTAPP_E2E'] === '1';
+const gotSingleInstanceLock = isE2E || app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   // Register as the default handler for `harness://` so the OS routes deep links here.
-  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+  if (!isE2E) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 
   // macOS delivers deep links via `open-url` (fires even before `whenReady`).
   app.on('open-url', (event, url) => {
@@ -893,7 +949,7 @@ if (!gotSingleInstanceLock) {
   void app.whenReady().then(async () => {
     // electron-builder embeds the production icon during packaging, but Electron's
     // development binary otherwise keeps its default Dock icon.
-    if (process.platform === 'darwin' && !app.isPackaged) {
+    if (process.platform === 'darwin' && !app.isPackaged && !isE2E) {
       app.dock?.setIcon(join(app.getAppPath(), 'build', 'icon.png'));
     }
 
@@ -905,6 +961,13 @@ if (!gotSingleInstanceLock) {
     appContext = ctx;
     registerIpc(ctx);
     logger.info('[startup] IPC registered');
+
+    await ctx.metaHarness.recover().catch((err) => {
+      logger.error(
+        `[startup] meta-run recovery failed: ${sanitizeErrorMessage(err)}`,
+      );
+      return [];
+    });
 
     // Phase 12: reconcile scheduled tasks at boot (overdue → missed), then start the tick
     // loop. Fire-and-forget; a failure is logged inside the service and never blocks boot.
@@ -980,6 +1043,13 @@ if (!gotSingleInstanceLock) {
     } catch (err) {
       logger.error(`[shutdown] scheduler teardown failed: ${String(err)}`);
     }
+    void ctx.agents
+      .stop()
+      .catch((err) =>
+        logger.error(
+          `[shutdown] agent registry teardown failed: ${String(err)}`,
+        ),
+      );
     // Phase 5: detach the per-window focus-refresh listener so it can't fire (or retain
     // the window) during/after teardown. Mirrors the diff-watcher teardown above.
     for (const win of BrowserWindow.getAllWindows()) {
@@ -987,8 +1057,14 @@ if (!gotSingleInstanceLock) {
         win.removeListener('focus', refreshChecksOnFocus);
       }
     }
-    void ctx.harness
-      .quitAll()
+    void ctx.metaHarness
+      .shutdown()
+      .catch((err) =>
+        logger.error(
+          `[shutdown] meta-harness teardown failed: ${sanitizeErrorMessage(err)}`,
+        ),
+      )
+      .then(() => ctx.harness.quitAll())
       .catch((err) => logger.error(`[shutdown] quitAll failed: ${String(err)}`))
       .then(() => ctx.process.registry.killAll())
       .catch((err) =>

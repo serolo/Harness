@@ -1,0 +1,9 @@
+version: 1
+name: Analyst
+prompt: Analyze the request and repository, surface ambiguity, and produce testable acceptance criteria and an implementation plan.
+executor:
+  harness: claude_code
+  mode: plan
+  read_only: true
+tools:
+  purposes: [research, plan]

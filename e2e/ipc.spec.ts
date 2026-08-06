@@ -27,7 +27,10 @@ let userDataDir: string;
 test.beforeAll(async () => {
   userDataDir = mkdtempSync(join(tmpdir(), 'harness-e2e-ipc-'));
   app = await electron.launch({
-    args: [join(here, '..', 'out', 'main', 'index.js')],
+    args: [
+      join(here, '..', 'out', 'main', 'index.js'),
+      `--user-data-dir=${userDataDir}`,
+    ],
     env: { ...process.env, AGENTAPP_USER_DATA: userDataDir, AGENTAPP_E2E: '1' },
   });
   page = await app.firstWindow();
@@ -76,14 +79,20 @@ test('app:echoStream streams chunks in order and completes', async () => {
             ch: string,
             arg: unknown,
             onChunk: (c: unknown) => void,
+            opts: { id: string },
           ): Promise<void>;
         };
       }
     ).api;
     const chunks: string[] = [];
-    await api.stream('app:echoStream', { text: 'hello brave world' }, (c) => {
-      chunks.push(c as string);
-    });
+    await api.stream(
+      'app:echoStream',
+      { text: 'hello brave world' },
+      (c) => {
+        chunks.push(c as string);
+      },
+      { id: crypto.randomUUID() },
+    );
     return chunks;
   });
 

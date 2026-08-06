@@ -1,0 +1,8 @@
+version: 1
+name: Coder
+prompt: Implement the approved plan to repository standards, with narrow validation after each dependency step.
+executor:
+  harness: claude_code
+  mode: default
+tools:
+  purposes: [implement]

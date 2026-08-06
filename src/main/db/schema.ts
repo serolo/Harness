@@ -18,6 +18,11 @@ import type {
 } from '@shared/models';
 import type { AgentMode, HarnessId, ReasoningEffort } from '@shared/harness';
 import type { TaskOrigin, TaskState } from '@shared/tasks';
+import type {
+  AgentDispatchPurpose,
+  AgentDispatchStatus,
+  MetaRunStatus,
+} from '@shared/agents';
 
 /**
  * `projects` table (spec §3 DDL). Column set is authoritative:
@@ -189,6 +194,60 @@ export interface ScheduledTasksTable {
   harness_override: HarnessId | null; // TEXT — NULL = use workspace harness
   attachments_json: string; // TEXT NOT NULL — JSON-encoded Attachment[], default []
   effort: ReasoningEffort | null; // TEXT — NULL = app default, migration 0014
+  agent_id: string | null;
+  agent_name: string | null;
+  agent_revision: string | null;
+  agent_snapshot_json: string | null; // main-only immutable normalized snapshot
+  agent_snapshot_digest: string | null;
+  meta_run_id: string | null;
+}
+
+/** Durable immutable meta-run snapshot and lifecycle state (migration 0015). */
+export interface AgentRunsTable {
+  id: string;
+  project_id: string;
+  source_workspace_id: string;
+  coordinator_workspace_id: string | null;
+  agent_id: string;
+  agent_name: string;
+  agent_revision: string;
+  snapshot_json: string;
+  snapshot_digest: string;
+  goal: string;
+  allow_push: number;
+  allow_open_pr: number;
+  status: MetaRunStatus;
+  final_summary: string | null;
+  error: string | null;
+  created_at: number;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+/** One direct child delegated by a coordinator (migration 0015). */
+export interface AgentDispatchesTable {
+  id: string;
+  run_id: string;
+  parent_dispatch_id: string | null;
+  role: string;
+  purpose: AgentDispatchPurpose;
+  child_agent_slug: string;
+  workspace_id: string | null;
+  branch: string | null;
+  turn_id: string | null;
+  session_id: string | null;
+  harness: HarnessId;
+  model: string | null;
+  status: AgentDispatchStatus;
+  summary: string | null;
+  changed_files_json: string;
+  diff_stat: string | null;
+  error: string | null;
+  created_at: number;
+  started_at: number | null;
+  ended_at: number | null;
+  debate_stage: 'partner' | 'critique' | null;
+  debate_round: number | null;
 }
 
 /**
@@ -208,4 +267,6 @@ export interface Database {
   todos: TodosTable;
   integrations: IntegrationsTable;
   scheduled_tasks: ScheduledTasksTable;
+  agent_runs: AgentRunsTable;
+  agent_dispatches: AgentDispatchesTable;
 }

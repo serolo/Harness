@@ -29,7 +29,7 @@ import type {
   WorkspaceArchivePreview,
 } from '@shared/ipc';
 
-import { worktreesDir } from '../paths';
+import { legacyWorktreePath, worktreesDir } from '../paths';
 import { buildEnv } from '../process/env';
 import type { GitService } from '../git';
 import type { ProjectsRepo } from '../db/repos/projects';
@@ -164,6 +164,8 @@ export class WorkspaceManager {
     req: CreateWorkspaceReq,
     onSetupLog?: (chunk: string) => void,
     onCreated?: (workspace: Workspace) => void,
+    /** Main-only reservation hook; runs after commit but before any visible event. */
+    onPersistedBeforeEmit?: (workspace: Workspace) => void,
   ): Promise<Workspace> {
     const project = await this.deps.repos.projects.getById(req.projectId);
     if (project === null) {
@@ -298,11 +300,29 @@ export class WorkspaceManager {
           (entry) => entry.branch === branch,
         );
         if (branchWorktree) {
-          throw new AppError(
-            'conflict',
-            `branch "${branch}" is already checked out in another worktree`,
-            { branch, worktreePath: branchWorktree.path },
+          const worktreeName = requestedWorktreeName ?? derivedSafeName;
+          const legacyPath = legacyWorktreePath(project.id, worktreeName);
+          const ownedByWorkspace = all.some(
+            (workspace) =>
+              workspace.worktreePath !== null &&
+              sameFilesystemPath(workspace.worktreePath, branchWorktree.path),
           );
+          if (
+            !ownedByWorkspace &&
+            sameFilesystemPath(branchWorktree.path, legacyPath)
+          ) {
+            // Older builds stored managed worktrees directly below userData. An
+            // interrupted create can leave that exact Git registration without a
+            // DB row; preserve its lexical path while adopting it once.
+            worktreePath = legacyPath;
+            reuseManagedWorktree = true;
+          } else {
+            throw new AppError(
+              'conflict',
+              `branch "${branch}" is already checked out in another worktree`,
+              { branch, worktreePath: branchWorktree.path },
+            );
+          }
         }
       }
     }
@@ -401,7 +421,9 @@ export class WorkspaceManager {
       throw error;
     }
 
-    // Emit AFTER the row commits, BEFORE setup runs (renderer renders the row now).
+    // Establish internal reservations before another entry point can observe the row.
+    onPersistedBeforeEmit?.(workspace);
+    // Emit AFTER the row commits/reservation, BEFORE setup runs (renderer renders the row now).
     this.deps.emit('workspace:created', { workspace });
     // The scoped create stream also needs the persisted row at this point so its
     // dialog can select the workspace and close without waiting for setup.

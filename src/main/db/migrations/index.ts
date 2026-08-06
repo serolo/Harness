@@ -24,6 +24,7 @@ import { migration0011ProjectSettings } from './0011_project_settings';
 import { migration0012TaskHarnessOverride } from './0012_task_harness_override';
 import { migration0013TaskAttachments } from './0013_task_attachments';
 import { migration0014TaskEffort } from './0014_task_effort';
+import { migration0015MetaAgents } from './0015_meta_agents';
 
 /**
  * One numbered migration. `up` receives the raw better-sqlite3 handle and runs
@@ -57,6 +58,7 @@ const migrations: readonly Migration[] = [
   migration0012TaskHarnessOverride,
   migration0013TaskAttachments,
   migration0014TaskEffort,
+  migration0015MetaAgents,
 ];
 
 /** Read the current schema version from `PRAGMA user_version`. */

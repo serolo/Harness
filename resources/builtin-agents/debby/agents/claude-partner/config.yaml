@@ -1,0 +1,9 @@
+version: 1
+name: Claude partner
+prompt: Answer the question independently. State assumptions, reasoning, recommendation, and uncertainty.
+executor:
+  harness: claude_code
+  mode: plan
+  read_only: true
+tools:
+  purposes: [research, plan]

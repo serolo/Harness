@@ -1,0 +1,9 @@
+version: 1
+name: Implementer
+description: Implements one bounded slice in an isolated workspace.
+prompt: Implement the assigned slice completely, validate it, and summarize the changed files and remaining risks. Do not merge or push.
+executor:
+  harness: claude_code
+  mode: default
+tools:
+  purposes: [implement]

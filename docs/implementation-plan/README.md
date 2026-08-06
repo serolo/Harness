@@ -460,13 +460,13 @@ which are out of scope for this app. Each phase is written up as its own self-co
 **Dependency chain:** 8 → 9 → 10 → 11 (9 and 10 can run in parallel once 8 lands; 11 needs 10's
 guardrails). Each phase file states its own dependencies in full.
 
-**Non-goal tension (read before starting Phase 11 specifically):** `docs/parallel-agents-spec.md:30`
-documents "Building our own agent — we orchestrate existing CLIs" as an explicit non-goal.
-Phase 11 stays on the right side of that line by construction (every "dispatch" is just an
-ordinary workspace turn — see that phase's §1), but still requires a documented spec update and
-sign-off from the spec's owner before its code lands — see
-[`phase-11-cross-workspace-dispatch.md`](./phase-11-cross-workspace-dispatch.md) §1 for the full
-reasoning. Phases 8–10 have no such tension.
+**Authorized extension:** file-configured meta agents explicitly authorize a bounded coordinator
+loop on top of Phase 11's reviewed workspace-isolation primitives. “Orchestrate existing CLIs”
+remains the boundary: every coordinator and child is an ordinary adapter-backed
+`HarnessSupervisor` turn. Main owns a capability-scoped broker, one child level, strict budgets,
+durable recovery, and human merge authority. This is a new layer; it does not rewrite the
+historical human-click-only Phase 11 design as though autonomy had always been included.
 
-**Status:** planning only as of this writing — no code for Phases 8–11 has been written yet. Each
-phase document is independently actionable whenever it's picked up.
+**Status:** Phases 8–11 remain useful design history and independently actionable primitives. The
+bounded meta-harness is governed by [`../agent-config.md`](../agent-config.md) and retains the
+earlier isolation, policy, and human-merge requirements.

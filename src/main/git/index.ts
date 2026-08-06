@@ -49,7 +49,7 @@ interface NodePtyModule {
   ): NodePtyProcess;
 }
 
-interface GitPtyResult {
+export interface GitPtyResult {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -95,11 +95,14 @@ export function gitExeca(
   return withEbadfFallback;
 }
 
-async function gitPtyExec(
+/** Exported only for the cancellation regression around the EBADF PTY fallback. */
+export async function gitPtyExec(
   args: readonly string[],
   options: Options,
 ): Promise<GitPtyResult> {
+  options.cancelSignal?.throwIfAborted();
   const nodePty = await loadNodePty();
+  options.cancelSignal?.throwIfAborted();
   const command = `git ${args.map(formatCommandArg).join(' ')}`;
   const captureDir = await mkdtemp(join(tmpdir(), 'harness-git-pty-'));
   const stdoutPath = join(captureDir, 'stdout');
@@ -141,6 +144,8 @@ async function gitPtyExec(
     };
 
     options.cancelSignal?.addEventListener('abort', abort, { once: true });
+    // Close the race between the pre-spawn check and listener registration.
+    if (options.cancelSignal?.aborted) abort();
 
     proc.onExit(({ exitCode }) => {
       settled = true;
@@ -1179,11 +1184,14 @@ export class GitService {
    * upstream (absent → 0/0), and each subsequent `XY <path>` line is normalized
    * into a {@link GitStatusEntry}. `clean` is derived from the file count.
    */
-  async status(worktreePath: string): Promise<GitStatus> {
+  async status(
+    worktreePath: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<GitStatus> {
     const args = ['-C', worktreePath, 'status', '--porcelain=v1', '-b'];
     let stdout: string;
     try {
-      const result = await gitExeca(args);
+      const result = await gitExeca(args, { cancelSignal: opts.signal });
       stdout = result.stdout;
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
@@ -1570,11 +1578,12 @@ export class GitService {
   async commit(
     worktreePath: string,
     message: string,
+    opts: { signal?: AbortSignal } = {},
   ): Promise<{ sha: string }> {
     // Stage every change (adds, modifications, and deletions) into the index.
     const addArgs = ['-C', worktreePath, 'add', '-A'];
     try {
-      await gitExeca(addArgs);
+      await gitExeca(addArgs, { cancelSignal: opts.signal });
     } catch (e) {
       throw toGitError(e, `git ${addArgs.join(' ')}`);
     }
@@ -1585,7 +1594,9 @@ export class GitService {
     const statusArgs = ['-C', worktreePath, 'status', '--porcelain'];
     let statusOut: string;
     try {
-      const result = await gitExeca(statusArgs);
+      const result = await gitExeca(statusArgs, {
+        cancelSignal: opts.signal,
+      });
       statusOut = result.stdout;
     } catch (e) {
       throw toGitError(e, `git ${statusArgs.join(' ')}`);
@@ -1608,7 +1619,10 @@ export class GitService {
     };
     const commitArgs = ['-C', worktreePath, 'commit', '-m', message];
     try {
-      await gitExeca(commitArgs, { env: commitEnv });
+      await gitExeca(commitArgs, {
+        env: commitEnv,
+        cancelSignal: opts.signal,
+      });
     } catch (e) {
       // Include the fixed command shape only (not the message) in the fallback.
       throw toGitError(e, `git -C ${worktreePath} commit -m <message>`);
@@ -1617,7 +1631,7 @@ export class GitService {
     // Report the new HEAD the commit produced.
     const shaArgs = ['-C', worktreePath, 'rev-parse', 'HEAD'];
     try {
-      const result = await gitExeca(shaArgs);
+      const result = await gitExeca(shaArgs, { cancelSignal: opts.signal });
       return { sha: result.stdout.trim() };
     } catch (e) {
       throw toGitError(e, `git ${shaArgs.join(' ')}`);
@@ -1644,7 +1658,7 @@ export class GitService {
     worktreePath: string,
     remote: string,
     branch: string,
-    opts?: { setUpstream?: boolean },
+    opts?: { setUpstream?: boolean; signal?: AbortSignal },
   ): Promise<void> {
     const args = ['-C', worktreePath, 'push'];
     if (opts?.setUpstream === true) args.push('-u');
@@ -1655,7 +1669,7 @@ export class GitService {
     args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
 
     try {
-      await gitExeca(args);
+      await gitExeca(args, { cancelSignal: opts?.signal });
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
@@ -1672,7 +1686,10 @@ export class GitService {
    * normal condition and is NOT wrapped; only a missing git binary (ENOENT)
    * propagates as an {@link AppError}.
    */
-  async hasUpstream(worktreePath: string): Promise<boolean> {
+  async hasUpstream(
+    worktreePath: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<boolean> {
     const args = [
       '-C',
       worktreePath,
@@ -1682,7 +1699,7 @@ export class GitService {
       '@{u}',
     ];
     try {
-      await gitExeca(args);
+      await gitExeca(args, { cancelSignal: opts.signal });
       return true;
     } catch (e) {
       // ENOENT = git binary not found — that IS an error.

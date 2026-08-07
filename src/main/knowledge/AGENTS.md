@@ -31,7 +31,12 @@
   ordinary persisted supervisor lifecycle.
 - ZIP imports are secret-scanned and converted to pending proposals. Only proposal acceptance
   may write, lint, catalog, log, stage, and commit canonical files. ZIP inflation is asynchronous
-  and output-bounded; normalized paths must be unique.
+  and output-bounded; normalized paths must be unique. Import normalization adds missing `type`
+  and `status` fields independently and never overwrites an explicitly authored status.
+- User-triggered catalog refresh repairs only parseable, nonreserved pages with a valid `type` and
+  no explicit `status`, making the legacy canonical default durable. It preserves every explicit
+  status and every malformed page, then commits repaired pages and the rebuilt index atomically.
+  Refresh requires an empty Git index so rollback can preserve preexisting staged work exactly.
 - Accepted proposals rebuild `index.md` in the same Git commit. Rejected proposals retain the
   optional reviewer reason in proposal audit state. Proposal operation count and content size are
   bounded at the service boundary, and failed acceptance must restore both files and the Git index.

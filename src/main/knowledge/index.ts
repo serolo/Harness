@@ -318,14 +318,48 @@ function normalizeImportedPage(content: string): string {
   }
 
   const parsed = parseOkfMarkdown(content);
+  const missingFields: string[] = [];
   if (
-    typeof parsed.frontmatter.type === 'string' &&
-    parsed.frontmatter.type.trim() !== ''
+    typeof parsed.frontmatter.type !== 'string' ||
+    parsed.frontmatter.type.trim() === ''
   ) {
-    return content;
+    missingFields.push('type: Document');
   }
+  if (!Object.hasOwn(parsed.frontmatter, 'status')) {
+    missingFields.push('status: canonical');
+  }
+  return missingFields.length === 0
+    ? content
+    : content.replace(/^---\n/, `---\n${missingFields.join('\n')}\n`);
+}
 
-  return content.replace(/^---\n/, '---\ntype: Document\n');
+/**
+ * Make the implicit legacy default durable without changing authored metadata.
+ * Malformed and untyped pages remain untouched so lint can report them verbatim.
+ */
+async function statuslessPages(root: string): Promise<Map<string, string>> {
+  const candidates = new Map<string, string>();
+  for (const path of await markdownFiles(root)) {
+    if (RESERVED.has(path.split('/').at(-1) ?? '')) continue;
+    const target = confinedPath(root, path);
+    const content = await readFile(target, 'utf8');
+    let frontmatter: Record<string, unknown>;
+    try {
+      ({ frontmatter } = parseOkfMarkdown(content));
+    } catch {
+      // Catalog refresh must preserve malformed pages for lint and manual repair.
+      continue;
+    }
+    if (
+      Object.hasOwn(frontmatter, 'status') ||
+      typeof frontmatter.type !== 'string' ||
+      frontmatter.type.trim() === ''
+    ) {
+      continue;
+    }
+    candidates.set(path, content);
+  }
+  return candidates;
 }
 
 function pageFromContent(path: string, content: string): WikiPage {
@@ -447,6 +481,8 @@ export class WikiService {
   constructor(
     private readonly db: AppDatabase,
     private readonly qmd = new QmdSearchProvider(),
+    private readonly gitFactory: (baseDir: string) => SimpleGit = (baseDir) =>
+      simpleGit({ baseDir }),
   ) {}
 
   async getConfig(projectId: string): Promise<KnowledgeConfig> {
@@ -490,7 +526,7 @@ export class WikiService {
   }
 
   private git(projectId: string): SimpleGit {
-    return simpleGit({ baseDir: knowledgeDir(projectId) });
+    return this.gitFactory(knowledgeDir(projectId));
   }
 
   async initializeProject(projectId: string): Promise<{ commit: string }> {
@@ -1115,21 +1151,72 @@ export class WikiService {
     }
     this.accepting.add(projectId);
     try {
-      await this.ensure(projectId);
-      await this.rebuildIndex(projectId);
-      const pages = await this.listPages(projectId);
+      const root = await this.ensure(projectId);
       const git = this.git(projectId);
-      const status = await git.status();
-      if (!status.files.some((file) => file.path === 'index.md')) {
-        return { updated: false, pageCount: pages.length };
+      const initialStatus = await git.status();
+      if (initialStatus.staged.length > 0) {
+        throw new AppError(
+          'conflict',
+          'knowledge catalog cannot update while the knowledge repository has staged changes',
+          { stagedPaths: initialStatus.staged },
+        );
       }
-      await git.add(['index.md']);
-      await git.commit('wiki: refresh knowledge catalog');
-      return {
-        updated: true,
-        pageCount: pages.length,
-        commit: await this.head(projectId),
+      const baseCommit = await this.head(projectId);
+      const originalFiles = await statuslessPages(root);
+      originalFiles.set(
+        'index.md',
+        await readFile(confinedPath(root, 'index.md'), 'utf8'),
+      );
+      const repairedPaths = [...originalFiles.keys()].filter(
+        (path) => path !== 'index.md',
+      );
+      const restore = async (): Promise<void> => {
+        for (const [path, content] of originalFiles) {
+          await writeFile(confinedPath(root, path), content, 'utf8');
+        }
       };
+
+      try {
+        for (const path of repairedPaths) {
+          const content = originalFiles.get(path);
+          if (content === undefined) continue;
+          await writeFile(
+            confinedPath(root, path),
+            content.replace(/^---\n/, '---\nstatus: canonical\n'),
+            'utf8',
+          );
+        }
+        await this.rebuildIndex(projectId);
+        const pages = await this.listPages(projectId);
+        const status = await git.status();
+        const stagedPaths = [...repairedPaths, 'index.md'];
+        const changedPaths = new Set(status.files.map((file) => file.path));
+        if (!stagedPaths.some((path) => changedPaths.has(path))) {
+          return {
+            updated: false,
+            pageCount: pages.length,
+            repairedCount: 0,
+          };
+        }
+        await git.add(stagedPaths);
+        await git.commit('wiki: refresh knowledge catalog', stagedPaths);
+        return {
+          updated: true,
+          pageCount: pages.length,
+          repairedCount: repairedPaths.length,
+          commit: await this.head(projectId),
+        };
+      } catch (error) {
+        await git.reset(['--mixed', baseCommit]).catch((resetError) => {
+          logger.error(
+            `[knowledge:catalog] failed to restore Git state for ${projectId}: ${String(
+              resetError,
+            )}`,
+          );
+        });
+        await restore();
+        throw error;
+      }
     } finally {
       this.accepting.delete(projectId);
     }

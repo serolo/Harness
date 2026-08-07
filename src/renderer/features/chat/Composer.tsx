@@ -554,13 +554,14 @@ export function Composer({
   const preHistoryDraftRef = useRef('');
   const modelSelectionInitializedRef = useRef(false);
   const activeDraftWorkspaceRef = useRef<string | null>(null);
+  const activeModeContextRef = useRef<string | null>(null);
+  const modesByContextRef = useRef<Record<string, AgentMode>>({});
   const draftsByWorkspaceRef = useRef<
     Record<
       string,
       {
         text: string;
         attachments: Attachment[];
-        mode: AgentMode;
       }
     >
   >({});
@@ -592,9 +593,30 @@ export function Composer({
     draftsByWorkspaceRef.current[workspace] = {
       text,
       attachments,
-      mode,
     };
-  }, [text, attachments, mode, selectedWorkspaceId]);
+  }, [text, attachments, selectedWorkspaceId]);
+
+  // Plan mode is an explicit choice for one chat context, not a workspace-wide
+  // default. Capture the outgoing context before loading the destination so an
+  // existing context restores its choice without seeding newly created contexts.
+  useEffect(() => {
+    const context = activeModeContextRef.current;
+    if (context === null) return;
+    modesByContextRef.current[context] = mode;
+  }, [contextId, mode, selectedWorkspaceId]);
+
+  useEffect(() => {
+    const context =
+      selectedWorkspaceId === null || contextId === undefined
+        ? null
+        : `${selectedWorkspaceId}\u0000${contextId}`;
+    activeModeContextRef.current = context;
+    setMode(
+      context === null
+        ? 'default'
+        : (modesByContextRef.current[context] ?? 'default'),
+    );
+  }, [contextId, selectedWorkspaceId]);
 
   // Composer state belongs to one workspace. The component itself survives navigation,
   // so swap in the destination workspace's cached draft and close transient UI. A
@@ -607,7 +629,6 @@ export function Composer({
     activeDraftWorkspaceRef.current = selectedWorkspaceId;
 
     setText(cached?.text ?? '');
-    setMode(cached?.mode ?? 'default');
     setAttachments(cached?.attachments ?? []);
     setSlashCommands([]);
     setSlashLoading(false);
@@ -693,7 +714,6 @@ export function Composer({
       harness === 'codex' ? CODEX_EFFORT_OPTIONS : CLAUDE_EFFORT_OPTIONS
     ).find((option) => option.id === preferences.defaultEffort);
     if (preferredEffort) setEffort(preferredEffort);
-    setMode(preferences.planMode ? 'plan' : 'default');
   }, [contextId, selectedWorkspace?.id, selectedWorkspace?.harness]);
 
   const selectedModel = selectedHarness ?? selectedWorkspace?.harness;
@@ -901,7 +921,12 @@ export function Composer({
 
   function togglePlanMode(): void {
     if (!supportsPlan) return;
-    setMode((prev) => (prev === 'plan' ? 'default' : 'plan'));
+    setMode((previous) => {
+      const next = previous === 'plan' ? 'default' : 'plan';
+      const context = activeModeContextRef.current;
+      if (context !== null) modesByContextRef.current[context] = next;
+      return next;
+    });
   }
 
   function chooseSlash(command: SlashCommand): void {

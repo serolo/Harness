@@ -19,6 +19,7 @@ import type {
   WikiHistoryEntry,
   WikiPageSummary,
   WikiProposal,
+  WikiSearchResult,
 } from '@shared/knowledge';
 
 interface ApiStub {
@@ -64,6 +65,7 @@ function installApi(
     pages: WikiPageSummary[];
     history?: WikiHistoryEntry[];
     proposals?: WikiProposal[];
+    searchResults?: WikiSearchResult[];
   },
 ): Installed {
   const listeners: Record<string, ((payload: unknown) => void)[]> = {};
@@ -79,7 +81,7 @@ function installApi(
         return Promise.resolve([
           {
             name: 'harness-plan',
-            template: 'Use the harness-plan skill.\n\n$ARGS',
+            template: '/harness-plan $ARGS',
             description: 'Create an implementation plan',
           },
         ]);
@@ -89,6 +91,8 @@ function installApi(
         return Promise.resolve({ commit: 'abc' });
       case 'knowledge:listPages':
         return Promise.resolve(knowledge?.pages ?? []);
+      case 'knowledge:search':
+        return Promise.resolve(knowledge?.searchResults ?? []);
       case 'knowledge:history':
         return Promise.resolve(knowledge?.history ?? []);
       case 'knowledge:listProposals':
@@ -338,6 +342,136 @@ describe('TasksPanel rendering', () => {
     ).toBeInTheDocument();
   });
 
+  it('searches knowledge pages and opens a result', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const searchResults: WikiSearchResult[] = [
+      {
+        pageId: 'auth',
+        path: 'architecture/auth.md',
+        title: 'Authentication flow',
+        snippet: 'OAuth2 token exchange…',
+        status: 'canonical',
+      },
+    ];
+    const { api } = installApi(TASKS, {
+      config: {
+        enabled: true,
+        storage: 'local',
+        proposalMode: 'review_required',
+        injectContext: true,
+        extractAfterTurn: true,
+        search: {
+          enabled: true,
+          provider: 'basic',
+          maxResults: 12,
+          rerank: true,
+        },
+        format: { name: 'okf', version: '0.1' },
+      },
+      pages: [
+        {
+          id: 'overview',
+          path: 'overview.md',
+          title: 'Project overview',
+          type: 'Project Overview',
+          status: 'canonical',
+          tags: [],
+        },
+      ],
+      searchResults,
+    });
+    render(<TasksPanel workspaceId="ws1" projectId="project-1" />);
+
+    fireEvent.click(screen.getByTestId('workspace-tab-knowledge'));
+    await screen.findByTestId('workspace-knowledge-available');
+
+    const input = screen.getByTestId('knowledge-search-input');
+    fireEvent.change(input, { target: { value: 'auth' } });
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(api.invoke).toHaveBeenCalledWith('knowledge:search', {
+      projectId: 'project-1',
+      query: 'auth',
+    });
+    expect(
+      await screen.findByTestId('knowledge-search-results'),
+    ).toHaveTextContent('Authentication flow');
+    expect(screen.getByText('OAuth2 token exchange…')).toBeInTheDocument();
+
+    api.invoke.mockImplementation((channel: string) => {
+      if (channel === 'knowledge:getPage') {
+        return Promise.resolve({
+          id: 'auth',
+          path: 'architecture/auth.md',
+          title: 'Authentication flow',
+          type: 'Architecture',
+          status: 'canonical',
+          tags: [],
+          content: '---\ntitle: Authentication flow\n---\n\n# Auth',
+          body: '# Auth',
+          frontmatter: { title: 'Authentication flow' },
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    fireEvent.click(screen.getByText('Authentication flow'));
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('knowledge:getPage', {
+        projectId: 'project-1',
+        path: 'architecture/auth.md',
+      }),
+    );
+
+    vi.useRealTimers();
+  });
+
+  it('shows empty state when search finds no matches', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    installApi(TASKS, {
+      config: {
+        enabled: true,
+        storage: 'local',
+        proposalMode: 'review_required',
+        injectContext: true,
+        extractAfterTurn: true,
+        search: {
+          enabled: true,
+          provider: 'basic',
+          maxResults: 12,
+          rerank: true,
+        },
+        format: { name: 'okf', version: '0.1' },
+      },
+      pages: [
+        {
+          id: 'overview',
+          path: 'overview.md',
+          title: 'Project overview',
+          type: 'Project Overview',
+          status: 'canonical',
+          tags: [],
+        },
+      ],
+      searchResults: [],
+    });
+    render(<TasksPanel workspaceId="ws1" projectId="project-1" />);
+
+    fireEvent.click(screen.getByTestId('workspace-tab-knowledge'));
+    await screen.findByTestId('workspace-knowledge-available');
+
+    const input = screen.getByTestId('knowledge-search-input');
+    fireEvent.change(input, { target: { value: 'nonexistent' } });
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(
+      await screen.findByTestId('knowledge-search-empty'),
+    ).toHaveTextContent('No matching pages found.');
+    vi.useRealTimers();
+  });
+
   it('preserves expanded knowledge folders across workspace tool tabs', async () => {
     installApi(TASKS, {
       config: {
@@ -576,7 +710,7 @@ describe('TasksPanel create form', () => {
       expect(api.invoke).toHaveBeenCalledWith(
         'task:create',
         expect.objectContaining({
-          prompt: 'Use the harness-plan skill.\n\nbuild the task modal',
+          prompt: '/harness-plan build the task modal',
         }),
       ),
     );

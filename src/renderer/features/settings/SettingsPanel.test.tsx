@@ -152,6 +152,7 @@ function installApi(
         return Promise.resolve({
           updated: true,
           pageCount: 4,
+          repairedCount: 2,
           commit: 'def',
         });
       case 'knowledge:qmdStatus':
@@ -411,7 +412,7 @@ describe('SettingsPanel rendering', () => {
     expect(screen.queryByTestId('github-settings-token-input')).toBeNull();
   });
 
-  it('renders model defaults, review defaults, and chat mode toggles', async () => {
+  it('renders model defaults without offering a global plan-mode default', async () => {
     installApi();
     render(<SettingsPanel />);
 
@@ -430,15 +431,8 @@ describe('SettingsPanel rendering', () => {
     expect(window.localStorage.getItem('harness:model-preferences')).toContain(
       'codex-gpt-5-6-sol',
     );
-    expect(screen.getByTestId('models-plan-mode')).toHaveAttribute(
-      'aria-checked',
-      'false',
-    );
-    fireEvent.click(screen.getByTestId('models-plan-mode'));
-    expect(screen.getByTestId('models-plan-mode')).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    expect(screen.queryByTestId('models-plan-mode')).not.toBeInTheDocument();
+    expect(screen.queryByText('Default to plan mode')).not.toBeInTheDocument();
   });
 
   it('labels harness settings as Agents and shows detected agent status', async () => {
@@ -721,7 +715,9 @@ describe('SettingsPanel writes', () => {
     );
     expect(
       await screen.findByTestId('knowledge-catalog-message'),
-    ).toHaveTextContent('Catalog updated with 4 pages.');
+    ).toHaveTextContent(
+      'Catalog updated with 4 pages. Repaired 2 statusless pages.',
+    );
   });
 
   it('disables QMD selection when its CLI is not installed', async () => {

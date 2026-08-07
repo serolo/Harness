@@ -9,6 +9,7 @@ import {
   fireEvent,
   waitFor,
   act,
+  within,
 } from '@testing-library/react';
 
 import { ChatPanel } from './ChatPanel';
@@ -16,6 +17,7 @@ import { useChatStore } from '@renderer/stores/chat';
 import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
 import { useWorkspaceArchiveStore } from '@renderer/stores/workspaceArchive';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
+import { useHarnessStore } from '@renderer/stores/harness';
 import {
   DEFAULT_MODEL_PREFERENCES,
   writeModelPreferences,
@@ -43,6 +45,17 @@ const HARNESS_LIST: HarnessInfo[] = [
     detect: { installed: true, authenticated: true },
   },
 ];
+
+const CURSOR_HARNESS: HarnessInfo = {
+  id: 'cursor',
+  capabilities: {
+    supportsResume: false,
+    supportsMcp: false,
+    supportsPlanMode: false,
+    rawTerminalFallback: true,
+  },
+  detect: { installed: true, authenticated: true },
+};
 
 function installApi(opts: {
   history?: ChatHistory;
@@ -123,6 +136,7 @@ beforeEach(() => {
   });
   useWorkspaceCreationStore.setState({ current: null });
   useWorkspaceArchiveStore.setState({ current: null });
+  useHarnessStore.setState({ infoById: {}, loaded: false, loading: false });
   useWorkspacesStore.setState({
     projects: [],
     workspaces: [],
@@ -1533,6 +1547,163 @@ describe('ChatPanel reconstruction', () => {
     );
   });
 
+  it('defaults every new context to regular mode while preserving explicit context-local plan mode', async () => {
+    writeModelPreferences({
+      ...DEFAULT_MODEL_PREFERENCES,
+      planMode: true,
+    });
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const initialPlanButton = await screen.findByTestId('composer-plan');
+    expect(initialPlanButton).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(initialPlanButton);
+    expect(initialPlanButton).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId('chat-new'));
+    expect(await screen.findByTestId('chat-context-tab')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-context-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('isolates and restores explicit plan mode when switching workspaces', async () => {
+    installApi({});
+    const { rerender } = render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-plan'));
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    rerender(<ChatPanel workspaceId="ws2" />);
+    await waitFor(() =>
+      expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+        'aria-pressed',
+        'false',
+      ),
+    );
+
+    rerender(<ChatPanel workspaceId="ws1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
+    );
+  });
+
+  it('starts the replacement for a closed final context with plan mode off', async () => {
+    installApi({});
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-plan'));
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByTestId('chat-context-close-0'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+        'aria-pressed',
+        'false',
+      ),
+    );
+  });
+
+  it('clears cached plan mode when switching to a harness without plan support', async () => {
+    const stream = vi.fn(() => Promise.resolve());
+    const api = installApi({ stream });
+    useHarnessStore.setState({
+      infoById: {
+        claude_code: HARNESS_LIST[0],
+        cursor: CURSOR_HARNESS,
+      },
+      loaded: true,
+      loading: false,
+    });
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('composer-plan'));
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByTestId('composer-model'));
+    fireEvent.click(
+      await screen.findByTestId('composer-model-option-cursor-default'),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('composer-plan')).toBeDisabled();
+      expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+        'aria-pressed',
+        'false',
+      );
+    });
+
+    fireEvent.click(screen.getByTestId('composer-model'));
+    fireEvent.click(
+      await screen.findByTestId('composer-model-option-claude-opus-5'),
+    );
+    expect(screen.getByTestId('composer-plan')).not.toBeDisabled();
+    expect(screen.getByTestId('composer-plan')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    fireEvent.click(screen.getByTestId('composer-model'));
+    fireEvent.click(
+      await screen.findByTestId('composer-model-option-cursor-default'),
+    );
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Continue without plan mode' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() =>
+      expect(api.stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          harness: 'cursor',
+          mode: 'default',
+          prompt: 'Continue without plan mode',
+        }),
+        expect.any(Function),
+        expect.anything(),
+      ),
+    );
+  });
+
   it('closes a chat context and selects a remaining context', async () => {
     installApi({});
     render(<ChatPanel workspaceId="ws1" />);
@@ -2090,6 +2261,43 @@ describe('ChatPanel streaming', () => {
       expect.objectContaining({
         prompt: 'Fix checks\n\nrerun CI',
       }),
+    );
+  });
+
+  it('sends native skill slash invocations directly to the model', async () => {
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        _onChunk: (c: TurnStreamChunk) => void,
+      ) => Promise.resolve(),
+    );
+    const api = installApi({
+      stream,
+      slashCommands: [
+        {
+          name: 'harness-plan',
+          template: '/harness-plan $ARGS',
+          description: 'Create an implementation plan',
+        },
+      ],
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith(
+        'slash:list',
+        expect.objectContaining({ workspaceId: 'ws1' }),
+      ),
+    );
+    fireEvent.change(await screen.findByTestId('composer-input'), {
+      target: { value: '/harness-plan W2BT-1234' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() => expect(stream).toHaveBeenCalled());
+    expect(stream.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ prompt: '/harness-plan W2BT-1234' }),
     );
   });
 });

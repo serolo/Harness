@@ -50,6 +50,7 @@ describe('discoverNativeSlashCommands', () => {
         expect.objectContaining({
           name: 'frontend',
           description: 'Build polished interfaces',
+          template: '/frontend $ARGS',
         }),
       ]),
     );

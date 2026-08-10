@@ -130,4 +130,21 @@ export interface TurnRecord {
   costMicros?: number | null;
   /** Versioned catalogue/rate key used for costMicros. */
   pricingKey?: string | null;
+  /** Owning chat tab; null for task-owned turns and turns whose tab was closed. */
+  contextId?: string | null;
+}
+
+/**
+ * One durable chat tab for a workspace (migration 0016 `chat_contexts` row → DTO).
+ * Turn membership is the other side of the edge (`TurnRecord.contextId`). Closing a tab
+ * deletes this row and orphans its turns (`contextId` → null); turn history is never
+ * deleted. APPEND-ONLY.
+ */
+export interface ChatContextRecord {
+  id: string; // uuid (v7)
+  workspaceId: string; // workspace_id
+  label: string; // user-visible tab label
+  initialSessionId: string | null; // initial_session_id — null = fresh session (no resume)
+  position: number; // 0-based tab order
+  createdAt: number; // created_at — epoch millis
 }

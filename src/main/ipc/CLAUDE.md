@@ -49,6 +49,29 @@ Before a scheduler turn's first `turn:event`, `task:turnStarted` announces the t
 turn id, provider session id, and prompt. The renderer uses it to open a dedicated resumable task
 chat tab; reopening a workspace reconstructs the same ownership from `task:list` + `chat:history`.
 
+## Durable chat tabs (`chat:contexts:*`) and turn ownership
+
+A chat tab is a real row (`chat_contexts`, migration 0016), not renderer state. The four
+`chat:contexts:{list,create,rename,close}` commands construct `ChatContextsRepo(ctx.db)` inline
+(like `todo:*`) — the repo is stateless and nothing else needs it, so `AppContext` gains no field.
+
+- **`chat:contexts:list` bootstraps.** It creates the single `'Untitled'` tab when a workspace has
+  none, so the DEFAULT TAB HAS ONE SOURCE OF TRUTH. If the renderer invented its own default
+  instead, two panel mounts racing on the same workspace would each create one and split the
+  transcript — the exact bug this table exists to fix.
+- **`turn:start`'s `contextId` is never trusted as given.** It is accepted only after resolving to
+  a real row whose `workspaceId` matches the request's (else `AppError('not_found')`), so a turn
+  can't be filed into another workspace's transcript. Omitted/empty leaves the turn unowned.
+- **Ownership direction is turn→context** (`turns.context_id`), matching the existing task→turn
+  edge (`scheduled_tasks.turn_id`). The two are orthogonal and MUST stay so: scheduler-fired turns
+  never carry a `contextId`, so a task-owned turn keeps `context_id = NULL` forever and task tabs
+  keep reconstructing from `task:list` + `chat:history` exactly as before.
+- **Closing a tab never deletes history.** `close` nulls `context_id` on the tab's turns and deletes
+  the row in ONE transaction (not via an FK `ON DELETE` action — the column was added by
+  `ALTER TABLE` and carries none). `chat:history` is unaffected; the renderer simply stops showing
+  NULL-context turns in a manual tab. After migration 0016's backfill, `context_id IS NULL` on a
+  non-task turn means only "its tab was explicitly closed" — there is no legacy/fallback bucket.
+
 ## Application updater ownership
 
 `UpdateService` is the sole owner of updater state. `update:getStatus` is a read-only hydration

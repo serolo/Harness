@@ -78,7 +78,7 @@ const UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe('migration runner (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 15 and task additive columns exist', () => {
+  it('applies all migrations: user_version becomes 16 and task additive columns exist', () => {
     db = openDb(dbFile);
     expect(existsSync(dbFile)).toBe(true);
 
@@ -87,7 +87,7 @@ describe('migration runner (fresh temp DB)', () => {
     try {
       // A fresh database applies every registered migration through 0015.
       const version = raw.pragma('user_version', { simple: true });
-      expect(version).toBe(15);
+      expect(version).toBe(16);
 
       const tables = raw
         .prepare(
@@ -140,7 +140,7 @@ describe('migration runner (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(15);
+      expect(raw.pragma('user_version', { simple: true })).toBe(16);
       // Exactly one projects table — a double-apply would have thrown "table already exists".
       const count = raw
         .prepare(

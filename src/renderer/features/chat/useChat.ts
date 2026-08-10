@@ -44,6 +44,7 @@ function historyToTurns(history: ChatHistory): RenderedTurn[] {
     model: t.model ?? undefined,
     costMicros: t.costMicros ?? undefined,
     pricingKey: t.pricingKey ?? undefined,
+    contextId: t.contextId ?? undefined,
     usage:
       t.inputTokens != null || t.outputTokens != null
         ? {
@@ -66,6 +67,7 @@ export interface UseChat {
     sessionId?: string | null,
     model?: string,
     effort?: ReasoningEffort,
+    contextId?: string,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
   clear: () => Promise<void>;
@@ -130,6 +132,7 @@ export function useChat(workspaceId: string | null): UseChat {
       sessionId?: string | null,
       model?: string,
       effort?: ReasoningEffort,
+      contextId?: string,
     ): Promise<void> => {
       if (!workspaceId) return;
       const startedAt = Date.now();
@@ -147,6 +150,7 @@ export function useChat(workspaceId: string | null): UseChat {
         mode,
         harness,
         model,
+        contextId,
       );
       setBusy(workspaceId, true);
       try {
@@ -159,6 +163,7 @@ export function useChat(workspaceId: string | null): UseChat {
           model,
           effort,
           ...(sessionId === undefined ? {} : { sessionId }),
+          ...(contextId === undefined ? {} : { contextId }),
         };
         await subscribeStream('turn:start', turnArg, (chunk) => {
           if (chunk.kind === 'started') {
@@ -170,6 +175,9 @@ export function useChat(workspaceId: string | null): UseChat {
               undefined,
               undefined,
               chunk.mode,
+              undefined, // harness
+              undefined, // model
+              contextId,
             );
             return;
           }

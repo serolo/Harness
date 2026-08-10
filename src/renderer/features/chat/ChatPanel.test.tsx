@@ -26,6 +26,7 @@ import type { ChatHistory, HarnessInfo, TurnStreamChunk } from '@shared/ipc';
 import type { SlashCommand } from '@shared/slash';
 import type { FileDiff } from '@shared/review';
 import type { ScheduledTask } from '@shared/tasks';
+import type { ChatContextRecord } from '@shared/models';
 
 interface ApiStub {
   invoke: ReturnType<typeof vi.fn>;
@@ -58,7 +59,12 @@ const CURSOR_HARNESS: HarnessInfo = {
 };
 
 function installApi(opts: {
-  history?: ChatHistory;
+  /**
+   * Fixed history, or a per-call function keyed by the request (lets a test build a
+   * tiny fake backend where `chat:history` reflects turns a custom `stream` stub has
+   * persisted — see the manual-tab-persistence regression tests below).
+   */
+  history?: ChatHistory | ((req: { workspaceId: string }) => ChatHistory);
   stream?: ApiStub['stream'];
   slashCommands?: SlashCommand[];
   files?: Record<string, string>;
@@ -66,9 +72,90 @@ function installApi(opts: {
   fileDiffs?: Record<string, FileDiff>;
   tasks?: ScheduledTask[];
 }): ApiStub {
+  // Fake `chat_contexts` persistence, keyed by workspace — mirrors main's
+  // `ChatContextsRepo`: `list` bootstraps a single 'Untitled' tab the first time a
+  // workspace is asked for, and stays populated across calls within the same test
+  // (real persistence), so a simulated remount (rerender with a different then the
+  // same workspaceId) sees whatever `create`/`rename`/`close` already did.
+  const contextsByWorkspace = new Map<string, ChatContextRecord[]>();
+  let nextContextSeq = 1;
+
+  function contextsFor(workspaceId: string): ChatContextRecord[] {
+    let list = contextsByWorkspace.get(workspaceId);
+    if (!list) {
+      list = [];
+      contextsByWorkspace.set(workspaceId, list);
+    }
+    return list;
+  }
+
   const invoke = vi.fn((channel: string, req?: unknown) => {
-    if (channel === 'chat:history')
-      return Promise.resolve(opts.history ?? { turns: [] });
+    if (channel === 'chat:history') {
+      const historyReq = req as { workspaceId: string };
+      const history =
+        typeof opts.history === 'function'
+          ? opts.history(historyReq)
+          : (opts.history ?? { turns: [] });
+      return Promise.resolve(history);
+    }
+    if (channel === 'chat:contexts:list') {
+      const { workspaceId } = req as { workspaceId: string };
+      const list = contextsFor(workspaceId);
+      if (list.length === 0) {
+        list.push({
+          id: `ctx-${workspaceId}-${nextContextSeq++}`,
+          workspaceId,
+          label: 'Untitled',
+          initialSessionId: null,
+          position: 0,
+          createdAt: 0,
+        });
+      }
+      return Promise.resolve([...list]);
+    }
+    if (channel === 'chat:contexts:create') {
+      const { workspaceId, label, initialSessionId } = req as {
+        workspaceId: string;
+        label?: string;
+        initialSessionId?: string | null;
+      };
+      const list = contextsFor(workspaceId);
+      const created: ChatContextRecord = {
+        id: `ctx-${workspaceId}-${nextContextSeq++}`,
+        workspaceId,
+        label: label?.trim() ? label.trim() : 'Untitled',
+        initialSessionId: initialSessionId ?? null,
+        position: list.length,
+        createdAt: 0,
+      };
+      list.push(created);
+      return Promise.resolve(created);
+    }
+    if (channel === 'chat:contexts:rename') {
+      const { contextId, label } = req as {
+        contextId: string;
+        label: string;
+      };
+      for (const list of contextsByWorkspace.values()) {
+        const match = list.find((context) => context.id === contextId);
+        if (match) {
+          match.label = label;
+          return Promise.resolve(undefined);
+        }
+      }
+      return Promise.reject(new Error('chat context not found'));
+    }
+    if (channel === 'chat:contexts:close') {
+      const { contextId } = req as { contextId: string };
+      for (const list of contextsByWorkspace.values()) {
+        const index = list.findIndex((context) => context.id === contextId);
+        if (index >= 0) {
+          list.splice(index, 1);
+          break;
+        }
+      }
+      return Promise.resolve(undefined);
+    }
     if (channel === 'harness:list') return Promise.resolve(HARNESS_LIST);
     if (channel === 'turn:interrupt') return Promise.resolve(undefined);
     if (channel === 'chat:clear') return Promise.resolve(undefined);
@@ -206,6 +293,7 @@ describe('ChatPanel reconstruction', () => {
             harness: 'claude_code',
             model: null,
             costMicros: null,
+            contextId: 'ctx-ws1-1',
             pricingKey: null,
             events: [
               {
@@ -501,6 +589,7 @@ describe('ChatPanel reconstruction', () => {
           inputTokens: 10,
           outputTokens: 20,
           costMicros: 123_400,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'e0',
@@ -603,6 +692,7 @@ describe('ChatPanel reconstruction', () => {
       endedAt: idx + 2,
       inputTokens,
       outputTokens,
+      contextId: 'ctx-ws1-1',
       events: [],
     });
     installApi({
@@ -640,6 +730,7 @@ describe('ChatPanel reconstruction', () => {
             endedAt: 2,
             inputTokens: 317_297,
             outputTokens: 1_297,
+            contextId: 'ctx-ws1-1',
             events: [
               {
                 id: 'context-usage',
@@ -682,6 +773,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: null,
           outputTokens: null,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'plan-text',
@@ -749,6 +841,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: null,
           outputTokens: null,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'tool-use',
@@ -812,6 +905,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: null,
           outputTokens: null,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'q1',
@@ -889,6 +983,7 @@ describe('ChatPanel reconstruction', () => {
             endedAt: 2,
             inputTokens: null,
             outputTokens: null,
+            contextId: 'ctx-ws1-1',
             events: [
               {
                 id: 'q-fallback',
@@ -944,6 +1039,7 @@ describe('ChatPanel reconstruction', () => {
             endedAt: 2,
             inputTokens: null,
             outputTokens: null,
+            contextId: 'ctx-ws1-1',
             events: [
               {
                 id: 'prose-question',
@@ -989,6 +1085,7 @@ describe('ChatPanel reconstruction', () => {
             endedAt: 2,
             inputTokens: null,
             outputTokens: null,
+            contextId: 'ctx-ws1-1',
             events: [
               {
                 id: 'saved-plan-text',
@@ -1056,6 +1153,7 @@ describe('ChatPanel reconstruction', () => {
             endedAt: 2,
             inputTokens: null,
             outputTokens: null,
+            contextId: 'ctx-ws1-1',
             events: [
               {
                 id: 'plan-write',
@@ -1120,6 +1218,7 @@ describe('ChatPanel reconstruction', () => {
             endedAt: 2,
             inputTokens: null,
             outputTokens: null,
+            contextId: 'ctx-ws1-1',
             events: [
               {
                 id: 'lettered-options',
@@ -1187,6 +1286,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: null,
           outputTokens: null,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'result-success',
@@ -1242,6 +1342,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: null,
           outputTokens: null,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'm1',
@@ -1339,6 +1440,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: null,
           outputTokens: null,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'm1',
@@ -1375,6 +1477,7 @@ describe('ChatPanel reconstruction', () => {
           endedAt: 2,
           inputTokens: null,
           outputTokens: null,
+          contextId: 'ctx-ws1-1',
           events: [
             {
               id: 'm1',
@@ -1745,10 +1848,243 @@ describe('ChatPanel reconstruction', () => {
     fireEvent.change(input, { target: { value: 'API cleanup' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    expect(screen.getByTestId('chat-tab')).toHaveTextContent('API cleanup');
+    // `finishRenameContext` is async (it round-trips `chat:contexts:rename` before
+    // adopting the new label locally) — wait for that to settle rather than asserting
+    // synchronously right after the keydown.
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-tab')).toHaveTextContent('API cleanup'),
+    );
     expect(
       screen.getByRole('button', { name: 'Rename API cleanup' }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * A tiny fake backend for the two regression tests below: `stream` (the `turn:start`
+ * mock) persists each sent turn — tagged with whatever `contextId` the call carried —
+ * into an in-memory per-workspace history, and `chat:history` reads it back. This is
+ * what makes a simulated remount (rerender with a different, then the original,
+ * `workspaceId`) meaningfully exercise the fix: `useChat`'s hydrate effect re-fetches
+ * `chat:history` on every workspace change and overwrites the in-store transcript, so
+ * unless the "backend" actually remembers each turn's `contextId`, returning to the
+ * original tab bar would have nothing to prove was preserved.
+ */
+function createBackendChatMock(): {
+  stream: ApiStub['stream'];
+  history: (req: { workspaceId: string }) => ChatHistory;
+} {
+  const turnsByWorkspace: Record<string, ChatHistory['turns']> = {};
+  let seq = 0;
+
+  const stream = vi.fn(
+    (
+      _channel: string,
+      arg: unknown,
+      onChunk: (chunk: TurnStreamChunk) => void,
+    ) => {
+      const { workspaceId, prompt, contextId } = arg as {
+        workspaceId: string;
+        prompt: string;
+        contextId?: string;
+      };
+      const turnId = `turn-${seq++}`;
+      const replyText = `Reply to ${prompt}`;
+      onChunk({
+        kind: 'started',
+        turnId,
+        sessionId: `sess-${turnId}`,
+        mode: 'default',
+      });
+      onChunk({ kind: 'event', event: { kind: 'text', delta: replyText } });
+      onChunk({ kind: 'event', event: { kind: 'turn_end', usage: {} } });
+
+      const list = (turnsByWorkspace[workspaceId] ??= []);
+      list.push({
+        id: turnId,
+        workspaceId,
+        idx: list.length,
+        status: 'completed',
+        sessionId: `sess-${turnId}`,
+        mode: 'default',
+        startedAt: 0,
+        endedAt: 1,
+        inputTokens: null,
+        outputTokens: null,
+        contextId,
+        events: [
+          {
+            id: `${turnId}-u`,
+            turnId,
+            kind: 'user_message',
+            ts: 0,
+            event: { kind: 'user_message', text: prompt },
+          },
+          {
+            id: `${turnId}-t`,
+            turnId,
+            kind: 'text',
+            ts: 1,
+            event: { kind: 'text', delta: replyText },
+          },
+        ],
+      });
+      return Promise.resolve();
+    },
+  );
+
+  return {
+    stream,
+    history: (req) => ({ turns: turnsByWorkspace[req.workspaceId] ?? [] }),
+  };
+}
+
+describe('ChatPanel manual tab persistence (regression)', () => {
+  it('keeps two manual tabs and their distinct turn histories un-merged across a workspace switch and back', async () => {
+    const backend = createBackendChatMock();
+    const api = installApi({
+      stream: backend.stream,
+      history: backend.history,
+    });
+
+    const { rerender } = render(<ChatPanel workspaceId="ws1" />);
+
+    // Send in the default tab.
+    fireEvent.change(await screen.findByTestId('composer-input'), {
+      target: { value: 'First tab message' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    expect(
+      await screen.findByText('Reply to First tab message'),
+    ).toBeInTheDocument();
+
+    // Open a second tab and send a different message in it.
+    fireEvent.click(await screen.findByTestId('chat-new'));
+    await screen.findByTestId('chat-context-tab');
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Second tab message' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    expect(
+      await screen.findByText('Reply to Second tab message'),
+    ).toBeInTheDocument();
+
+    // The two sends must have been filed under two DIFFERENT persisted contexts — the
+    // actual mechanism the fix relies on.
+    const startCalls = api.stream.mock.calls;
+    expect(startCalls).toHaveLength(2);
+    const contextIds = startCalls.map(
+      ([, arg]) => (arg as { contextId?: string }).contextId,
+    );
+    expect(contextIds[0]).toBeTruthy();
+    expect(contextIds[1]).toBeTruthy();
+    expect(contextIds[0]).not.toBe(contextIds[1]);
+
+    // Simulate switching away and back to the SAME workspace (the reported bug: this
+    // used to reset the tab bar to a single default tab and dump every turn into it).
+    rerender(<ChatPanel workspaceId="ws2" />);
+    rerender(<ChatPanel workspaceId="ws1" />);
+
+    // Both tabs must still exist.
+    const tab1 = await screen.findByTestId('chat-tab');
+    const tab2 = await screen.findByTestId('chat-context-tab');
+
+    // Tab 1's history is intact and NOT merged with tab 2's.
+    fireEvent.click(within(tab1).getByRole('button', { name: 'Untitled' }));
+    expect(
+      await screen.findByText('Reply to First tab message'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Reply to Second tab message'),
+    ).not.toBeInTheDocument();
+
+    // Tab 2's history is intact and NOT merged with tab 1's.
+    fireEvent.click(within(tab2).getByRole('button', { name: 'Untitled' }));
+    expect(
+      await screen.findByText('Reply to Second tab message'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Reply to First tab message'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('closing one tab removes only that tab from the bar and only its turns from history', async () => {
+    const backend = createBackendChatMock();
+    installApi({ stream: backend.stream, history: backend.history });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.change(await screen.findByTestId('composer-input'), {
+      target: { value: 'First tab message' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    expect(
+      await screen.findByText('Reply to First tab message'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId('chat-new'));
+    await screen.findByTestId('chat-context-tab');
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Second tab message' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    expect(
+      await screen.findByText('Reply to Second tab message'),
+    ).toBeInTheDocument();
+
+    // Close the second tab.
+    fireEvent.click(screen.getByTestId('chat-context-close-1'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('chat-context-tab')).toBeNull(),
+    );
+
+    // The remaining (first) tab is selected and shows only its own history.
+    expect(screen.getByTestId('chat-tab')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(
+      await screen.findByText('Reply to First tab message'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Reply to Second tab message'),
+    ).not.toBeInTheDocument();
+
+    // Closing the last remaining tab replaces it with a fresh, empty 'Untitled' tab —
+    // no leftover messages from either closed tab.
+    fireEvent.click(screen.getByTestId('chat-context-close-0'));
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-tab')).toHaveTextContent('Untitled'),
+    );
+    expect(
+      screen.queryByText('Reply to First tab message'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Reply to Second tab message'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('disables the composer instead of sending an unowned, permanently-invisible turn when bootstrapping tabs fails', async () => {
+    const api = installApi({});
+    const original = api.invoke.getMockImplementation();
+    if (!original)
+      throw new Error('installApi must provide a default invoke impl');
+    api.invoke.mockImplementation((channel: string, req?: unknown) =>
+      channel === 'chat:contexts:list'
+        ? Promise.reject(new Error('list failed'))
+        : original(channel, req),
+    );
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    // No tab ever loads, so there is no `contextId` a sent turn could be filed under —
+    // sending here would persist a turn with `context_id = NULL`, which (per migration
+    // 0016's invariant) is indistinguishable from "its tab was explicitly closed" and so
+    // would never be shown in any tab again. The composer must refuse to send instead.
+    const input = await screen.findByTestId('composer-input');
+    expect(input).toBeDisabled();
+    expect(screen.getByTestId('composer-send')).toBeDisabled();
+    expect(api.stream).not.toHaveBeenCalled();
   });
 });
 

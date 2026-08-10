@@ -76,6 +76,8 @@ export class TurnRecorder {
       mode?: AgentMode;
       harness?: HarnessId;
       model?: string;
+      /** Owning chat tab; omitted leaves the turn unowned (task/scheduler-fired turns). */
+      contextId?: string;
     } = {},
   ): Promise<string> {
     const idx = await this.turns.nextIdx(workspaceId);
@@ -87,6 +89,7 @@ export class TurnRecorder {
       mode: meta.mode ?? null,
       harness: meta.harness ?? null,
       model: meta.model ?? null,
+      contextId: meta.contextId ?? null,
     });
     this.state.set(turn.id, {
       pendingText: '',

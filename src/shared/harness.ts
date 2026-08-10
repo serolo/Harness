@@ -50,6 +50,11 @@ export interface StartTurnOpts {
   model?: string;
   /** Optional reasoning-effort override passed to providers that support it. APPEND-ONLY. */
   effort?: ReasoningEffort;
+  /**
+   * The chat tab (`ChatContextRecord.id`) this turn belongs to; persisted onto the turn
+   * row, never passed to a CLI. Omitted leaves the turn unowned. APPEND-ONLY.
+   */
+  contextId?: string;
 }
 
 export interface TurnHandle {

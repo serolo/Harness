@@ -62,6 +62,7 @@ import { ProjectsRepo } from '../db/repos/projects';
 import { WorkspacesRepo } from '../db/repos/workspaces';
 import { allocate as allocateWorkspaceName } from '../workspace/naming';
 import { TodosRepo } from '../db/repos/todos';
+import { ChatContextsRepo } from '../db/repos/chatContexts';
 import { UsageRepo } from '../db/repos/usage';
 import { GithubClient, parseOwnerName } from '../integrations/github/client';
 import {
@@ -229,6 +230,13 @@ function assertWorkspaceId(
 function assertProjectId(projectId: unknown): asserts projectId is string {
   if (typeof projectId !== 'string' || projectId.trim() === '') {
     throw new AppError('invalid_input', 'projectId is required');
+  }
+}
+
+/** A chat tab id (`chat_contexts.id`) — keyed by UUID alone, like `todo:toggle`'s `id`. */
+function assertChatContextId(contextId: unknown): asserts contextId is string {
+  if (typeof contextId !== 'string' || contextId === '') {
+    throw new AppError('invalid_input', 'contextId is required');
   }
 }
 
@@ -1057,6 +1065,21 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
               harnessOverride === workspace.harness
             ? await ctx.recorder.latestSessionId(arg.workspaceId)
             : undefined;
+        // Owning chat tab. NEVER trusted as given: an id from the renderer is only
+        // accepted once it resolves to a real row belonging to THIS workspace, so a
+        // turn can't be filed into another workspace's transcript. Omitted (or empty)
+        // leaves the turn unowned — the task/scheduler path, which never sets it.
+        let contextId: string | undefined;
+        if (typeof arg.contextId === 'string' && arg.contextId !== '') {
+          const context = await new ChatContextsRepo(ctx.db).get(arg.contextId);
+          if (!context || context.workspaceId !== arg.workspaceId) {
+            throw new AppError('not_found', 'chat context not found', {
+              contextId: arg.contextId,
+              workspaceId: arg.workspaceId,
+            });
+          }
+          contextId = context.id;
+        }
         const opts: StartTurnOpts = {
           workspaceDir: workspace.worktreePath,
           displayPrompt: arg.prompt,
@@ -1087,6 +1110,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           permissionPolicy: settings.agent.permissionPolicy,
           model: arg.model,
           effort: arg.effort,
+          contextId,
         };
 
         // Buffer events until the `started` frame is sent (started-first guarantee).
@@ -1803,6 +1827,56 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
     await ctx.recorder.clear(req.workspaceId);
+  });
+
+  // --- Durable chat tabs (chat_contexts, migration 0016) ---
+  // A tab id is later accepted as `turn:start`'s `contextId` and written onto a turn row,
+  // so every field is validated and narrowed here before it reaches persistence. The repo
+  // is constructed per call (like `todo:*`) — it is stateless, and nothing outside these
+  // handlers needs it, so `AppContext` gains no new field.
+
+  // chat:contexts:list — the workspace's tabs, bootstrapping the default one if absent.
+  handle('chat:contexts:list', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    return new ChatContextsRepo(ctx.db).listOrBootstrap(req.workspaceId);
+  });
+
+  // chat:contexts:create — open a new tab at the next position.
+  handle('chat:contexts:create', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    if (req.label !== undefined && typeof req.label !== 'string') {
+      throw new AppError('invalid_input', 'label must be a string');
+    }
+    if (
+      req.initialSessionId !== undefined &&
+      req.initialSessionId !== null &&
+      (typeof req.initialSessionId !== 'string' || req.initialSessionId === '')
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'initialSessionId must be a non-empty string or null',
+      );
+    }
+    return new ChatContextsRepo(ctx.db).create({
+      workspaceId: req.workspaceId,
+      label: req.label,
+      initialSessionId: req.initialSessionId,
+    });
+  });
+
+  // chat:contexts:rename — relabel a tab (throws not_found if it was already closed).
+  handle('chat:contexts:rename', async (req) => {
+    assertChatContextId(req.contextId);
+    if (typeof req.label !== 'string' || req.label.trim() === '') {
+      throw new AppError('invalid_input', 'label is required');
+    }
+    await new ChatContextsRepo(ctx.db).rename(req.contextId, req.label.trim());
+  });
+
+  // chat:contexts:close — orphan the tab's turns then delete it (no-op if already gone).
+  handle('chat:contexts:close', async (req) => {
+    assertChatContextId(req.contextId);
+    await new ChatContextsRepo(ctx.db).close(req.contextId);
   });
 
   handle('usage:monthly', async (req) => {

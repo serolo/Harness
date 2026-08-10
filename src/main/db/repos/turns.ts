@@ -26,6 +26,8 @@ export interface CreateTurnInput {
   harness?: HarnessId | null;
   model?: string | null;
   startedAt?: number;
+  /** Owning chat tab (migration 0016); null for task-owned/unowned turns. */
+  contextId?: string | null;
 }
 
 /**
@@ -64,6 +66,7 @@ function rowToTurn(row: TurnsTable): TurnRecord {
     cachedInputTokens: row.cached_input_tokens,
     costMicros: row.cost_micros,
     pricingKey: row.pricing_key,
+    contextId: row.context_id,
   };
 }
 
@@ -93,6 +96,7 @@ export class TurnsRepo {
       cache_write_input_tokens: null,
       cost_micros: null,
       pricing_key: null,
+      context_id: input.contextId ?? null,
     };
 
     await this.db.insertInto('turns').values(row).execute();

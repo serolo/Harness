@@ -141,6 +141,9 @@ export class HarnessSupervisor {
       mode: opts.mode,
       harness: harnessId,
       model: opts.model,
+      // Owning chat tab (validated at the IPC boundary); undefined for scheduler-fired
+      // turns, which stay unowned so task tabs keep reconstructing from `task:list`.
+      contextId: opts.contextId,
     });
 
     const live: LiveTurn = {

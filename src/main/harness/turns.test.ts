@@ -15,6 +15,7 @@ import { ProjectsRepo } from '../db/repos/projects';
 import { WorkspacesRepo } from '../db/repos/workspaces';
 import { TurnsRepo } from '../db/repos/turns';
 import { EventsRepo } from '../db/repos/events';
+import { ChatContextsRepo } from '../db/repos/chatContexts';
 import { TurnRecorder } from './turns';
 
 let tmpDir: string;
@@ -85,6 +86,27 @@ describe('TurnRecorder.beginTurn', () => {
 
     const t1 = await recorder.beginTurn(wsId);
     expect((await turns.getById(t1))?.idx).toBe(1);
+  });
+
+  it('threads meta.contextId through to the persisted turn row, defaulting to null when omitted', async () => {
+    db = openDb(dbFile);
+    const wsId = await seedWorkspace(db);
+    const recorder = makeRecorder(db);
+    const turns = new TurnsRepo(db);
+    const context = await new ChatContextsRepo(db).create({
+      workspaceId: wsId,
+      label: 'Manual tab',
+    });
+
+    const owned = await recorder.beginTurn(wsId, {
+      mode: 'default',
+      contextId: context.id,
+    });
+    expect((await turns.getById(owned))?.contextId).toBe(context.id);
+
+    // A scheduler-fired turn omits contextId entirely — must stay NULL, never undefined.
+    const unowned = await recorder.beginTurn(wsId, { mode: 'default' });
+    expect((await turns.getById(unowned))?.contextId).toBeNull();
   });
 });
 

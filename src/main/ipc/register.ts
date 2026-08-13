@@ -18,17 +18,23 @@
 // (`encodeAppErrorMessage`); the preload decodes it back with `decodeAppErrorMessage`.
 // (Streams differ: they use `webContents.send`, which clones intact — see stream.ts.)
 
-import { app, dialog, BrowserWindow, ipcMain, nativeImage } from 'electron';
+import {
+  app,
+  dialog,
+  BrowserWindow,
+  ipcMain,
+  nativeImage,
+  shell,
+} from 'electron';
 import type {
   IpcMainInvokeEvent,
   OpenDialogOptions,
   WebContents,
 } from 'electron';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn as spawnChild } from 'node:child_process';
 import { readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
-import { v7 as uuidv7 } from 'uuid';
 import { Octokit } from '@octokit/rest';
 import type {
   CommandChannel,
@@ -81,6 +87,7 @@ import type { LinearAccount } from '@shared/linear';
 import type { DiffQuery, DiffScope } from '@shared/review';
 import type { GitDiff } from '../git';
 import {
+  allocateProjectDirectoryName,
   defaultRootDirectory,
   repoDir,
   rootDirectory,
@@ -306,6 +313,36 @@ async function resolveRealWorkspacePath(
   return target;
 }
 
+async function resolveClaudePlanPath(path: unknown): Promise<string> {
+  if (typeof path !== 'string' || !path.endsWith('.md')) {
+    throw new AppError('invalid_input', 'invalid plan path');
+  }
+  const root = resolve(homedir(), '.claude', 'plans');
+  const target = resolve(path);
+  const rel = relative(root, target);
+  if (
+    rel === '' ||
+    rel.startsWith('..') ||
+    rel.includes(`..${sep}`) ||
+    !target.endsWith('.md')
+  ) {
+    throw new AppError(
+      'invalid_input',
+      'plan path must stay inside Claude plans',
+    );
+  }
+  const realRoot = await realpath(root);
+  const realTarget = await realpath(target);
+  const realRelative = relative(realRoot, realTarget);
+  if (realRelative.startsWith('..') || realRelative.includes(`..${sep}`)) {
+    throw new AppError(
+      'invalid_input',
+      'plan path must stay inside Claude plans',
+    );
+  }
+  return realTarget;
+}
+
 function workspaceRelativePath(worktreePath: string, filePath: string): string {
   return relative(
     resolve(worktreePath),
@@ -525,6 +562,23 @@ function projectNameFromUrl(url: string): string {
   const last = segments[segments.length - 1] ?? '';
   const name = last.replace(/\.git$/, '');
   return name.length > 0 ? name : 'project';
+}
+
+async function nextProjectDirectoryName(
+  projects: ProjectsRepo,
+  projectName: string,
+): Promise<string> {
+  const existingProjects = await projects.list();
+  let filesystemEntries: string[] = [];
+  try {
+    filesystemEntries = await readdir(join(rootDirectory(), 'projects'));
+  } catch {
+    // The project root is created lazily by projectDir/repoDir.
+  }
+  return allocateProjectDirectoryName(projectName, [
+    ...existingProjects.map((project) => project.directoryName),
+    ...filesystemEntries,
+  ]);
 }
 
 /**
@@ -906,7 +960,12 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
     void (async () => {
       try {
         const projects = new ProjectsRepo(ctx.db);
-        dest = repoDir(uuidv7()); // unique on-disk repo dir; the DB row gets its own id
+        const projectName = projectNameFromUrl(arg.url);
+        const directoryName = await nextProjectDirectoryName(
+          projects,
+          projectName,
+        );
+        dest = repoDir(directoryName);
         await ctx.git.clone(arg.url, dest, (p) => sink.push(p), {
           signal: controller.signal,
         });
@@ -914,10 +973,11 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         const info = await ctx.git.open(dest);
         if (controller.signal.aborted) return;
         const project = await projects.create({
-          name: projectNameFromUrl(arg.url),
+          name: projectName,
           originUrl: info.originUrl.length > 0 ? info.originUrl : arg.url,
           defaultBranch: info.defaultBranch,
           repoPath: dest,
+          directoryName,
         });
         sink.push({ phase: 'done', project });
         sink.end();
@@ -994,6 +1054,13 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         if (typeof arg.prompt !== 'string' || arg.prompt.trim() === '') {
           throw new AppError('invalid_input', 'prompt is required');
         }
+        if (
+          arg.displayPrompt !== undefined &&
+          (typeof arg.displayPrompt !== 'string' ||
+            arg.displayPrompt.trim() === '')
+        ) {
+          throw new AppError('invalid_input', 'displayPrompt must be a string');
+        }
         const attachments = Array.isArray(arg.attachments)
           ? arg.attachments
           : [];
@@ -1028,6 +1095,12 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
 
         const settings = await settingsForProject(ctx, workspace.projectId);
+        const turnProject = await new ProjectsRepo(ctx.db).getById(
+          workspace.projectId,
+        );
+        if (turnProject === null) {
+          throw new AppError('not_found', 'project not found');
+        }
         const selectedHarness = harnessOverride ?? workspace.harness;
         const knowledgeConfig =
           settings.knowledge.enabled && settings.knowledge.inject_context
@@ -1037,6 +1110,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           knowledgeConfig !== undefined && usesKnowledgeMcp(selectedHarness)
             ? prepareMcpTurnKnowledge(
                 workspace.projectId,
+                turnProject.directoryName,
                 knowledgeConfig,
                 settings.knowledge.search.max_context_tokens,
               )
@@ -1080,9 +1154,10 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           }
           contextId = context.id;
         }
+        const turnMode = arg.mode ?? settings.agent.mode;
         const opts: StartTurnOpts = {
           workspaceDir: workspace.worktreePath,
-          displayPrompt: arg.prompt,
+          displayPrompt: arg.displayPrompt ?? arg.prompt,
           knowledgeSources: knowledgeSelection.sources,
           ...(knowledgeSelection.retrieval === undefined
             ? {}
@@ -1094,7 +1169,9 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
             arg.prompt,
             mcpKnowledge?.instruction ?? '',
             knowledgeSelection.context,
-            settings.knowledge.enabled && settings.knowledge.extract_after_turn
+            settings.knowledge.enabled &&
+            settings.knowledge.extract_after_turn &&
+            turnMode !== 'plan'
               ? KNOWLEDGE_RECONCILIATION_INSTRUCTION
               : '',
           ]
@@ -1102,7 +1179,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
             .join('\n\n'),
           attachments,
           sessionId,
-          mode: arg.mode ?? settings.agent.mode,
+          mode: turnMode,
           mcpConfig:
             mcpKnowledge === undefined
               ? settings.mcp
@@ -1697,11 +1774,13 @@ export function registerIpc(ctx: AppContext): void {
   handle('project:add', async (req) => {
     const projects = new ProjectsRepo(ctx.db);
     const info = await ctx.git.open(req.localPath);
+    const name = basename(req.localPath);
     return projects.create({
-      name: basename(req.localPath),
+      name,
       originUrl: info.originUrl,
       defaultBranch: info.defaultBranch,
       repoPath: req.localPath,
+      directoryName: await nextProjectDirectoryName(projects, name),
     });
   });
 
@@ -1972,25 +2051,47 @@ export function registerIpc(ctx: AppContext): void {
       });
   });
 
+  // file:revealInFinder — reveal only files already confined to a workspace or the
+  // Claude plans directory. The renderer never supplies an authoritative root.
+  handle('file:revealInFinder', async (req) => {
+    if (req === null || typeof req !== 'object') {
+      throw new AppError('invalid_input', 'invalid file reveal request');
+    }
+    let absolutePath: string;
+    if (req.source === 'workspace') {
+      assertWorkspaceId(req.workspaceId);
+      assertWorkspaceFilePath(req.path);
+      if (isAbsolute(req.path) || req.path.length > 4096) {
+        throw new AppError(
+          'invalid_input',
+          'workspace file path must be relative',
+        );
+      }
+      const workspace = await ctx.workspaces.get(req.workspaceId);
+      if (workspace === null || workspace.worktreePath === null) {
+        throw new AppError('not_found', 'workspace checkout is unavailable');
+      }
+      absolutePath = await resolveRealWorkspacePath(
+        workspace.worktreePath,
+        req.path,
+      );
+    } else if (req.source === 'plan') {
+      if (typeof req.path !== 'string' || req.path.length > 4096) {
+        throw new AppError('invalid_input', 'invalid plan path');
+      }
+      absolutePath = await resolveClaudePlanPath(req.path);
+    } else {
+      throw new AppError('invalid_input', 'invalid file source');
+    }
+    if (!(await stat(absolutePath)).isFile()) {
+      throw new AppError('invalid_input', 'path is not a file');
+    }
+    shell.showItemInFolder(absolutePath);
+  });
+
   // plan:read — narrowly scoped read-only access for Claude's saved plan handoff.
   handle('plan:read', async (req) => {
-    if (typeof req.path !== 'string' || !req.path.endsWith('.md')) {
-      throw new AppError('invalid_input', 'invalid plan path');
-    }
-    const root = resolve(homedir(), '.claude', 'plans');
-    const target = resolve(req.path);
-    const rel = relative(root, target);
-    if (
-      rel === '' ||
-      rel.startsWith('..') ||
-      rel.includes(`..${sep}`) ||
-      !target.endsWith('.md')
-    ) {
-      throw new AppError(
-        'invalid_input',
-        'plan path must stay inside Claude plans',
-      );
-    }
+    const target = await resolveClaudePlanPath(req.path);
     const fileStat = await stat(target);
     if (!fileStat.isFile() || fileStat.size > CHAT_FILE_PREVIEW_MAX_BYTES) {
       throw new AppError('invalid_input', 'plan file cannot be previewed');
@@ -3070,12 +3171,38 @@ export function registerIpc(ctx: AppContext): void {
     const repo = await githubRepoForProject(ctx, project);
     const client = new GithubClient(octokit, repo);
     try {
-      return workspace.prNumber === null
-        ? await client.getPr(workspace.branch)
-        : await client.getPrByNumber(workspace.prNumber);
+      const pullRequest =
+        workspace.prNumber === null
+          ? await client.getLatestPr(workspace.branch)
+          : await client.getPrByNumber(workspace.prNumber);
+      if (pullRequest === null) return null;
+      return client.enrichPrWithQueueState(pullRequest);
     } catch (error) {
       return clarifyGithubRepoError(error, repo);
     }
+  });
+  handle('github:openPrUrl', async (req) => {
+    if (typeof req?.url !== 'string' || req.url === '') {
+      throw new AppError('invalid_input', 'pull request URL is required');
+    }
+    let url: URL;
+    try {
+      url = new URL(req.url);
+    } catch {
+      throw new AppError('invalid_input', 'invalid pull request URL');
+    }
+    if (
+      url.origin !== 'https://github.com' ||
+      url.username !== '' ||
+      url.password !== '' ||
+      !/^\/[^/]+\/[^/]+\/pull\/[1-9]\d*\/?$/.test(url.pathname)
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'pull request URL must be an HTTPS github.com pull request',
+      );
+    }
+    await shell.openExternal(url.toString());
   });
 
   registerStreamControl(ctx);

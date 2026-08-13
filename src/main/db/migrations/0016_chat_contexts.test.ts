@@ -168,7 +168,7 @@ describe('migration 0016 chat contexts', () => {
 
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(16);
+    expect(db.pragma('user_version', { simple: true })).toBe(17);
 
     const contextsA = db
       .prepare('SELECT * FROM chat_contexts WHERE workspace_id = ?')
@@ -210,7 +210,7 @@ describe('migration 0016 chat contexts', () => {
       .prepare('SELECT * FROM chat_contexts WHERE workspace_id = ?')
       .all('ws-b');
     expect(contextsBAfter).toHaveLength(1);
-    expect(db.pragma('user_version', { simple: true })).toBe(16);
+    expect(db.pragma('user_version', { simple: true })).toBe(17);
   });
 
   it('is a no-op schema-probe repair when chat_contexts and turns.context_id already exist', () => {
@@ -225,7 +225,7 @@ describe('migration 0016 chat contexts', () => {
     expect(before.n).toBe(1);
 
     runMigrations(db);
-    expect(db.pragma('user_version', { simple: true })).toBe(16);
+    expect(db.pragma('user_version', { simple: true })).toBe(17);
     const after = db
       .prepare(
         "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='chat_contexts'",

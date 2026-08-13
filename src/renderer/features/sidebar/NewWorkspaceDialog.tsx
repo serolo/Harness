@@ -28,7 +28,7 @@
 // tabs (data-testid + aria-pressed + per-tab disabled) and the location/base-branch/PR/issue
 // controls stay hand-rolled or adopt `Input`/`Select`/`Button`/`IconButton` where useful.
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { GitBranch, GitPullRequest, CircleDot, Check } from 'lucide-react';
 import type { CreateWorkspaceReq } from '@shared/models';
@@ -140,6 +140,29 @@ function isValidBranchName(branch: string): boolean {
   );
 }
 
+/** Match the main-process worktree directory limits while keeping typing ergonomic. */
+function normalizeWorktreeName(
+  value: string,
+  preserveTrailingSeparator = false,
+): string {
+  const hadTrailingSeparator = /[^a-z0-9]$/i.test(value);
+  let normalized = value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-{2,}/g, '-');
+  if (!preserveTrailingSeparator || !hadTrailingSeparator) {
+    normalized = normalized.replace(/-+$/, '');
+  }
+  return normalized
+    .slice(0, 63)
+    .replace(/-+$/, (separator) =>
+      preserveTrailingSeparator && hadTrailingSeparator ? separator : '',
+    );
+}
+
 export interface NewWorkspaceDialogProps {
   /** The project to create the workspace under. Must be set before submission. */
   projectId: string | null;
@@ -155,6 +178,7 @@ export function NewWorkspaceDialog({
   projectId,
   onClose,
 }: NewWorkspaceDialogProps): React.JSX.Element {
+  const outsidePointerDownRef = useRef<boolean | null>(null);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const setPendingPrompt = useComposerStore((s) => s.setPendingPrompt);
   const creation = useWorkspaceCreationStore((s) => s.current);
@@ -549,8 +573,17 @@ export function NewWorkspaceDialog({
         aria-label="New Workspace"
         className="fixed inset-0 z-[110] flex items-center justify-center p-4"
         data-testid="new-workspace-dialog"
+        onPointerDown={(event) => {
+          outsidePointerDownRef.current = event.target === event.currentTarget;
+        }}
         onClick={(event) => {
-          if (event.target === event.currentTarget) handleClose();
+          const endedOutside = event.target === event.currentTarget;
+          const startedOutside = outsidePointerDownRef.current;
+          outsidePointerDownRef.current = null;
+          // Selecting text can start inside the panel and end over the scrim. Browsers
+          // may target the resulting click at this outer layer; that is a drag gesture,
+          // not an intentional outside click.
+          if (endedOutside && startedOutside !== false) handleClose();
         }}
       >
         <div
@@ -622,10 +655,9 @@ export function NewWorkspaceDialog({
             </fieldset>
 
             <fieldset className="mb-4">
-              <legend className="mb-1 text-xs text-fg-2">
-                Workspace name
-              </legend>
+              <legend className="mb-1 text-xs text-fg-2">Workspace name</legend>
               <Input
+                className="w-full"
                 value={workspaceName}
                 onChange={(event) => setWorkspaceName(event.target.value)}
                 placeholder="Generating name…"
@@ -646,8 +678,28 @@ export function NewWorkspaceDialog({
                   Worktree name
                 </legend>
                 <Input
+                  className="w-full"
                   value={worktreeName}
-                  onChange={(event) => setWorktreeName(event.target.value)}
+                  onChange={(event) =>
+                    setWorktreeName(
+                      normalizeWorktreeName(event.target.value, true),
+                    )
+                  }
+                  onBlur={() =>
+                    setWorktreeName((current) => normalizeWorktreeName(current))
+                  }
+                  onPaste={(event) => {
+                    event.preventDefault();
+                    const input = event.currentTarget;
+                    const start = input.selectionStart ?? input.value.length;
+                    const end = input.selectionEnd ?? start;
+                    const pasted = event.clipboardData.getData('text/plain');
+                    setWorktreeName(
+                      normalizeWorktreeName(
+                        `${input.value.slice(0, start)}${pasted}${input.value.slice(end)}`,
+                      ),
+                    );
+                  }}
                   placeholder="Generating name…"
                   disabled={isStreaming}
                   data-testid="worktree-name-input"
@@ -663,9 +715,7 @@ export function NewWorkspaceDialog({
 
             {selectedLocation === 'worktree' ? (
               <fieldset className="mb-4">
-                <legend className="mb-1 text-xs text-fg-2">
-                  Branch name
-                </legend>
+                <legend className="mb-1 text-xs text-fg-2">Branch name</legend>
                 {activeTab === 'branch' ? (
                   <div className="mb-2 flex gap-3 text-xs text-fg-2">
                     <label className="flex items-center gap-1.5">
@@ -694,7 +744,7 @@ export function NewWorkspaceDialog({
                 ) : null}
                 {activeTab === 'branch' && branchMode === 'existing' ? (
                   <div
-                    className="rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-sm text-fg-2"
+                    className="w-full rounded-2 border border-border-1 bg-surface-well px-3 py-2 text-sm text-fg-2"
                     data-testid="existing-branch-name"
                   >
                     {selectedBranch?.label ??
@@ -703,6 +753,7 @@ export function NewWorkspaceDialog({
                 ) : (
                   <>
                     <Input
+                      className="w-full"
                       value={branchName}
                       onChange={(event) => setBranchName(event.target.value)}
                       placeholder="Generating name…"
@@ -726,298 +777,302 @@ export function NewWorkspaceDialog({
             {selectedLocation === 'worktree' ? (
               <>
                 <div className="mb-4" data-testid="source-section">
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-caps text-fg-3">
-                Create From
-              </h3>
-              <div className="mb-3 flex gap-1 border-y border-border-1 py-2">
-                {TABS.map(({ id, label }) => (
-                  <button
-                    key={id}
-                    type="button"
+                  <h3 className="mb-2 text-xs font-medium uppercase tracking-caps text-fg-3">
+                    Create From
+                  </h3>
+                  <div className="mb-3 flex gap-1 border-y border-border-1 py-2">
+                    {TABS.map(({ id, label }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        disabled={isStreaming}
+                        onClick={() => setActiveTab(id)}
+                        data-testid={`source-tab-${id}`}
+                        className={`rounded-2 px-3 py-2 text-sm font-medium transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                          activeTab === id
+                            ? 'bg-bg-4 text-fg-1'
+                            : 'text-fg-2 hover:text-fg-1'
+                        }`}
+                        aria-pressed={activeTab === id}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <Input
+                    value={sourceFilter}
+                    onChange={(e) => setSourceFilter(e.target.value)}
+                    placeholder="Search by name"
                     disabled={isStreaming}
-                    onClick={() => setActiveTab(id)}
-                    data-testid={`source-tab-${id}`}
-                    className={`rounded-2 px-3 py-2 text-sm font-medium transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
-                      activeTab === id
-                        ? 'bg-bg-4 text-fg-1'
-                        : 'text-fg-2 hover:text-fg-1'
-                    }`}
-                    aria-pressed={activeTab === id}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <Input
-                value={sourceFilter}
-                onChange={(e) => setSourceFilter(e.target.value)}
-                placeholder="Search by name"
-                disabled={isStreaming}
-                data-testid="source-filter"
-                className="h-12 rounded-3 border-border-1 bg-surface-overlay px-4 text-sm"
-              />
+                    data-testid="source-filter"
+                    className="h-12 rounded-3 border-border-1 bg-surface-overlay px-4 text-sm"
+                  />
                 </div>
 
                 {/* --- Branch tab --- */}
                 {activeTab === 'branch' && (
-              <div
-                className="h-64 overflow-y-auto"
-                data-testid="branch-results"
-              >
-                {branchListLoading && (
-                  <p className="py-4 text-center text-xs text-fg-3">
-                    Loading branches...
-                  </p>
-                )}
-
-                {branchListError !== null && (
-                  <p
-                    data-testid="branch-list-error"
-                    className="mb-3 rounded-2 border border-danger/30 bg-danger-muted px-2 py-1.5 text-xs text-danger"
+                  <div
+                    className="h-64 overflow-y-auto"
+                    data-testid="branch-results"
                   >
-                    {branchListError}
-                  </p>
-                )}
+                    {branchListLoading && (
+                      <p className="py-4 text-center text-xs text-fg-3">
+                        Loading branches...
+                      </p>
+                    )}
 
-                {branchListWarning !== null && (
-                  <p
-                    data-testid="branch-list-warning"
-                    className="mb-3 rounded-2 border border-warning/30 bg-warning-muted px-2 py-1.5 text-xs text-warning"
-                  >
-                    {branchListWarning}
-                  </p>
-                )}
+                    {branchListError !== null && (
+                      <p
+                        data-testid="branch-list-error"
+                        className="mb-3 rounded-2 border border-danger/30 bg-danger-muted px-2 py-1.5 text-xs text-danger"
+                      >
+                        {branchListError}
+                      </p>
+                    )}
 
-                {!branchListLoading &&
-                  branchListError === null &&
-                  (branchRows.length > 0 ? (
-                    <ul className="space-y-1">
-                      {branchRows.map((branch) => (
-                        <li key={branch.ref}>
-                          <button
-                            type="button"
-                            disabled={
-                              isStreaming ||
-                              customWorkspaceNameInvalid ||
-                              customWorktreeNameInvalid ||
-                              customBranchInvalid
-                            }
-                            onClick={() => handleSelectBranch(branch)}
-                            data-testid="branch-item"
-                            data-branch-ref={branch.ref}
-                            aria-pressed={selectedBranch?.ref === branch.ref}
-                            className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
-                              selectedBranch?.ref === branch.ref
-                                ? 'border-accent bg-accent-muted'
-                                : 'border-transparent bg-surface-well hover:bg-bg-4'
-                            }`}
-                          >
-                            <GitBranch
-                              className="h-4 w-4 shrink-0 text-fg-3"
-                              aria-hidden="true"
-                            />
-                            <span className="min-w-0 flex-1 truncate text-sm text-fg-1">
-                              {branch.label}
-                            </span>
-                            {selectedBranch?.ref === branch.ref ? (
-                              <Check
-                                className="h-4 w-4 text-accent"
-                                aria-hidden
-                              />
-                            ) : null}
-                          </button>
-                        </li>
+                    {branchListWarning !== null && (
+                      <p
+                        data-testid="branch-list-warning"
+                        className="mb-3 rounded-2 border border-warning/30 bg-warning-muted px-2 py-1.5 text-xs text-warning"
+                      >
+                        {branchListWarning}
+                      </p>
+                    )}
+
+                    {!branchListLoading &&
+                      branchListError === null &&
+                      (branchRows.length > 0 ? (
+                        <ul className="space-y-1">
+                          {branchRows.map((branch) => (
+                            <li key={branch.ref}>
+                              <button
+                                type="button"
+                                disabled={
+                                  isStreaming ||
+                                  customWorkspaceNameInvalid ||
+                                  customWorktreeNameInvalid ||
+                                  customBranchInvalid
+                                }
+                                onClick={() => handleSelectBranch(branch)}
+                                data-testid="branch-item"
+                                data-branch-ref={branch.ref}
+                                aria-pressed={
+                                  selectedBranch?.ref === branch.ref
+                                }
+                                className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                                  selectedBranch?.ref === branch.ref
+                                    ? 'border-accent bg-accent-muted'
+                                    : 'border-transparent bg-surface-well hover:bg-bg-4'
+                                }`}
+                              >
+                                <GitBranch
+                                  className="h-4 w-4 shrink-0 text-fg-3"
+                                  aria-hidden="true"
+                                />
+                                <span className="min-w-0 flex-1 truncate text-sm text-fg-1">
+                                  {branch.label}
+                                </span>
+                                {selectedBranch?.ref === branch.ref ? (
+                                  <Check
+                                    className="h-4 w-4 text-accent"
+                                    aria-hidden
+                                  />
+                                ) : null}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="py-4 text-center text-xs text-fg-3">
+                          No branches found.
+                        </p>
                       ))}
-                    </ul>
-                  ) : (
-                    <p className="py-4 text-center text-xs text-fg-3">
-                      No branches found.
-                    </p>
-                  ))}
-              </div>
+                  </div>
                 )}
 
                 {/* --- From PR / From issue tabs --- */}
                 {activeTab !== 'branch' && (
-              <div
-                className="h-64 overflow-y-auto"
-                data-testid={`${activeTab}-list`}
-              >
-                {listLoading && (
-                  <p className="py-4 text-center text-xs text-fg-3">Loading…</p>
-                )}
+                  <div
+                    className="h-64 overflow-y-auto"
+                    data-testid={`${activeTab}-list`}
+                  >
+                    {listLoading && (
+                      <p className="py-4 text-center text-xs text-fg-3">
+                        Loading…
+                      </p>
+                    )}
 
-                {/* No-account (or error) empty state — the invoke rejected. */}
-                {!listLoading &&
-                  listError !== null &&
-                  (listError === 'no GitHub account connected' ? (
-                    <div
-                      data-testid="github-empty"
-                      className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
-                    >
-                      <p className="text-sm text-fg-2 text-center">
-                        Connect GitHub to list{' '}
-                        {activeTab === 'pr' ? 'pull requests' : 'issues'}.
-                      </p>
-                      <p className="mt-1 text-center text-xs text-fg-3">
-                        Paste a GitHub personal access token with repo access.
-                      </p>
-                      <div className="mt-2 flex gap-2">
-                        <Input
-                          type="password"
-                          value={githubToken}
-                          onChange={(e) => setGithubToken(e.target.value)}
-                          placeholder="github_pat_…"
-                          disabled={connecting}
-                          data-testid="github-token-input"
-                          className="flex-1"
-                        />
-                        <Button
-                          type="button"
-                          variant="primary"
-                          onClick={() => void handleConnectGithub()}
-                          disabled={connecting || githubToken.trim() === ''}
-                          data-testid="github-connect-submit"
+                    {/* No-account (or error) empty state — the invoke rejected. */}
+                    {!listLoading &&
+                      listError !== null &&
+                      (listError === 'no GitHub account connected' ? (
+                        <div
+                          data-testid="github-empty"
+                          className="rounded-2 border border-border-1 bg-surface-well px-3 py-4"
                         >
-                          {connecting ? 'Connecting…' : 'Connect'}
-                        </Button>
-                      </div>
-                      {connectError && (
-                        <p
-                          data-testid="github-connect-error"
-                          className="mt-2 text-xs text-danger"
+                          <p className="text-sm text-fg-2 text-center">
+                            Connect GitHub to list{' '}
+                            {activeTab === 'pr' ? 'pull requests' : 'issues'}.
+                          </p>
+                          <p className="mt-1 text-center text-xs text-fg-3">
+                            Paste a GitHub personal access token with repo
+                            access.
+                          </p>
+                          <div className="mt-2 flex gap-2">
+                            <Input
+                              type="password"
+                              value={githubToken}
+                              onChange={(e) => setGithubToken(e.target.value)}
+                              placeholder="github_pat_…"
+                              disabled={connecting}
+                              data-testid="github-token-input"
+                              className="flex-1"
+                            />
+                            <Button
+                              type="button"
+                              variant="primary"
+                              onClick={() => void handleConnectGithub()}
+                              disabled={connecting || githubToken.trim() === ''}
+                              data-testid="github-connect-submit"
+                            >
+                              {connecting ? 'Connecting…' : 'Connect'}
+                            </Button>
+                          </div>
+                          {connectError && (
+                            <p
+                              data-testid="github-connect-error"
+                              className="mt-2 text-xs text-danger"
+                            >
+                              {connectError}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div
+                          data-testid="github-list-error"
+                          className="rounded-2 border border-danger/30 bg-danger-muted px-3 py-4"
                         >
-                          {connectError}
+                          <p className="text-xs text-danger">{listError}</p>
+                        </div>
+                      ))}
+
+                    {/* PR list */}
+                    {!listLoading &&
+                      listError === null &&
+                      activeTab === 'pr' &&
+                      (prRows.length > 0 ? (
+                        <ul className="space-y-1">
+                          {prRows.map((pr) => (
+                            <li key={pr.number}>
+                              <button
+                                type="button"
+                                disabled={
+                                  isStreaming ||
+                                  customWorkspaceNameInvalid ||
+                                  customWorktreeNameInvalid ||
+                                  customBranchInvalid
+                                }
+                                onClick={() => handleSelectPr(pr)}
+                                data-testid="pr-item"
+                                data-pr-number={pr.number}
+                                aria-pressed={selectedPr?.number === pr.number}
+                                className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                                  selectedPr?.number === pr.number
+                                    ? 'border-accent bg-accent-muted'
+                                    : 'border-transparent bg-surface-well hover:bg-bg-4'
+                                }`}
+                              >
+                                <GitPullRequest
+                                  className="h-4 w-4 shrink-0 text-fg-3"
+                                  aria-hidden="true"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-sm text-fg-1">
+                                    {pr.title}
+                                  </span>
+                                  <span className="text-xs text-fg-3">
+                                    #{pr.number}
+                                    {pr.author ? ` · ${pr.author}` : ''}
+                                  </span>
+                                </span>
+                                {selectedPr?.number === pr.number ? (
+                                  <Check
+                                    className="h-4 w-4 text-accent"
+                                    aria-hidden
+                                  />
+                                ) : null}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="py-4 text-center text-xs text-fg-3">
+                          No open pull requests.
                         </p>
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      data-testid="github-list-error"
-                      className="rounded-2 border border-danger/30 bg-danger-muted px-3 py-4"
-                    >
-                      <p className="text-xs text-danger">{listError}</p>
-                    </div>
-                  ))}
-
-                {/* PR list */}
-                {!listLoading &&
-                  listError === null &&
-                  activeTab === 'pr' &&
-                  (prRows.length > 0 ? (
-                    <ul className="space-y-1">
-                      {prRows.map((pr) => (
-                        <li key={pr.number}>
-                          <button
-                            type="button"
-                            disabled={
-                              isStreaming ||
-                              customWorkspaceNameInvalid ||
-                              customWorktreeNameInvalid ||
-                              customBranchInvalid
-                            }
-                            onClick={() => handleSelectPr(pr)}
-                            data-testid="pr-item"
-                            data-pr-number={pr.number}
-                            aria-pressed={selectedPr?.number === pr.number}
-                            className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
-                              selectedPr?.number === pr.number
-                                ? 'border-accent bg-accent-muted'
-                                : 'border-transparent bg-surface-well hover:bg-bg-4'
-                            }`}
-                          >
-                            <GitPullRequest
-                              className="h-4 w-4 shrink-0 text-fg-3"
-                              aria-hidden="true"
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm text-fg-1">
-                                {pr.title}
-                              </span>
-                              <span className="text-xs text-fg-3">
-                                #{pr.number}
-                                {pr.author ? ` · ${pr.author}` : ''}
-                              </span>
-                            </span>
-                            {selectedPr?.number === pr.number ? (
-                              <Check
-                                className="h-4 w-4 text-accent"
-                                aria-hidden
-                              />
-                            ) : null}
-                          </button>
-                        </li>
                       ))}
-                    </ul>
-                  ) : (
-                    <p className="py-4 text-center text-xs text-fg-3">
-                      No open pull requests.
-                    </p>
-                  ))}
 
-                {/* Issue list */}
-                {!listLoading &&
-                  listError === null &&
-                  activeTab === 'issue' &&
-                  (issueRows.length > 0 ? (
-                    <ul className="space-y-1">
-                      {issueRows.map((issue) => (
-                        <li key={issue.number}>
-                          <button
-                            type="button"
-                            disabled={
-                              isStreaming ||
-                              customWorkspaceNameInvalid ||
-                              customWorktreeNameInvalid ||
-                              customBranchInvalid
-                            }
-                            onClick={() => handleSelectIssue(issue)}
-                            data-testid="issue-item"
-                            data-issue-number={issue.number}
-                            aria-pressed={
-                              selectedIssue?.number === issue.number
-                            }
-                            className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
-                              selectedIssue?.number === issue.number
-                                ? 'border-accent bg-accent-muted'
-                                : 'border-transparent bg-surface-well hover:bg-bg-4'
-                            }`}
-                          >
-                            <CircleDot
-                              className="h-4 w-4 shrink-0 text-fg-3"
-                              aria-hidden="true"
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm text-fg-1">
-                                {issue.title}
-                              </span>
-                              <span className="text-xs text-fg-3">
-                                #{issue.number}
-                              </span>
-                            </span>
-                            {selectedIssue?.number === issue.number ? (
-                              <Check
-                                className="h-4 w-4 text-accent"
-                                aria-hidden
-                              />
-                            ) : null}
-                          </button>
-                        </li>
+                    {/* Issue list */}
+                    {!listLoading &&
+                      listError === null &&
+                      activeTab === 'issue' &&
+                      (issueRows.length > 0 ? (
+                        <ul className="space-y-1">
+                          {issueRows.map((issue) => (
+                            <li key={issue.number}>
+                              <button
+                                type="button"
+                                disabled={
+                                  isStreaming ||
+                                  customWorkspaceNameInvalid ||
+                                  customWorktreeNameInvalid ||
+                                  customBranchInvalid
+                                }
+                                onClick={() => handleSelectIssue(issue)}
+                                data-testid="issue-item"
+                                data-issue-number={issue.number}
+                                aria-pressed={
+                                  selectedIssue?.number === issue.number
+                                }
+                                className={`group flex w-full items-center gap-3 rounded-2 border px-3 py-2 text-left transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50 ${
+                                  selectedIssue?.number === issue.number
+                                    ? 'border-accent bg-accent-muted'
+                                    : 'border-transparent bg-surface-well hover:bg-bg-4'
+                                }`}
+                              >
+                                <CircleDot
+                                  className="h-4 w-4 shrink-0 text-fg-3"
+                                  aria-hidden="true"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-sm text-fg-1">
+                                    {issue.title}
+                                  </span>
+                                  <span className="text-xs text-fg-3">
+                                    #{issue.number}
+                                  </span>
+                                </span>
+                                {selectedIssue?.number === issue.number ? (
+                                  <Check
+                                    className="h-4 w-4 text-accent"
+                                    aria-hidden
+                                  />
+                                ) : null}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="py-4 text-center text-xs text-fg-3">
+                          No open issues.
+                        </p>
                       ))}
-                    </ul>
-                  ) : (
-                    <p className="py-4 text-center text-xs text-fg-3">
-                      No open issues.
-                    </p>
-                  ))}
-              </div>
+                  </div>
                 )}
               </>
             ) : null}
 
             <div className="mt-4 flex justify-end gap-2 border-t border-border-1 pt-4">
-              {creationRunId !== null &&
-              creation?.runId === creationRunId ? (
+              {creationRunId !== null && creation?.runId === creationRunId ? (
                 <p
                   className={`mr-auto self-center text-xs ${
                     creation.status === 'error'

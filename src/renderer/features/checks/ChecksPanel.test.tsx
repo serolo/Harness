@@ -9,8 +9,11 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 
 import { ChecksPanel } from './ChecksPanel';
+import { createQueryClient } from '@renderer/app/providers';
 import { useChecksStore } from '@renderer/stores/checks';
 import { useChatStore } from '@renderer/stores/chat';
 import type { ChecksResult } from '@shared/checks';
@@ -146,6 +149,17 @@ function installApi(result: ChecksResult): Installed {
   return { api, listeners, unsubscribe };
 }
 
+function renderChecksPanel(
+  workspaceId: string | null,
+  queryClient: QueryClient = createQueryClient(),
+): ReturnType<typeof render> {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ChecksPanel workspaceId={workspaceId} />
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
   useChecksStore.setState({ resultByWorkspace: {} });
   useChatStore.setState({ byWorkspace: {}, busyByWorkspace: {} });
@@ -160,7 +174,7 @@ describe('ChecksPanel rendering', () => {
   it('renders a signal row per item and a blocker list from checks:get', async () => {
     installApi(BLOCKED);
 
-    render(<ChecksPanel workspaceId="ws1" />);
+    renderChecksPanel('ws1');
 
     // One SignalRow per aggregated item.
     expect(await screen.findByTestId('signal-row-git')).toHaveTextContent(
@@ -186,7 +200,7 @@ describe('ChecksPanel rendering', () => {
 describe('ChecksPanel merge gating', () => {
   it('disables the Merge button when the roll-up is blocked', async () => {
     installApi(BLOCKED);
-    render(<ChecksPanel workspaceId="ws1" />);
+    renderChecksPanel('ws1');
     await waitFor(() =>
       expect(screen.getByTestId('merge-button')).toBeDisabled(),
     );
@@ -194,7 +208,7 @@ describe('ChecksPanel merge gating', () => {
 
   it('enables the Merge button when the roll-up is green', async () => {
     installApi(GREEN);
-    render(<ChecksPanel workspaceId="ws1" />);
+    renderChecksPanel('ws1');
     await waitFor(() =>
       expect(screen.getByTestId('merge-button')).toBeEnabled(),
     );
@@ -204,7 +218,7 @@ describe('ChecksPanel merge gating', () => {
 describe('ChecksPanel blocker actions', () => {
   it('invokes pr:fixChecks when the "Fix failing checks" blocker button is clicked', async () => {
     const { api } = installApi(BLOCKED);
-    render(<ChecksPanel workspaceId="ws1" />);
+    renderChecksPanel('ws1');
 
     fireEvent.click(await screen.findByTestId('blocker-action-ci'));
 
@@ -217,7 +231,7 @@ describe('ChecksPanel blocker actions', () => {
 
   it('invokes pr:open when the "Commit & push" blocker button is clicked', async () => {
     const { api } = installApi(BLOCKED);
-    render(<ChecksPanel workspaceId="ws1" />);
+    renderChecksPanel('ws1');
 
     fireEvent.click(await screen.findByTestId('blocker-action-git'));
 
@@ -227,12 +241,53 @@ describe('ChecksPanel blocker actions', () => {
       }),
     );
   });
+
+  it('invalidates the seeded workspace PR cache after opening a PR', async () => {
+    installApi(BLOCKED);
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(['workspace-pr', 'ws1'], null);
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    renderChecksPanel('ws1', queryClient);
+
+    fireEvent.click(await screen.findByTestId('blocker-action-git'));
+
+    await waitFor(() =>
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ['workspace-pr', 'ws1'],
+      }),
+    );
+  });
+
+  it('invalidates the seeded workspace PR cache after merging a PR', async () => {
+    const { api } = installApi(GREEN);
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(['workspace-pr', 'ws1'], {
+      number: 7,
+      url: 'https://github.com/o/r/pull/7',
+    });
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    renderChecksPanel('ws1', queryClient);
+
+    fireEvent.click(await screen.findByTestId('merge-button'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('pr:merge', {
+        workspaceId: 'ws1',
+        method: 'squash',
+      }),
+    );
+    await waitFor(() =>
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ['workspace-pr', 'ws1'],
+      }),
+    );
+  });
 });
 
 describe('ChecksPanel checks:updated subscription', () => {
   it('refetches when a checks:updated event fires for this workspace', async () => {
     const { api, listeners } = installApi(BLOCKED);
-    render(<ChecksPanel workspaceId="ws1" />);
+    renderChecksPanel('ws1');
 
     // Wait for the initial load + subscription.
     await screen.findByTestId('signal-row-git');
@@ -255,7 +310,7 @@ describe('ChecksPanel checks:updated subscription', () => {
 
   it('unsubscribes from checks:updated on unmount (no listener leak)', async () => {
     const { unsubscribe } = installApi(BLOCKED);
-    const { unmount } = render(<ChecksPanel workspaceId="ws1" />);
+    const { unmount } = renderChecksPanel('ws1');
 
     await screen.findByTestId('signal-row-git');
     expect(unsubscribe).not.toHaveBeenCalled();

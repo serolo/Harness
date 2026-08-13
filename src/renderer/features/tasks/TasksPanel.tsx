@@ -17,7 +17,7 @@ import type {
   WikiSearchResult,
 } from '@shared/knowledge';
 import { invoke } from '@renderer/ipc';
-import { Button } from '@renderer/components/ui';
+import { Button, PanelTab, PanelTabBar } from '@renderer/components/ui';
 import { useTasks } from './useTasks';
 import { TaskRow } from './TaskRow';
 import { TaskForm, type TaskFormValues } from './TaskForm';
@@ -116,37 +116,38 @@ export function TasksPanel({
       className="flex h-full min-h-0 flex-col bg-surface-app"
       data-testid="tasks-panel"
     >
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-1 bg-surface-panel px-3">
-        <div
-          className="flex h-full items-end"
-          role="tablist"
-          aria-label="Workspace tools"
+      <PanelTabBar
+        label="Workspace tools"
+        testId="workspace-tools-header"
+        actions={
+          activeTab === 'tasks' ? (
+            <Button
+              variant="primary"
+              size="sm"
+              data-testid="task-new"
+              onClick={() => setForm({ kind: 'create' })}
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+              New task
+            </Button>
+          ) : null
+        }
+      >
+        <PanelTab
+          active={activeTab === 'tasks'}
+          testId="workspace-tab-tasks"
+          onClick={() => setActiveTab('tasks')}
         >
-          <WorkspaceToolTab
-            active={activeTab === 'tasks'}
-            label="Tasks"
-            testId="workspace-tab-tasks"
-            onClick={() => setActiveTab('tasks')}
-          />
-          <WorkspaceToolTab
-            active={activeTab === 'knowledge'}
-            label="Knowledge"
-            testId="workspace-tab-knowledge"
-            onClick={() => setActiveTab('knowledge')}
-          />
-        </div>
-        {activeTab === 'tasks' ? (
-          <Button
-            variant="primary"
-            size="sm"
-            data-testid="task-new"
-            onClick={() => setForm({ kind: 'create' })}
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden />
-            New task
-          </Button>
-        ) : null}
-      </div>
+          Tasks
+        </PanelTab>
+        <PanelTab
+          active={activeTab === 'knowledge'}
+          testId="workspace-tab-knowledge"
+          onClick={() => setActiveTab('knowledge')}
+        >
+          Knowledge
+        </PanelTab>
+      </PanelTabBar>
 
       {activeTab === 'knowledge' ? (
         <WorkspaceKnowledgeStatus
@@ -214,35 +215,6 @@ export function TasksPanel({
         />
       ) : null}
     </div>
-  );
-}
-
-function WorkspaceToolTab({
-  active,
-  label,
-  testId,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  testId: string;
-  onClick: () => void;
-}): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      data-testid={testId}
-      onClick={onClick}
-      className={`h-full border-b-2 px-3 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] ${
-        active
-          ? 'border-accent text-fg-1'
-          : 'border-transparent text-fg-3 hover:text-fg-1'
-      }`}
-    >
-      {label}
-    </button>
   );
 }
 

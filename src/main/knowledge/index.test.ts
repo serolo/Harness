@@ -243,7 +243,7 @@ describe('OKF project knowledge', () => {
     const { service, projectId } = await fixture();
     await service.initializeProject(projectId);
     await writeFile(
-      join(knowledgeDir(projectId), 'index.md'),
+      join(knowledgeDir('atlas'), 'index.md'),
       '---\nokf_version: "0.1"\n---\n\n# Stale catalog\n',
     );
 
@@ -595,7 +595,7 @@ describe('OKF project knowledge', () => {
 
     const knowledgeGateway = new ProjectKnowledgeGateway({
       projectId,
-      root: knowledgeDir(projectId),
+      root: knowledgeDir('atlas'),
       provider: 'basic',
       maxResults: 10,
       maxContextTokens: 4_000,
@@ -619,7 +619,7 @@ describe('OKF project knowledge', () => {
   it('repairs statusless typed pages during a catalog update without rewriting explicit or malformed pages', async () => {
     const { service, projectId } = await fixture();
     await service.initializeProject(projectId);
-    const root = knowledgeDir(projectId);
+    const root = knowledgeDir('atlas');
     const statuslessPath = join(root, 'overview.md');
     const explicitPath = join(root, 'WIKI.md');
     const malformedPath = join(root, 'components', 'malformed.md');
@@ -680,7 +680,7 @@ describe('OKF project knowledge', () => {
   it('restores repaired pages, catalog, and Git state when the catalog commit fails', async () => {
     const { service, projectId } = await fixture();
     await service.initializeProject(projectId);
-    const root = knowledgeDir(projectId);
+    const root = knowledgeDir('atlas');
     const statuslessPath = join(root, 'overview.md');
     const indexPath = join(root, 'index.md');
     const statusless =
@@ -720,7 +720,7 @@ describe('OKF project knowledge', () => {
   it('rejects a catalog update before mutation when the knowledge index has staged paths', async () => {
     const { service, projectId } = await fixture();
     await service.initializeProject(projectId);
-    const root = knowledgeDir(projectId);
+    const root = knowledgeDir('atlas');
     const statuslessPath = join(root, 'overview.md');
     const unrelatedPath = join(root, 'WIKI.md');
     const indexPath = join(root, 'index.md');

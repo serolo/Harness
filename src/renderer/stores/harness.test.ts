@@ -235,9 +235,22 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
       'Cursor',
     );
     expect(screen.getByTestId('composer-controls')).toHaveClass('min-w-0');
-    expect(
-      screen.getByTestId('composer-model').parentElement?.parentElement,
-    ).toHaveClass('min-w-0', 'flex-1');
+    expect(screen.getByTestId('composer-primary-controls')).toHaveClass(
+      'min-w-0',
+      'flex-1',
+    );
+    expect(screen.getByTestId('composer-primary-controls')).toContainElement(
+      screen.getByTestId('composer-model'),
+    );
+    expect(screen.getByTestId('composer-primary-controls')).toContainElement(
+      screen.getByTestId('composer-effort'),
+    );
+    expect(screen.getByTestId('composer-primary-controls')).toContainElement(
+      screen.getByTestId('composer-plan'),
+    );
+    expect(screen.getByTestId('composer-secondary-controls')).toContainElement(
+      screen.getByTestId('composer-send'),
+    );
     expect(screen.getByTestId('composer-send')).toHaveClass('shrink-0');
   });
 
@@ -245,12 +258,16 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     await renderComposerFor('claude_code');
     fireEvent.click(await screen.findByTestId('composer-model'));
 
-    expect(await screen.findByTestId('composer-model-menu')).toBeInTheDocument();
+    expect(
+      await screen.findByTestId('composer-model-menu'),
+    ).toBeInTheDocument();
 
     fireEvent.pointerDown(document.body);
 
     await waitFor(() =>
-      expect(screen.queryByTestId('composer-model-menu')).not.toBeInTheDocument(),
+      expect(
+        screen.queryByTestId('composer-model-menu'),
+      ).not.toBeInTheDocument(),
     );
   });
 
@@ -258,7 +275,9 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     await renderComposerFor('claude_code');
     fireEvent.click(await screen.findByTestId('composer-effort'));
 
-    expect(await screen.findByTestId('composer-effort-menu')).toBeInTheDocument();
+    expect(
+      await screen.findByTestId('composer-effort-menu'),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('composer-effort-low')).toHaveTextContent('Low');
     expect(screen.getByTestId('composer-effort-max')).toHaveTextContent('Max');
 
@@ -271,7 +290,9 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     await renderComposerFor('codex');
     fireEvent.click(await screen.findByTestId('composer-effort'));
 
-    expect(await screen.findByTestId('composer-effort-menu')).toBeInTheDocument();
+    expect(
+      await screen.findByTestId('composer-effort-menu'),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('composer-effort-medium')).toHaveTextContent(
       'Medium',
     );
@@ -388,7 +409,9 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     expect(bar).toHaveTextContent('one.ts');
     expect(bar).toHaveTextContent('two.md');
     expect(bar).not.toHaveTextContent('/tmp/ws');
-    expect(screen.queryByTestId('composer-drop-target')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('composer-drop-target'),
+    ).not.toBeInTheDocument();
     expect(api.getPathForFile).toHaveBeenCalledTimes(3);
     expect(screen.getAllByLabelText('Remove attachment')).toHaveLength(2);
   });

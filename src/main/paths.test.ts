@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  allocateProjectDirectoryName,
   defaultRootDirectory,
   projectDir,
+  projectDirectoryBaseName,
   rootDirectory,
   setRootDirectory,
   setUserDataRoot,
@@ -40,6 +42,24 @@ describe('managed root directory', () => {
     setUserDataRoot(data);
     expect(() => setRootDirectory('relative/path')).toThrow(
       'must be an absolute path',
+    );
+  });
+});
+
+describe('project directory names', () => {
+  it('normalizes project names into readable filesystem-safe slugs', () => {
+    expect(projectDirectoryBaseName(' W2 Platform / Café ')).toBe(
+      'w2-platform-cafe',
+    );
+    expect(projectDirectoryBaseName('🛠️')).toBe('project');
+  });
+
+  it('allocates case-insensitive collision suffixes within the length limit', () => {
+    expect(
+      allocateProjectDirectoryName('Harness', ['harness', 'HARNESS-2']),
+    ).toBe('harness-3');
+    expect(allocateProjectDirectoryName('x'.repeat(80), ['x'.repeat(63)])).toBe(
+      `${'x'.repeat(61)}-2`,
     );
   });
 });

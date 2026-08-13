@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Copy, FileText, History, Pencil, Plus, X } from 'lucide-react';
 import { invoke, onEvent } from '@renderer/ipc';
 import type { ChatContextRecord } from '@shared/models';
-import type { FileDiff } from '@shared/review';
+import type { DiffQuery, FileDiff } from '@shared/review';
 import type { ScheduledTask } from '@shared/tasks';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
@@ -25,12 +25,14 @@ export interface ChatPanelProps {
     workspaceId: string;
     path: string;
     mode?: 'edit' | 'diff';
+    diffQuery?: Omit<DiffQuery, 'workspaceId'>;
   } | null;
 }
 
 interface FileTab {
   id: string;
   path: string;
+  source: 'workspace' | 'plan';
   content: string | null;
   error: string | null;
   loading: boolean;
@@ -39,6 +41,8 @@ interface FileTab {
   diffError: string | null;
   loadingDiff: boolean;
   diffStatus: 'unknown' | 'loading' | 'available' | 'none' | 'error';
+  diffQuery: Omit<DiffQuery, 'workspaceId'> | null;
+  diffRequestKey: string | null;
 }
 
 interface ChatContext {
@@ -75,6 +79,18 @@ function labelForTask(prompt: string): string {
   const singleLine = prompt.replace(/\s+/g, ' ').trim();
   if (singleLine.length <= 36) return `Task: ${singleLine || 'Untitled'}`;
   return `Task: ${singleLine.slice(0, 33)}…`;
+}
+
+function diffQueryKey(
+  path: string,
+  query?: Omit<DiffQuery, 'workspaceId'>,
+): string {
+  if (!query) return `${path}\0legacy`;
+  const scope =
+    query.scope.kind === 'commit'
+      ? `commit:${query.scope.sha}`
+      : query.scope.kind;
+  return `${path}\0${query.targetRef}\0${scope}`;
 }
 
 function highlightedLine(line: string): React.ReactNode[] {
@@ -197,10 +213,13 @@ function DiffRows({ fileDiff }: { fileDiff: FileDiff }): React.JSX.Element {
 function FileViewer({
   file,
   onModeChange,
+  onRevealFile,
 }: {
   file: FileTab;
   onModeChange: (mode: FileTab['mode']) => void;
+  onRevealFile: () => Promise<void>;
 }): React.JSX.Element {
+  const [revealError, setRevealError] = useState<string | null>(null);
   const isMarkdown = /\.(?:md|markdown)$/i.test(file.path);
   const lines = (file.content ?? '').split('\n');
   if (lines.at(-1) === '') lines.pop();
@@ -208,6 +227,13 @@ function FileViewer({
   const copyFile = (): void => {
     if (file.content === null) return;
     void navigator.clipboard?.writeText(file.content);
+  };
+
+  const revealFile = (): void => {
+    setRevealError(null);
+    void onRevealFile().catch((error: unknown) => {
+      setRevealError(error instanceof Error ? error.message : String(error));
+    });
   };
 
   return (
@@ -221,8 +247,14 @@ function FileViewer({
             <FileReferencePill
               path={file.path}
               label={file.path}
-              onOpenFile={undefined}
+              onOpenFile={revealFile}
+              actionLabel={`Reveal ${file.path} in Finder`}
             />
+            {revealError ? (
+              <p className="mt-1 truncate text-xs text-danger" role="alert">
+                {revealError}
+              </p>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <button
@@ -458,25 +490,39 @@ export function ChatPanel({
   // filter on the persisted `turn.contextId` (see `contextTurns` below).
 
   const fetchFileDiff = useCallback(
-    (id: string, path: string): void => {
+    (
+      id: string,
+      path: string,
+      diffQuery?: Omit<DiffQuery, 'workspaceId'>,
+    ): void => {
       if (!workspaceId) return;
+      const requestKey = diffQueryKey(path, diffQuery);
       setFileTabs((tabs) =>
         tabs.map((tab) =>
-          tab.id === id && tab.diffStatus === 'unknown'
+          tab.id === id
             ? {
                 ...tab,
+                diffRequestKey: requestKey,
                 diffStatus: 'loading',
                 loadingDiff: tab.mode === 'diff',
               }
             : tab,
         ),
       );
-      void invoke('diff:file', { workspaceId, path })
+      const request = diffQuery
+        ? invoke('diff:fileQuery', {
+            workspaceId,
+            targetRef: diffQuery.targetRef,
+            scope: diffQuery.scope,
+            path,
+          })
+        : invoke('diff:file', { workspaceId, path });
+      void request
         .then((fileDiff) => {
           const hasHunks = fileDiff.hunks.length > 0;
           setFileTabs((tabs) =>
             tabs.map((tab) =>
-              tab.id === id
+              tab.id === id && tab.diffRequestKey === requestKey
                 ? {
                     ...tab,
                     fileDiff,
@@ -494,7 +540,7 @@ export function ChatPanel({
             error instanceof Error ? error.message : String(error);
           setFileTabs((tabs) =>
             tabs.map((tab) =>
-              tab.id === id
+              tab.id === id && tab.diffRequestKey === requestKey
                 ? {
                     ...tab,
                     fileDiff: null,
@@ -512,7 +558,11 @@ export function ChatPanel({
   );
 
   const openFile = useCallback(
-    (path: string, mode: FileTab['mode'] = 'edit'): void => {
+    (
+      path: string,
+      mode: FileTab['mode'] = 'edit',
+      diffQuery?: Omit<DiffQuery, 'workspaceId'>,
+    ): void => {
       if (!workspaceId) return;
       const isClaudePlan = /\/\.claude\/plans\/[^/]+\.md$/.test(path);
       const id = `file:${path}`;
@@ -524,10 +574,12 @@ export function ChatPanel({
             tab.id === id
               ? {
                   ...tab,
-                  mode:
-                    mode === 'diff' && tab.diffStatus === 'none'
-                      ? 'edit'
-                      : mode,
+                  diffQuery: diffQuery ?? null,
+                  fileDiff: null,
+                  diffError: null,
+                  diffStatus: 'unknown',
+                  diffRequestKey: null,
+                  mode,
                 }
               : tab,
           );
@@ -537,6 +589,7 @@ export function ChatPanel({
           {
             id,
             path,
+            source: isClaudePlan ? 'plan' : 'workspace',
             content: null,
             error: null,
             loading: true,
@@ -545,6 +598,8 @@ export function ChatPanel({
             diffError: null,
             loadingDiff: mode === 'diff',
             diffStatus: 'unknown',
+            diffQuery: diffQuery ?? null,
+            diffRequestKey: null,
           },
         ];
       });
@@ -580,7 +635,7 @@ export function ChatPanel({
           );
         });
       if (!isClaudePlan) {
-        fetchFileDiff(id, path);
+        fetchFileDiff(id, path, diffQuery);
       }
     },
     [fetchFileDiff, workspaceId],
@@ -595,7 +650,11 @@ export function ChatPanel({
       return;
     }
     handledInspectRequests.current.add(inspectFileRequest.id);
-    openFile(inspectFileRequest.path, inspectFileRequest.mode ?? 'edit');
+    openFile(
+      inspectFileRequest.path,
+      inspectFileRequest.mode ?? 'edit',
+      inspectFileRequest.diffQuery,
+    );
   }, [inspectFileRequest, openFile, workspaceId]);
 
   const closeFileTab = (id: string): void => {
@@ -625,7 +684,7 @@ export function ChatPanel({
       ),
     );
     if (mode === 'diff' && file.diffStatus === 'unknown') {
-      fetchFileDiff(file.id, file.path);
+      fetchFileDiff(file.id, file.path, file.diffQuery ?? undefined);
     }
   };
 
@@ -886,8 +945,21 @@ export function ChatPanel({
       </div>
       {activeFile ? (
         <FileViewer
+          key={activeFile.id}
           file={activeFile}
           onModeChange={(mode) => setFileMode(activeFile, mode)}
+          onRevealFile={() =>
+            activeFile.source === 'plan'
+              ? invoke('file:revealInFinder', {
+                  source: 'plan',
+                  path: activeFile.path,
+                })
+              : invoke('file:revealInFinder', {
+                  source: 'workspace',
+                  workspaceId: workspaceId!,
+                  path: activeFile.path,
+                })
+          }
         />
       ) : (
         <>
@@ -932,7 +1004,15 @@ export function ChatPanel({
             workspaceId={workspaceId}
             contextId={activeContext?.id}
             turns={contextTurns}
-            onSend={(prompt, attachments, mode, harness, model, effort) =>
+            onSend={(
+              prompt,
+              attachments,
+              mode,
+              harness,
+              model,
+              effort,
+              displayPrompt,
+            ) =>
               sendTurn(
                 prompt,
                 attachments,
@@ -942,6 +1022,7 @@ export function ChatPanel({
                 model,
                 effort,
                 activeContextId,
+                displayPrompt,
               )
             }
             onInterrupt={interrupt}

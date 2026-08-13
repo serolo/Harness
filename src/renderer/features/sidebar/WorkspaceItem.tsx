@@ -15,8 +15,10 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Archive,
+  CircleQuestionMark,
   GitMerge,
   GitPullRequest,
+  GitPullRequestArrow,
   GitPullRequestClosed,
   GitPullRequestDraft,
   LoaderCircle,
@@ -43,25 +45,19 @@ function PullRequestStateIcon({
   pullRequest: PrSummary;
 }): React.JSX.Element {
   const state = pullRequest.state?.toLowerCase();
+  const queueState = pullRequest.mergeQueueState?.toLowerCase();
   const common = {
     'aria-label': `Pull request #${pullRequest.number}`,
     'data-testid': 'workspace-pr-icon',
   };
 
-  if (pullRequest.draft) {
-    return (
-      <GitPullRequestDraft
-        {...common}
-        className="h-5 w-5 shrink-0 text-warning"
-        aria-label={`${common['aria-label']} is draft`}
-      />
-    );
-  }
+  // Terminal lifecycle states win over draft/queue metadata, which can briefly remain
+  // true in cached GitHub payloads after a PR is closed or merged.
   if (state === 'merged') {
     return (
       <GitMerge
         {...common}
-        className="h-5 w-5 shrink-0 text-accent"
+        className="h-5 w-5 shrink-0 text-pr-merged"
         aria-label={`${common['aria-label']} is merged`}
       />
     );
@@ -70,15 +66,42 @@ function PullRequestStateIcon({
     return (
       <GitPullRequestClosed
         {...common}
-        className="h-5 w-5 shrink-0 text-danger"
+        className="h-5 w-5 shrink-0 text-pr-closed"
         aria-label={`${common['aria-label']} is closed`}
+      />
+    );
+  }
+  if (state === 'queued' || queueState !== undefined) {
+    return (
+      <GitPullRequestArrow
+        {...common}
+        className="h-5 w-5 shrink-0 text-pr-queued"
+        aria-label={`${common['aria-label']} is queued for merge`}
+      />
+    );
+  }
+  if (pullRequest.draft) {
+    return (
+      <GitPullRequestDraft
+        {...common}
+        className="h-5 w-5 shrink-0 text-pr-draft"
+        aria-label={`${common['aria-label']} is draft`}
+      />
+    );
+  }
+  if (state !== 'open') {
+    return (
+      <CircleQuestionMark
+        {...common}
+        className="h-5 w-5 shrink-0 text-fg-3"
+        aria-label={`${common['aria-label']} has unknown state`}
       />
     );
   }
   return (
     <GitPullRequest
       {...common}
-      className="h-5 w-5 shrink-0 text-success"
+      className="h-5 w-5 shrink-0 text-pr-open"
       aria-label={`${common['aria-label']} is open`}
     />
   );
@@ -135,6 +158,8 @@ export function WorkspaceItem({
   );
   const isArchived = workspace.status === 'archived';
   const { data: pullRequest } = useQuery({
+    // Shared with the Git view so the sidebar and toolbar deduplicate the same live PR
+    // lookup. Branch/number revisions prevent a renamed branch from reusing stale data.
     queryKey: [
       'workspace-pr',
       workspace.id,
@@ -147,7 +172,15 @@ export function WorkspaceItem({
       })) ?? null,
     enabled: !isArchived,
     retry: false,
-    staleTime: 60_000,
+    // GitHub changes PR lifecycle and merge-queue state outside the app. Poll only the
+    // selected, non-terminal row; all rows refresh when the desktop window focuses.
+    staleTime: 15_000,
+    refetchInterval: (query) => {
+      const state = query.state.data?.state?.toLowerCase();
+      if (state === 'closed' || state === 'merged') return false;
+      return isSelected ? 60_000 : false;
+    },
+    refetchOnWindowFocus: true,
   });
   const [contextPoint, setContextPoint] = useState<{
     x: number;

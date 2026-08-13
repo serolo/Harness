@@ -29,6 +29,9 @@
   preserves the legacy hidden proposal-block protocol. An autonomous provider turn is deferred
   until Harness has a non-recursive ephemeral-turn abstraction; do not run curation through the
   ordinary persisted supervisor lifecycle.
+- Post-turn reconciliation is eligible only when detached Git snapshots prove a net
+  pre-turn-to-post-turn repository change outside `plans/**`. Provider `file_edit` events and
+  proposal blocks are never sufficient evidence; plan mode is ineligible.
 - ZIP imports are secret-scanned and converted to pending proposals. Only proposal acceptance
   may write, lint, catalog, log, stage, and commit canonical files. ZIP inflation is asynchronous
   and output-bounded; normalized paths must be unique. Import normalization adds missing `type`

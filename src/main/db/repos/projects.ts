@@ -7,6 +7,12 @@ import { v7 as uuidv7 } from 'uuid';
 import type { Project } from '@shared/models';
 import type { AppDatabase } from '../index';
 import type { ProjectsTable } from '../schema';
+import { allocateProjectDirectoryName } from '../../paths';
+
+export interface StoredProject extends Project {
+  /** Stable app-owned directory name; internal and intentionally absent from IPC types. */
+  directoryName: string;
+}
 
 /** Fields a caller supplies to create a project; id + createdAt are generated. */
 export interface CreateProjectInput {
@@ -14,10 +20,11 @@ export interface CreateProjectInput {
   originUrl: string;
   defaultBranch: string;
   repoPath: string;
+  directoryName?: string;
 }
 
 /** Map a DB row to the shared `Project` DTO (snake_case → camelCase). */
-function rowToProject(row: ProjectsTable): Project {
+function rowToProject(row: ProjectsTable): StoredProject {
   return {
     id: row.id,
     name: row.name,
@@ -25,6 +32,7 @@ function rowToProject(row: ProjectsTable): Project {
     defaultBranch: row.default_branch,
     repoPath: row.repo_path,
     createdAt: row.created_at,
+    directoryName: row.directory_name ?? row.id,
   };
 }
 
@@ -37,7 +45,10 @@ export class ProjectsRepo {
   constructor(private readonly db: AppDatabase) {}
 
   /** Insert a new project and return the created DTO. */
-  async create(input: CreateProjectInput): Promise<Project> {
+  async create(input: CreateProjectInput): Promise<StoredProject> {
+    const existingDirectoryNames = input.directoryName
+      ? []
+      : (await this.list()).map((project) => project.directoryName);
     const row: ProjectsTable = {
       id: uuidv7(),
       name: input.name,
@@ -45,6 +56,9 @@ export class ProjectsRepo {
       default_branch: input.defaultBranch,
       repo_path: input.repoPath,
       created_at: Date.now(),
+      directory_name:
+        input.directoryName ??
+        allocateProjectDirectoryName(input.name, existingDirectoryNames),
     };
 
     await this.db.insertInto('projects').values(row).execute();
@@ -52,7 +66,7 @@ export class ProjectsRepo {
   }
 
   /** Fetch a project by id, or `null` if none exists. */
-  async getById(id: string): Promise<Project | null> {
+  async getById(id: string): Promise<StoredProject | null> {
     const row = await this.db
       .selectFrom('projects')
       .selectAll()
@@ -62,7 +76,7 @@ export class ProjectsRepo {
   }
 
   /** List all projects, newest first (UUIDv7 is time-sortable, so id DESC works). */
-  async list(): Promise<Project[]> {
+  async list(): Promise<StoredProject[]> {
     const rows = await this.db
       .selectFrom('projects')
       .selectAll()

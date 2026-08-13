@@ -46,6 +46,13 @@
   --info: #5b8cff;
   --info-muted: rgba(91, 140, 255, 0.14);
 
+  /* ---- Pull requests (GitHub lifecycle colors) ---- */
+  --pr-open: #3fb950;
+  --pr-merged: #a371f7;
+  --pr-closed: #f85149;
+  --pr-queued: #d29922;
+  --pr-draft: var(--fg-3);
+
   /* ---- Diff ---- */
   --diff-add-bg: rgba(63, 185, 96, 0.12);
   --diff-add-accent: #3fb960;
@@ -112,6 +119,13 @@
   --danger-muted: rgba(214, 58, 68, 0.09);
   --info: #0967c6;
   --info-muted: rgba(9, 103, 198, 0.1);
+
+  /* ---- Pull requests (GitHub lifecycle colors) ---- */
+  --pr-open: #1a7f37;
+  --pr-merged: #8250df;
+  --pr-closed: #cf222e;
+  --pr-queued: #9a6700;
+  --pr-draft: var(--fg-3);
 
   --diff-add-bg: rgba(31, 157, 77, 0.1);
   --diff-add-accent: #1f9d4d;

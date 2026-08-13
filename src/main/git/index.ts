@@ -390,9 +390,14 @@ function toGitError(e: unknown, fallbackCmd: string): AppError {
     command?: string;
   };
 
-  const message =
-    asExeca.shortMessage ?? (e instanceof Error ? e.message : 'git error');
   const stderr = asExeca.stderr ?? '';
+  // Execa's short message only says that the process exited non-zero. Git's stderr
+  // contains the actionable reason (missing ref, occupied directory, checked-out
+  // branch), so surface it while retaining the generic text as a fallback.
+  const message =
+    stderr.trim() ||
+    asExeca.shortMessage ||
+    (e instanceof Error ? e.message : 'git error');
   const cmd = asExeca.command ?? fallbackCmd;
 
   return new AppError('git', message, { stderr, cmd });
@@ -992,6 +997,20 @@ export class GitService {
       ? ['-C', repoPath, 'worktree', 'add', worktreePath, '-b', branch, baseRef]
       : ['-C', repoPath, 'worktree', 'add', worktreePath, branch];
 
+    try {
+      await gitExeca(args);
+    } catch (e) {
+      throw toGitError(e, `git ${args.join(' ')}`);
+    }
+  }
+
+  /** Repair linked-worktree metadata after app-owned directories are moved. */
+  async repairWorktrees(
+    repoPath: string,
+    worktreePaths: string[],
+  ): Promise<void> {
+    if (worktreePaths.length === 0) return;
+    const args = ['-C', repoPath, 'worktree', 'repair', ...worktreePaths];
     try {
       await gitExeca(args);
     } catch (e) {

@@ -63,6 +63,15 @@ describe('AppLayout structure', () => {
     expect(screen.getByTestId('center-pane')).toContainElement(
       screen.getByTestId('workspace-title'),
     );
+    expect(screen.getByTestId('center-pane')).toHaveClass('min-w-[560px]');
+    expect(screen.getByTestId('left-pane')).toHaveClass(
+      'min-w-[240px]',
+      'shrink-0',
+    );
+    expect(screen.getByTestId('right-pane')).toHaveClass(
+      'min-w-[240px]',
+      'shrink-0',
+    );
     expect(
       screen.getByText('Select a workspace to begin.'),
     ).toBeInTheDocument();
@@ -134,6 +143,33 @@ describe('AppLayout structure', () => {
       key: 'ArrowLeft',
     });
     expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '376px' });
+  });
+
+  it('stops a side-pane resize when the center reaches its minimum width', () => {
+    render(
+      <Providers>
+        <AppLayout />
+      </Providers>,
+    );
+
+    vi.spyOn(
+      screen.getByTestId('left-pane'),
+      'getBoundingClientRect',
+    ).mockReturnValue({ width: 280 } as DOMRect);
+    vi.spyOn(
+      screen.getByTestId('center-pane'),
+      'getBoundingClientRect',
+    ).mockReturnValue({ width: 600 } as DOMRect);
+
+    fireEvent.mouseDown(screen.getByTestId('left-resize-handle'), {
+      clientX: 280,
+    });
+    fireEvent.mouseMove(window, { clientX: 500 });
+    fireEvent.mouseUp(window);
+
+    expect(screen.getByTestId('left-pane')).toHaveStyle({ width: '320px' });
+    expect(screen.getByTestId('center-pane')).toHaveClass('min-w-[560px]');
+    expect(screen.getByTestId('right-pane')).toHaveStyle({ width: '360px' });
   });
 
   it('resizes the stacked Git, tasks, and terminal work panes', () => {

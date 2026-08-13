@@ -30,6 +30,7 @@ export interface ProjectsTable {
   default_branch: string; // TEXT NOT NULL
   repo_path: string; // TEXT NOT NULL
   created_at: number; // INTEGER NOT NULL — epoch millis
+  directory_name: string | null; // stable filesystem-safe name, migration 0017
 }
 
 export interface ProjectSettingsTable {

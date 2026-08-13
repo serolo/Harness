@@ -3,8 +3,12 @@
 // the always-visible file list.
 
 import { useEffect, useState } from 'react';
-import { Eye } from 'lucide-react';
-import { Button } from '@renderer/components/ui';
+import { useQuery } from '@tanstack/react-query';
+import { Eye, GitPullRequest } from 'lucide-react';
+import type { PrSummary } from '@shared/github';
+import type { DiffQuery } from '@shared/review';
+import { Button, PanelTab, PanelTabBar } from '@renderer/components/ui';
+import { invoke } from '@renderer/ipc';
 import { FileTree } from './FileTree';
 import { DiffView } from './DiffView';
 import { CommentRail } from './CommentRail';
@@ -14,14 +18,39 @@ import { WorkspaceFileTree } from './WorkspaceFileTree';
 
 export interface DiffPanelProps {
   workspaceId: string | null;
-  onInspectFile?: (path: string) => void;
+  workspaceBranch?: string | null;
+  workspacePrNumber?: number | null;
+  onInspectFile?: (
+    path: string,
+    comparison?: Omit<DiffQuery, 'workspaceId'>,
+  ) => void;
 }
 
 export function DiffPanel({
   workspaceId,
+  workspaceBranch = null,
+  workspacePrNumber = null,
   onInspectFile,
 }: DiffPanelProps): React.JSX.Element {
   const [view, setView] = useState<'all' | 'changes'>('changes');
+  const { data: pullRequest } = useQuery<PrSummary | null>({
+    queryKey: ['workspace-pr', workspaceId, workspaceBranch, workspacePrNumber],
+    queryFn: async () => {
+      if (!workspaceId) return null;
+      return (await invoke('github:getWorkspacePr', { workspaceId })) ?? null;
+    },
+    enabled: workspaceId !== null,
+    retry: false,
+    staleTime: 15_000,
+    // DiffPanel is the selected workspace's persistent observer. Keep live PR and
+    // merge-queue state fresh even when the collapsible sidebar is unmounted.
+    refetchInterval: (query) => {
+      const state = query.state.data?.state?.toLowerCase();
+      if (state === 'closed' || state === 'merged') return false;
+      return 60_000;
+    },
+    refetchOnWindowFocus: true,
+  });
   const {
     diffSet,
     selectedPath,
@@ -63,60 +92,75 @@ export function DiffPanel({
       className="relative flex h-full min-h-0 flex-col bg-surface-app"
       data-testid="diff-panel"
     >
-      <header
-        className="flex h-12 shrink-0 items-end gap-1 border-b border-border-1 bg-surface-panel px-3"
-        data-testid="git-changes-header"
+      <PanelTabBar
+        label="Git views"
+        testId="git-changes-header"
+        actions={
+          <>
+            {pullRequest?.url ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-fg-2"
+                data-testid="git-open-pr"
+                onClick={() => {
+                  void invoke('github:openPrUrl', {
+                    url: pullRequest.url,
+                  }).catch(() => {
+                    window.alert(
+                      'Failed to open the pull request in your browser.',
+                    );
+                  });
+                }}
+              >
+                <GitPullRequest className="h-4 w-4" aria-hidden="true" />
+                Open PR
+              </Button>
+            ) : null}
+            {view === 'changes' ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-fg-2"
+                  data-testid="agent-review"
+                  onClick={() => void runReview()}
+                >
+                  <Eye className="h-4 w-4" aria-hidden="true" />
+                  Review
+                </Button>
+                <CommitFilter
+                  info={menuInfo}
+                  scope={scope}
+                  onTargetRefChange={setTargetRef}
+                  onScopeChange={setScope}
+                />
+              </>
+            ) : null}
+          </>
+        }
       >
-        <button
-          type="button"
-          aria-pressed={view === 'all'}
-          className={`mb-1 h-8 shrink-0 rounded-3 px-3 text-xs font-medium transition-colors ${
-            view === 'all' ? 'bg-bg-3 text-fg-1' : 'text-fg-3 hover:text-fg-1'
-          }`}
+        <PanelTab
+          active={view === 'all'}
           onClick={() => {
             selectFile(null);
             setView('all');
           }}
         >
           All files
-        </button>
-        <button
-          type="button"
-          className={`mb-1 flex h-8 shrink-0 items-center gap-2 rounded-3 px-3 text-xs font-medium transition-colors ${
-            view === 'changes'
-              ? 'bg-bg-3 text-fg-1'
-              : 'text-fg-3 hover:text-fg-1'
-          }`}
-          aria-pressed={view === 'changes'}
+        </PanelTab>
+        <PanelTab
+          active={view === 'changes'}
           onClick={() => {
             selectFile(null);
             setView('changes');
           }}
         >
-          Changes <span className="text-fg-2">{files.length}</span>
-        </button>
-
-        {view === 'changes' ? (
-          <div className="ml-auto flex h-11 items-center gap-1 pb-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-fg-2"
-              data-testid="agent-review"
-              onClick={() => void runReview()}
-            >
-              <Eye className="h-4 w-4" aria-hidden="true" />
-              Review
-            </Button>
-            <CommitFilter
-              info={menuInfo}
-              scope={scope}
-              onTargetRefChange={setTargetRef}
-              onScopeChange={setScope}
-            />
-          </div>
-        ) : null}
-      </header>
+          <span className="flex items-center gap-2">
+            Changes <span className="text-fg-2">{files.length}</span>
+          </span>
+        </PanelTab>
+      </PanelTabBar>
 
       {view === 'all' ? (
         <div className="min-h-0 flex-1">
@@ -166,7 +210,12 @@ export function DiffPanel({
             selectedPath={selectedPath}
             onSelect={(path) => {
               if (onInspectFile) {
-                onInspectFile(path);
+                onInspectFile(
+                  path,
+                  menuInfo
+                    ? { targetRef: menuInfo.targetRef, scope }
+                    : undefined,
+                );
                 return;
               }
               selectFile(path);

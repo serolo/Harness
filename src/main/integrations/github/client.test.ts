@@ -62,6 +62,7 @@ function makeClient(
   opts: {
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
+    log?: (message: string) => void;
   } = {},
 ): GithubClient {
   const sleep: (ms: number) => Promise<void> =
@@ -70,7 +71,7 @@ function makeClient(
   return new GithubClient(
     octokit as unknown as Octokit,
     { owner: 'o', name: 'r' },
-    { sleep, now },
+    { sleep, now, log: opts.log },
   );
 }
 
@@ -129,7 +130,7 @@ describe('parseOwnerName', () => {
 });
 
 describe('GithubClient PRs', () => {
-  it('getPr maps the matching PR to a PrSummary', async () => {
+  it('getPr remains open-only for PR creation semantics', async () => {
     const octokit = fakeOctokit();
     octokit.request.mockResolvedValueOnce(ok([restPull()]));
     const client = makeClient(octokit);
@@ -161,6 +162,45 @@ describe('GithubClient PRs', () => {
 
     await expect(client.getPr('no-pr-branch')).resolves.toBeNull();
   });
+
+  it.each([
+    {
+      apiState: 'closed',
+      mergedAt: null,
+      expectedState: 'closed',
+    },
+    {
+      apiState: 'closed',
+      mergedAt: '2026-01-02T00:00:00Z',
+      expectedState: 'merged',
+    },
+  ])(
+    'getLatestPr discovers a branch PR whose lifecycle state is $expectedState',
+    async ({ apiState, mergedAt, expectedState }) => {
+      const octokit = fakeOctokit();
+      octokit.request.mockResolvedValueOnce(
+        ok([restPull({ state: apiState, merged_at: mergedAt })]),
+      );
+      const client = makeClient(octokit);
+
+      await expect(client.getLatestPr('feature-branch')).resolves.toMatchObject(
+        {
+          number: 42,
+          state: expectedState,
+        },
+      );
+      expect(octokit.request).toHaveBeenCalledWith(
+        'GET /repos/{owner}/{repo}/pulls',
+        expect.objectContaining({
+          head: 'o:feature-branch',
+          state: 'all',
+          sort: 'updated',
+          direction: 'desc',
+          per_page: 1,
+        }),
+      );
+    },
+  );
 
   it('getPrByNumber maps a full PR detail to a PrSummary', async () => {
     const octokit = fakeOctokit();
@@ -288,6 +328,63 @@ describe('GithubClient PRs', () => {
       number: 42,
       state: 'merged',
     });
+  });
+
+  it('getPrQueueState maps an active merge queue entry', async () => {
+    const octokit = fakeOctokit();
+    octokit.graphql.mockResolvedValueOnce({
+      repository: {
+        pullRequest: {
+          mergeQueueEntry: { state: 'AWAITING_CHECKS' },
+        },
+      },
+    });
+    const client = makeClient(octokit);
+
+    await expect(client.getPrQueueState(42)).resolves.toBe('AWAITING_CHECKS');
+    expect(octokit.graphql).toHaveBeenCalledTimes(1);
+    const [query, variables] = octokit.graphql.mock.calls[0];
+    expect(query).toMatch(/mergeQueueEntry\s*\{\s*state\s*\}/);
+    expect(variables).toMatchObject({ owner: 'o', name: 'r', number: 42 });
+  });
+
+  it.each([
+    { repository: null },
+    { repository: { pullRequest: null } },
+    { repository: { pullRequest: { mergeQueueEntry: null } } },
+  ])(
+    'getPrQueueState returns null when no active queue entry exists',
+    async (response) => {
+      const octokit = fakeOctokit();
+      octokit.graphql.mockResolvedValueOnce(response);
+      const client = makeClient(octokit);
+
+      await expect(client.getPrQueueState(42)).resolves.toBeNull();
+    },
+  );
+
+  it('preserves the REST summary when merge-queue enrichment fails', async () => {
+    const octokit = fakeOctokit();
+    octokit.graphql.mockRejectedValueOnce(
+      httpError(502, {}, 'merge queue unavailable'),
+    );
+    const log = vi.fn();
+    const client = makeClient(octokit, { log });
+    const pullRequest = {
+      number: 42,
+      url: 'https://github.com/o/r/pull/42',
+      title: 'Add feature',
+      draft: false,
+      mergeableState: 'clean',
+      state: 'closed',
+    };
+
+    await expect(client.enrichPrWithQueueState(pullRequest)).resolves.toBe(
+      pullRequest,
+    );
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('merge-queue state unavailable for PR #42'),
+    );
   });
 });
 

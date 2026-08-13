@@ -55,6 +55,13 @@ export default {
           muted: 'var(--danger-muted)',
         },
         info: { DEFAULT: 'var(--info)', muted: 'var(--info-muted)' },
+        pr: {
+          open: 'var(--pr-open)',
+          merged: 'var(--pr-merged)',
+          closed: 'var(--pr-closed)',
+          queued: 'var(--pr-queued)',
+          draft: 'var(--pr-draft)',
+        },
 
         // Diff
         diff: {

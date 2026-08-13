@@ -7,7 +7,7 @@
 
 import { useEffect } from 'react';
 import { ChevronDown, ChevronUp, Plus } from 'lucide-react';
-import { IconButton } from '@renderer/components/ui';
+import { IconButton, PanelTab, PanelTabBar } from '@renderer/components/ui';
 import { TerminalTab } from './TerminalTab';
 import { useTerminalStore, type TerminalTabInfo } from './terminalStore';
 
@@ -61,69 +61,57 @@ export function TerminalPanel({
       data-testid="terminal-panel"
       data-collapsed={collapsed}
     >
-      {/* Compact tab bar: tabs, add terminal, and collapse/expand. */}
-      <div
-        className="flex h-10 shrink-0 items-center gap-1 border-0 bg-surface-panel px-2"
-        data-testid="terminal-tabs"
+      <PanelTabBar
+        label="Terminals"
+        testId="terminal-tabs"
+        actions={
+          <>
+            <IconButton
+              label="New terminal"
+              size="sm"
+              data-testid="terminal-new"
+              onClick={() => openTab(workspaceId)}
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+            </IconButton>
+            <IconButton
+              label={
+                collapsed
+                  ? 'Expand terminal section'
+                  : 'Collapse terminal section'
+              }
+              size="sm"
+              data-testid="terminal-collapse-toggle"
+              aria-expanded={!collapsed}
+              onClick={onToggleCollapsed}
+            >
+              {collapsed ? (
+                <ChevronUp className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="h-4 w-4" aria-hidden="true" />
+              )}
+            </IconButton>
+          </>
+        }
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {tabs.length === 0 ? (
-            <span className="px-1 text-xs text-fg-3">No terminals open.</span>
-          ) : (
-            tabs.map((tab) => {
-              const active = tab.id === activeTabId;
-              return (
-                <div
-                  key={tab.id}
-                  className={`flex shrink-0 items-center gap-1 rounded-2 px-2 py-0.5 text-xs transition-colors duration-fast ease-out ${
-                    active ? 'bg-bg-4 text-fg-1' : 'text-fg-2 hover:bg-bg-3'
-                  }`}
-                >
-                  <button
-                    type="button"
-                    data-testid={`terminal-tab-${tab.id}`}
-                    onClick={() => setActiveTab(workspaceId, tab.id)}
-                  >
-                    {tab.title}
-                  </button>
-                  <button
-                    type="button"
-                    className="text-fg-3 hover:text-fg-1"
-                    data-testid={`terminal-tab-close-${tab.id}`}
-                    aria-label={`Close ${tab.title}`}
-                    onClick={() => closeTab(workspaceId, tab.id)}
-                  >
-                    ×
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
-        <IconButton
-          label="New terminal"
-          size="sm"
-          data-testid="terminal-new"
-          onClick={() => openTab(workspaceId)}
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-        </IconButton>
-        <IconButton
-          label={
-            collapsed ? 'Expand terminal section' : 'Collapse terminal section'
-          }
-          size="sm"
-          data-testid="terminal-collapse-toggle"
-          aria-expanded={!collapsed}
-          onClick={onToggleCollapsed}
-        >
-          {collapsed ? (
-            <ChevronUp className="h-4 w-4" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="h-4 w-4" aria-hidden="true" />
-          )}
-        </IconButton>
-      </div>
+        {tabs.length === 0 ? (
+          <span className="px-1 text-xs text-fg-3">No terminals open.</span>
+        ) : (
+          tabs.map((tab) => (
+            <PanelTab
+              key={tab.id}
+              active={tab.id === activeTabId}
+              testId={`terminal-tab-${tab.id}`}
+              closeLabel={`Close ${tab.title}`}
+              closeTestId={`terminal-tab-close-${tab.id}`}
+              onClick={() => setActiveTab(workspaceId, tab.id)}
+              onClose={() => closeTab(workspaceId, tab.id)}
+            >
+              {tab.title}
+            </PanelTab>
+          ))
+        )}
+      </PanelTabBar>
 
       {/* Keep surfaces mounted while collapsed so live shells survive expansion. */}
       <div

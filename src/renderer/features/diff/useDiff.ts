@@ -59,7 +59,9 @@ export interface UseDiff {
  */
 export function useDiff(workspaceId: string | null): UseDiff {
   const [menuInfo, setMenuInfo] = useState<DiffMenuInfo | null>(null);
-  const [scope, setScopeState] = useState<DiffScope>({ kind: 'all' });
+  const [scope, setScopeState] = useState<DiffScope>({
+    kind: 'uncommitted',
+  });
   const diffSet = useDiffStore((s) =>
     workspaceId ? (s.diffSetByWorkspace[workspaceId] ?? null) : null,
   );
@@ -96,7 +98,7 @@ export function useDiff(workspaceId: string | null): UseDiff {
     if (!workspaceId) return;
     let active = true;
     setMenuInfo(null);
-    setScopeState({ kind: 'all' });
+    setScopeState({ kind: 'uncommitted' });
 
     void invoke('diff:menu', { workspaceId })
       .then((res) => {
@@ -212,7 +214,7 @@ export function useDiff(workspaceId: string | null): UseDiff {
       const next = await invoke('diff:menu', { workspaceId, targetRef });
       clearFileDiffs(workspaceId);
       setSelectedPathAction(workspaceId, null);
-      setScopeState({ kind: 'all' });
+      setScopeState({ kind: 'uncommitted' });
       setMenuInfo(next);
     },
     [workspaceId, clearFileDiffs, setSelectedPathAction],

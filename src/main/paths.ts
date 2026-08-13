@@ -162,32 +162,63 @@ export function codexInstallDir(): string {
   return join(toolsDir(), 'codex', 'current');
 }
 
-/** `<userData>/projects/<id>/` — root for a single project's on-disk state. */
-export function projectDir(id: string): string {
-  return ensureDir(join(rootDirectory(), 'projects', id));
+/** Convert a display name into a safe, readable managed-project directory base. */
+export function projectDirectoryBaseName(name: string): string {
+  const normalized = name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 63)
+    .replace(/-+$/g, '');
+  return normalized || 'project';
 }
 
-/** `<userData>/projects/<id>/repo` — the base clone (default-branch checkout). */
-export function repoDir(id: string): string {
-  return ensureDir(join(projectDir(id), 'repo'));
+/** Allocate a case-insensitively unique name without exceeding 63 characters. */
+export function allocateProjectDirectoryName(
+  projectName: string,
+  existing: Iterable<string>,
+): string {
+  const taken = new Set(
+    [...existing].map((name) => name.normalize('NFKC').toLowerCase()),
+  );
+  const base = projectDirectoryBaseName(projectName);
+  if (!taken.has(base)) return base;
+  for (let suffix = 2; ; suffix += 1) {
+    const tail = `-${suffix}`;
+    const candidate = `${base.slice(0, 63 - tail.length).replace(/-+$/g, '')}${tail}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
-/** `<userData>/projects/<id>/worktrees/` — parent dir holding per-workspace worktrees. */
-export function worktreesDir(id: string): string {
-  return ensureDir(join(projectDir(id), 'worktrees'));
+/** `<managed-root>/projects/<project-name>/` — one project's app-owned state. */
+export function projectDir(directoryName: string): string {
+  return ensureDir(join(rootDirectory(), 'projects', directoryName));
 }
 
-/** `<userData>/projects/<id>/worktrees/<name>` — one workspace's git worktree. */
-export function worktreeDir(id: string, name: string): string {
-  return ensureDir(join(worktreesDir(id), name));
+/** `<managed-root>/projects/<project-name>/repo` — the base clone. */
+export function repoDir(directoryName: string): string {
+  return ensureDir(join(projectDir(directoryName), 'repo'));
 }
 
-/** `<userData>/projects/<id>/knowledge` — canonical OKF v0.1 Git bundle. */
-export function knowledgeDir(id: string): string {
-  return ensureDir(join(projectDir(id), 'knowledge'));
+/** `<managed-root>/projects/<project-name>/worktrees/` — linked worktrees. */
+export function worktreesDir(directoryName: string): string {
+  return ensureDir(join(projectDir(directoryName), 'worktrees'));
 }
 
-/** `<userData>/projects/<id>/knowledge-proposals` — isolated review proposals. */
-export function knowledgeProposalsDir(id: string): string {
-  return ensureDir(join(projectDir(id), 'knowledge-proposals'));
+/** `<managed-root>/projects/<project-name>/worktrees/<name>` — one worktree. */
+export function worktreeDir(directoryName: string, name: string): string {
+  return ensureDir(join(worktreesDir(directoryName), name));
+}
+
+/** `<managed-root>/projects/<project-name>/knowledge` — canonical OKF bundle. */
+export function knowledgeDir(directoryName: string): string {
+  return ensureDir(join(projectDir(directoryName), 'knowledge'));
+}
+
+/** `<managed-root>/projects/<project-name>/knowledge-proposals` — review state. */
+export function knowledgeProposalsDir(directoryName: string): string {
+  return ensureDir(join(projectDir(directoryName), 'knowledge-proposals'));
 }

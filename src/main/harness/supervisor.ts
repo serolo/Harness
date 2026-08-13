@@ -59,6 +59,13 @@ export interface HarnessSupervisorDeps {
   notifications: NotificationService;
   /** Persist the agent's current todo set when a `todo_update` event arrives (best-effort). */
   onTodoUpdate?: (workspaceId: string, todos: Todo[]) => void;
+  /** Capture any state needed to evaluate the turn before the adapter can mutate files.
+   *  Best-effort: failure must not prevent the turn from starting. */
+  onTurnStart?: (
+    workspaceId: string,
+    turnId: string,
+    opts: StartTurnOpts,
+  ) => Promise<void>;
   /** Fired at the end of finalize (after status flip) so Phase-4 can snapshot a checkpoint +
    *  recompute the diff off the finalize path (best-effort — must not throw). */
   onTurnEnd?: (workspaceId: string, turnId: string) => void;
@@ -156,6 +163,13 @@ export class HarnessSupervisor {
     // (which flips to needs_attention) can never be overtaken by a late `working`.
     this.registry.set(workspaceId, live);
     await this.deps.setStatus(workspaceId, 'working');
+    if (this.deps.onTurnStart) {
+      try {
+        await this.deps.onTurnStart(workspaceId, turnId, opts);
+      } catch (err) {
+        this.logHookError('onTurnStart', workspaceId, err);
+      }
+    }
 
     // The sink the adapter pushes into: forward to the renderer, then enqueue the
     // persistence/finalize step on the per-turn write chain (order-preserving).
@@ -386,7 +400,7 @@ export class HarnessSupervisor {
   /** A best-effort side-hook (`onTodoUpdate`/`onTurnEnd`) threw synchronously — never
    *  propagate it into the supervisor; log and move on. */
   private logHookError(
-    hook: 'onTodoUpdate' | 'onTurnEnd',
+    hook: 'onTodoUpdate' | 'onTurnStart' | 'onTurnEnd',
     workspaceId: string,
     err: unknown,
   ): void {

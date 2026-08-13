@@ -45,6 +45,8 @@ export interface PrSummary {
   mergeableState: string;
   /** GitHub PR state (open/closed/merged), when known. */
   state?: string;
+  /** Active GitHub merge-queue entry state, when the PR is currently queued. */
+  mergeQueueState?: string;
 }
 
 /** A row in the project's PR list (`github:listPrs`). */

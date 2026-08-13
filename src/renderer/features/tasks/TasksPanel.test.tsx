@@ -239,6 +239,10 @@ describe('TasksPanel rendering', () => {
     expect(
       await screen.findByTestId('task-state-scheduled'),
     ).toBeInTheDocument();
+    expect(screen.getByTestId('workspace-tools-header')).toHaveAttribute(
+      'data-ui',
+      'panel-tab-bar',
+    );
     expect(screen.getByTestId('task-state-missed')).toBeInTheDocument();
   });
 

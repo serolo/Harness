@@ -71,6 +71,7 @@ function installApi(opts: {
   plans?: Record<string, string>;
   fileDiffs?: Record<string, FileDiff>;
   tasks?: ScheduledTask[];
+  revealError?: Error;
 }): ApiStub {
   // Fake `chat_contexts` persistence, keyed by workspace — mirrors main's
   // `ChatContextsRepo`: `list` bootstraps a single 'Untitled' tab the first time a
@@ -174,7 +175,7 @@ function installApi(opts: {
         content: opts.plans?.[path] ?? '',
       });
     }
-    if (channel === 'diff:file') {
+    if (channel === 'diff:file' || channel === 'diff:fileQuery') {
       const path = (req as { path?: string } | undefined)?.path ?? '';
       return Promise.resolve(
         opts.fileDiffs?.[path] ?? {
@@ -187,6 +188,11 @@ function installApi(opts: {
     }
     if (channel === 'workspace:pickFile') {
       return Promise.resolve('/tmp/ws/src/app.ts');
+    }
+    if (channel === 'file:revealInFinder') {
+      return opts.revealError
+        ? Promise.reject(opts.revealError)
+        : Promise.resolve(undefined);
     }
     if (channel === 'slash:list')
       return Promise.resolve(
@@ -635,7 +641,12 @@ describe('ChatPanel reconstruction', () => {
     expect(await screen.findByText('world')).toBeInTheDocument();
     const userMessage = screen.getByTestId('chat-user-message');
     expect(userMessage).toHaveTextContent('Please inspect this');
-    expect(userMessage).toHaveClass('justify-end');
+    expect(userMessage).toHaveClass('min-w-0', 'justify-end');
+    expect(screen.getByTestId('chat-user-message-bubble')).toHaveClass(
+      'min-w-0',
+      'max-w-[82%]',
+      '[overflow-wrap:anywhere]',
+    );
     expect(screen.getByTestId('tool-card')).toBeInTheDocument();
     expect(screen.getByTestId('todo-list')).toBeInTheDocument();
     const divider = screen.getByTestId('turn-divider');
@@ -1520,6 +1531,196 @@ describe('ChatPanel reconstruction', () => {
     );
     expect(screen.getByTestId('chat-file-tab')).toHaveTextContent(
       'ChatPanel.tsx',
+    );
+  });
+
+  it('reveals the displayed workspace file in Finder from its header pill', async () => {
+    const path = 'src/renderer/features/chat/ChatPanel.tsx';
+    const api = installApi({ files: { [path]: 'export const file = true;' } });
+    render(
+      <ChatPanel
+        workspaceId="ws1"
+        inspectFileRequest={{ id: 71, workspaceId: 'ws1', path }}
+      />,
+    );
+
+    const reveal = await screen.findByRole('button', {
+      name: `Reveal ${path} in Finder`,
+    });
+    fireEvent.click(reveal);
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('file:revealInFinder', {
+        source: 'workspace',
+        workspaceId: 'ws1',
+        path,
+      }),
+    );
+    expect(screen.getByTestId('chat-file-viewer')).toHaveTextContent(
+      'export const file = true;',
+    );
+  });
+
+  it('uses the Git panel comparison when opening a file in diff mode', async () => {
+    const path = 'src/pending.ts';
+    const api = installApi({
+      files: { [path]: 'new value\n' },
+      fileDiffs: {
+        [path]: {
+          path,
+          oldContent: 'old value\n',
+          newContent: 'new value\n',
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: ['-old value', '+new value'],
+            },
+          ],
+        },
+      },
+    });
+
+    render(
+      <ChatPanel
+        workspaceId="ws1"
+        inspectFileRequest={{
+          id: 74,
+          workspaceId: 'ws1',
+          path,
+          mode: 'diff',
+          diffQuery: {
+            targetRef: 'origin/main',
+            scope: { kind: 'uncommitted' },
+          },
+        }}
+      />,
+    );
+
+    await screen.findByTestId('chat-file-viewer');
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('diff:fileQuery', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/main',
+        scope: { kind: 'uncommitted' },
+        path,
+      }),
+    );
+    expect(api.invoke).not.toHaveBeenCalledWith('diff:file', {
+      workspaceId: 'ws1',
+      path,
+    });
+  });
+
+  it('keeps the preview open and shows a non-blocking Finder error', async () => {
+    const path = 'src/deleted.ts';
+    installApi({
+      files: { [path]: 'cached preview' },
+      revealError: new Error('file no longer exists'),
+    });
+    render(
+      <ChatPanel
+        workspaceId="ws1"
+        inspectFileRequest={{ id: 72, workspaceId: 'ws1', path }}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: `Reveal ${path} in Finder`,
+      }),
+    );
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'file no longer exists',
+    );
+    expect(screen.getByTestId('chat-file-viewer')).toHaveTextContent(
+      'cached preview',
+    );
+  });
+
+  it('routes displayed Claude plans through the confined plan reveal source', async () => {
+    const path = '/Users/test/.claude/plans/release.md';
+    const api = installApi({ plans: { [path]: '# Release plan' } });
+    render(
+      <ChatPanel
+        workspaceId="ws1"
+        inspectFileRequest={{ id: 73, workspaceId: 'ws1', path }}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: `Reveal ${path} in Finder`,
+      }),
+    );
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('file:revealInFinder', {
+        source: 'plan',
+        path,
+      }),
+    );
+  });
+
+  it('resolves a summary basename from the full path used earlier in the turn', async () => {
+    const fullPath = 'apps/backend/src/app/booking/approvals/Base.spec.ts';
+    const history: ChatHistory = {
+      turns: [
+        {
+          id: 't-summary-file-link',
+          workspaceId: 'ws1',
+          idx: 0,
+          status: 'completed',
+          sessionId: 'sess-1',
+          mode: 'default',
+          startedAt: 1,
+          endedAt: 2,
+          inputTokens: null,
+          outputTokens: null,
+          contextId: 'ctx-ws1-1',
+          events: [
+            {
+              id: 'edit-1',
+              turnId: 't-summary-file-link',
+              kind: 'file_edit',
+              ts: 1,
+              event: { kind: 'file_edit', path: fullPath, op: 'modify' },
+            },
+            {
+              id: 'summary-1',
+              turnId: 't-summary-file-link',
+              kind: 'text',
+              ts: 2,
+              event: {
+                kind: 'text',
+                delta: 'Updated `Base.spec.ts` and verified the change.',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const api = installApi({
+      history,
+      files: { [fullPath]: 'describe("approval", () => {});' },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Open Base.spec.ts' }),
+    );
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('workspace:readFile', {
+        workspaceId: 'ws1',
+        path: fullPath,
+      }),
+    );
+    expect(await screen.findByTestId('chat-file-viewer')).toHaveTextContent(
+      'describe("approval", () => {});',
     );
   });
 
@@ -2571,6 +2772,39 @@ describe('ChatPanel streaming', () => {
     expect(screen.getByTestId('composer-context')).not.toHaveAttribute('title');
   });
 
+  it('keeps Send visible by collapsing secondary actions into a width-aware menu', async () => {
+    installApi({});
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const composer = await screen.findByTestId('composer');
+    const prompt = composer.querySelector('.composer-responsive');
+    expect(prompt).toBeInTheDocument();
+    expect(screen.getByTestId('composer-cost-inline')).toHaveClass(
+      'composer-wide-only',
+    );
+    expect(screen.getByTestId('composer-context-inline')).toHaveClass(
+      'composer-wide-only',
+    );
+    expect(screen.getByTestId('composer-more-icon')).toHaveClass(
+      'composer-narrow-only',
+    );
+    expect(screen.getByTestId('composer-send')).toHaveClass('shrink-0');
+
+    fireEvent.click(screen.getByTestId('composer-plus'));
+
+    expect(await screen.findByTestId('composer-plus-menu')).toContainElement(
+      screen.getByTestId('composer-overflow-cost'),
+    );
+    expect(screen.getByTestId('composer-overflow-cost')).toHaveTextContent(
+      'Estimated API cost',
+    );
+    expect(screen.getByTestId('composer-overflow-context')).toHaveTextContent(
+      'Context',
+    );
+    expect(screen.getByTestId('composer-plus-attachment')).toBeInTheDocument();
+  });
+
   it('expands slash commands with args before starting a turn', async () => {
     const stream = vi.fn(
       (
@@ -2596,8 +2830,11 @@ describe('ChatPanel streaming', () => {
     expect(stream.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         prompt: 'Fix checks\n\nrerun CI',
+        displayPrompt: '/fix-checks rerun CI',
       }),
     );
+    expect(screen.getByText('/fix-checks rerun CI')).toBeInTheDocument();
+    expect(screen.queryByText('Fix checks')).not.toBeInTheDocument();
   });
 
   it('sends native skill slash invocations directly to the model', async () => {
@@ -2633,7 +2870,10 @@ describe('ChatPanel streaming', () => {
 
     await waitFor(() => expect(stream).toHaveBeenCalled());
     expect(stream.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ prompt: '/harness-plan W2BT-1234' }),
+      expect.objectContaining({
+        prompt: '/harness-plan W2BT-1234',
+        displayPrompt: '/harness-plan W2BT-1234',
+      }),
     );
   });
 });

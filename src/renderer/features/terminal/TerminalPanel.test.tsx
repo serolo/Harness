@@ -49,6 +49,10 @@ describe('TerminalPanel', () => {
     );
 
     expect(await screen.findByText('Terminal 1')).toBeInTheDocument();
+    expect(screen.getByTestId('terminal-tabs')).toHaveAttribute(
+      'data-ui',
+      'panel-tab-bar',
+    );
     expect(screen.queryByText('Big Terminal')).not.toBeInTheDocument();
     expect(screen.queryByTestId('run-panel')).not.toBeInTheDocument();
     expect(useTerminalStore.getState().tabsByWorkspace.ws1).toHaveLength(1);

@@ -618,6 +618,15 @@ export interface Commands {
     req: { workspaceId: string; path: string };
     res: WorkspaceDirectoryEntry[];
   };
+  /** Open a validated github.com pull-request URL in the system browser. */
+  'github:openPrUrl': { req: { url: string }; res: void };
+  /** Reveal a validated, currently displayed file in the operating-system file manager. */
+  'file:revealInFinder': {
+    req:
+      | { source: 'workspace'; workspaceId: string; path: string }
+      | { source: 'plan'; path: string };
+    res: void;
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -790,6 +799,8 @@ export interface TurnStartArg {
   sessionId?: string | null;
   /** The chat tab this turn belongs to. Omitted turns are orphaned (context_id = NULL). */
   contextId?: string;
+  /** User-facing text when `prompt` contains an expanded slash command. APPEND-ONLY. */
+  displayPrompt?: string;
 }
 
 /**

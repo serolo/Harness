@@ -68,6 +68,7 @@ export interface UseChat {
     model?: string,
     effort?: ReasoningEffort,
     contextId?: string,
+    displayPrompt?: string,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
   clear: () => Promise<void>;
@@ -133,6 +134,7 @@ export function useChat(workspaceId: string | null): UseChat {
       model?: string,
       effort?: ReasoningEffort,
       contextId?: string,
+      displayPrompt?: string,
     ): Promise<void> => {
       if (!workspaceId) return;
       const startedAt = Date.now();
@@ -144,7 +146,7 @@ export function useChat(workspaceId: string | null): UseChat {
         '',
         {
           kind: 'user_message',
-          text: prompt,
+          text: displayPrompt ?? prompt,
         },
         startedAt,
         mode,
@@ -164,6 +166,7 @@ export function useChat(workspaceId: string | null): UseChat {
           effort,
           ...(sessionId === undefined ? {} : { sessionId }),
           ...(contextId === undefined ? {} : { contextId }),
+          ...(displayPrompt === undefined ? {} : { displayPrompt }),
         };
         await subscribeStream('turn:start', turnArg, (chunk) => {
           if (chunk.kind === 'started') {

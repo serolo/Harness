@@ -25,6 +25,9 @@ Three channel kinds, all typed in `@shared/ipc` (the frozen contract):
   renderer sees a typed error on the stream. Async work goes in an IIFE.
 - Adding a command/stream = **append** to the map in `@shared/ipc` (never reorder) + add the handler
   or producer here + the preload bridge + the renderer client.
+- **Attachment previews never accept a path from the renderer.** They resolve a workspace/turn/index
+  back to persisted attachment metadata, allowlist bounded raster files, and re-encode thumbnails
+  as PNG data URLs. Keep this narrower than a general renderer-readable-file capability.
 
 ## Phase 3 divergence (decision 2 — reserved events stay unused)
 The reserved broadcast events `Events['pty:data']` and `Events['run:log']` are **typed but never

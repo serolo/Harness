@@ -2051,6 +2051,59 @@ export function registerIpc(ctx: AppContext): void {
       });
   });
 
+  // attachment:imagePreview — the renderer identifies an attachment already
+  // persisted on this workspace turn. It can never supply an authoritative path.
+  handle('attachment:imagePreview', async (req) => {
+    if (req === null || typeof req !== 'object') {
+      throw new AppError('invalid_input', 'invalid attachment preview request');
+    }
+    assertWorkspaceId(req.workspaceId);
+    if (typeof req.turnId !== 'string' || req.turnId === '') {
+      throw new AppError('invalid_input', 'turnId is required');
+    }
+    if (!Number.isInteger(req.attachmentIndex) || req.attachmentIndex < 0) {
+      throw new AppError('invalid_input', 'attachmentIndex is invalid');
+    }
+
+    const turn = (await ctx.recorder.history(req.workspaceId)).find(
+      (candidate) => candidate.id === req.turnId,
+    );
+    const attachmentEvent = turn?.events.find(
+      ({ event }) => event.kind === 'user_attachments',
+    )?.event;
+    const attachment =
+      attachmentEvent?.kind === 'user_attachments'
+        ? attachmentEvent.attachments[req.attachmentIndex]
+        : undefined;
+    if (
+      attachment?.type !== 'image' ||
+      !/\.(?:png|jpe?g|gif|webp|bmp)$/i.test(attachment.path)
+    ) {
+      throw new AppError('not_found', 'image attachment is unavailable');
+    }
+
+    const imageStat = await stat(attachment.path).catch(() => null);
+    if (
+      imageStat === null ||
+      !imageStat.isFile() ||
+      imageStat.size > 25 * 1024 * 1024
+    ) {
+      throw new AppError('not_found', 'image attachment is unavailable');
+    }
+    const preview = await nativeImage.createThumbnailFromPath(attachment.path, {
+      width: 1024,
+      height: 1024,
+    });
+    if (preview.isEmpty()) {
+      throw new AppError('not_found', 'image attachment is unavailable');
+    }
+    const png = preview.toPNG();
+    if (png.byteLength > 8 * 1024 * 1024) {
+      throw new AppError('invalid_input', 'image attachment is too large');
+    }
+    return { dataUrl: `data:image/png;base64,${png.toString('base64')}` };
+  });
+
   // file:revealInFinder — reveal only files already confined to a workspace or the
   // Claude plans directory. The renderer never supplies an authoritative root.
   handle('file:revealInFinder', async (req) => {

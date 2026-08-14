@@ -236,6 +236,12 @@ export class HarnessSupervisor {
         kind: 'user_message',
         text: opts.displayPrompt ?? opts.prompt,
       });
+      if (opts.attachments.length > 0) {
+        await this.deps.recorder.record(turnId, {
+          kind: 'user_attachments',
+          attachments: opts.attachments,
+        });
+      }
       if (opts.knowledgeSources?.length) {
         wrapped.push({
           kind: 'knowledge_context',

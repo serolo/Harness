@@ -72,6 +72,8 @@ function installApi(opts: {
   fileDiffs?: Record<string, FileDiff>;
   tasks?: ScheduledTask[];
   revealError?: Error;
+  imagePreviews?: Record<string, string>;
+  pickedFile?: string;
 }): ApiStub {
   // Fake `chat_contexts` persistence, keyed by workspace — mirrors main's
   // `ChatContextsRepo`: `list` bootstraps a single 'Untitled' tab the first time a
@@ -187,12 +189,22 @@ function installApi(opts: {
       );
     }
     if (channel === 'workspace:pickFile') {
-      return Promise.resolve('/tmp/ws/src/app.ts');
+      return Promise.resolve(opts.pickedFile ?? '/tmp/ws/src/app.ts');
     }
     if (channel === 'file:revealInFinder') {
       return opts.revealError
         ? Promise.reject(opts.revealError)
         : Promise.resolve(undefined);
+    }
+    if (channel === 'attachment:imagePreview') {
+      const { turnId, attachmentIndex } = req as {
+        turnId: string;
+        attachmentIndex: number;
+      };
+      const dataUrl = opts.imagePreviews?.[`${turnId}:${attachmentIndex}`];
+      return dataUrl
+        ? Promise.resolve({ dataUrl })
+        : Promise.reject(new Error('preview unavailable'));
     }
     if (channel === 'slash:list')
       return Promise.resolve(
@@ -684,6 +696,64 @@ describe('ChatPanel reconstruction', () => {
     expect(
       screen.queryByTestId('composer-model-switch-notice'),
     ).not.toBeInTheDocument();
+  });
+
+  it('renders a persisted user image attachment when history is rebuilt', async () => {
+    const dataUrl = 'data:image/png;base64,cHJldmlldw==';
+    const history: ChatHistory = {
+      turns: [
+        {
+          id: 't-image',
+          workspaceId: 'ws1',
+          idx: 0,
+          status: 'completed',
+          sessionId: 'sess-image',
+          mode: 'default',
+          startedAt: 1,
+          endedAt: 2,
+          inputTokens: 1,
+          outputTokens: 1,
+          contextId: 'ctx-ws1-1',
+          events: [
+            {
+              id: 'e-image-message',
+              turnId: 't-image',
+              kind: 'user_message',
+              ts: 1,
+              event: { kind: 'user_message', text: 'Use this screenshot' },
+            },
+            {
+              id: 'e-image-attachment',
+              turnId: 't-image',
+              kind: 'user_attachments',
+              ts: 2,
+              event: {
+                kind: 'user_attachments',
+                attachments: [{ type: 'image', path: '/private/a/screen.png' }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const api = installApi({
+      history,
+      imagePreviews: { 't-image:0': dataUrl },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const image = await screen.findByRole('img', { name: 'screen.png' });
+    expect(image).toHaveAttribute('src', dataUrl);
+    expect(screen.getByTestId('chat-user-attachments')).toHaveTextContent(
+      'screen.png',
+    );
+    expect(screen.queryByText('/private/a/screen.png')).not.toBeInTheDocument();
+    expect(api.invoke).toHaveBeenCalledWith('attachment:imagePreview', {
+      workspaceId: 'ws1',
+      turnId: 't-image',
+      attachmentIndex: 0,
+    });
   });
 
   it('uses the latest provider usage snapshot instead of summing resumed contexts', async () => {
@@ -2732,6 +2802,55 @@ describe('ChatPanel streaming', () => {
       'app.ts',
     );
     expect(screen.queryByTestId('composer-plus-menu')).toBeNull();
+  });
+
+  it('classifies a picked raster image and shows it in the live user turn', async () => {
+    const dataUrl = 'data:image/png;base64,cHJldmlldw==';
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: 'turn-live',
+          sessionId: 'session',
+          mode: 'default',
+        });
+        return Promise.resolve();
+      },
+    );
+    const api = installApi({
+      pickedFile: '/tmp/ws/screenshot.PNG',
+      imagePreviews: { 'turn-live:0': dataUrl },
+      stream,
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    fireEvent.click(await screen.findByTestId('composer-plus'));
+    fireEvent.click(await screen.findByTestId('composer-plus-attachment'));
+    expect(await screen.findByTestId('attachment-bar')).toHaveTextContent(
+      'screenshot.PNG',
+    );
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Look at this' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() =>
+      expect(api.stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          attachments: [{ type: 'image', path: '/tmp/ws/screenshot.PNG' }],
+        }),
+        expect.any(Function),
+        expect.anything(),
+      ),
+    );
+    expect(
+      await screen.findByRole('img', { name: 'screenshot.PNG' }),
+    ).toHaveAttribute('src', dataUrl);
   });
 
   it('provides tooltip labels on composer controls', async () => {

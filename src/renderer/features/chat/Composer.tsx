@@ -973,14 +973,19 @@ export function Composer({
     setAttachments((prev) => {
       const existingPaths = new Set(
         prev.flatMap((attachment) =>
-          attachment.type === 'file' ? [attachment.path] : [],
+          attachment.type === 'file' || attachment.type === 'image'
+            ? [attachment.path]
+            : [],
         ),
       );
       const additions: Attachment[] = [];
       for (const path of paths) {
         if (path.trim() === '' || existingPaths.has(path)) continue;
         existingPaths.add(path);
-        additions.push({ type: 'file', path });
+        additions.push({
+          type: /\.(?:png|jpe?g|gif|webp|bmp)$/i.test(path) ? 'image' : 'file',
+          path,
+        });
       }
       return additions.length === 0 ? prev : [...prev, ...additions];
     });

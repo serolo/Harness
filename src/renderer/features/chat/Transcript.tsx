@@ -21,6 +21,7 @@ import { ErrorCard } from './ErrorCard';
 import { TurnDivider } from './TurnDivider';
 import { LimitResumeOffer } from './LimitResumeOffer';
 import { UserMessage } from './UserMessage';
+import { UserAttachments } from './UserAttachments';
 import { QuestionCard } from './QuestionCard';
 import { PermissionCard } from './PermissionCard';
 import { permissionFromToolResult } from './toolResults';
@@ -220,6 +221,8 @@ function transcriptScrollKey(turns: RenderedTurn[]): string {
               return `text:${event.delta.length}`;
             case 'user_message':
               return `user:${event.text.length}`;
+            case 'user_attachments':
+              return `attachments:${event.attachments.length}`;
             case 'activity':
               return `activity:${event.title}:${event.detail ?? ''}`;
             case 'tool_use':
@@ -245,6 +248,7 @@ function renderEvent(
   event: AgentEvent,
   key: string,
   workspaceId?: string | null,
+  turnId?: string,
   toolResult?: unknown,
   onOpenFile?: (path: string) => void,
   onAnswerQuestion?: (answer: string) => void,
@@ -253,6 +257,15 @@ function renderEvent(
   switch (event.kind) {
     case 'user_message':
       return <UserMessage key={key} text={visibleUserText(event.text)} />;
+    case 'user_attachments':
+      return (
+        <UserAttachments
+          key={key}
+          workspaceId={workspaceId}
+          turnId={turnId ?? ''}
+          attachments={event.attachments}
+        />
+      );
     case 'question_request':
       return (
         <QuestionCard
@@ -710,6 +723,7 @@ function renderEvents(
           event,
           `${keyPrefix}-${absoluteIndex}`,
           workspaceId,
+          keyPrefix,
           toolResults.get(absoluteIndex),
           onOpenFile,
           onAnswerQuestion,
@@ -742,6 +756,7 @@ function renderEvents(
         event,
         `${keyPrefix}-${absoluteIndex}`,
         workspaceId,
+        keyPrefix,
         toolResults.get(absoluteIndex),
         onOpenFile,
         onAnswerQuestion,
@@ -767,6 +782,7 @@ function renderEvents(
       latestText,
       `${keyPrefix}-${absoluteIndex}`,
       workspaceId,
+      keyPrefix,
       toolResults.get(absoluteIndex),
       onOpenFile,
       onAnswerQuestion,
@@ -782,6 +798,7 @@ function renderEvents(
       event,
       `${keyPrefix}-${index}`,
       workspaceId,
+      keyPrefix,
       toolResults.get(index),
       onOpenFile,
       onAnswerQuestion,

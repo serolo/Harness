@@ -16,10 +16,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const capturedHandlers = new Map<string, unknown>();
-const { openExternal, showItemInFolder } = vi.hoisted(() => ({
-  openExternal: vi.fn(),
-  showItemInFolder: vi.fn(),
-}));
+const { openExternal, showItemInFolder, createThumbnailFromPath } = vi.hoisted(
+  () => ({
+    openExternal: vi.fn(),
+    showItemInFolder: vi.fn(),
+    createThumbnailFromPath: vi.fn(),
+  }),
+);
 vi.mock('electron', () => {
   const noop = (): void => {};
   const app = new Proxy(
@@ -42,6 +45,7 @@ vi.mock('electron', () => {
       removeAllListeners: noop,
     },
     MessageChannelMain: class {},
+    nativeImage: { createThumbnailFromPath },
     shell: { openExternal, showItemInFolder },
   };
 });
@@ -68,6 +72,7 @@ beforeEach(() => {
   openExternal.mockReset();
   openExternal.mockResolvedValue(undefined);
   showItemInFolder.mockReset();
+  createThumbnailFromPath.mockReset();
 });
 
 afterEach(() => {
@@ -275,6 +280,65 @@ describe('file:revealInFinder', () => {
         ).rejects.toThrow();
         expect(showItemInFolder).not.toHaveBeenCalled();
       }
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('attachment:imagePreview', () => {
+  it('derives the path from the persisted turn and returns a re-encoded thumbnail', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'harness-attachment-'));
+    const imagePath = join(fixtureRoot, 'screen.png');
+    await writeFile(imagePath, 'not decoded by the mocked nativeImage');
+    createThumbnailFromPath.mockResolvedValue({
+      isEmpty: () => false,
+      toPNG: () => Buffer.from('preview'),
+    });
+
+    try {
+      registerIpc({
+        recorder: {
+          history: async (workspaceId: string) => [
+            {
+              id: 'turn-1',
+              workspaceId,
+              events: [
+                {
+                  event: {
+                    kind: 'user_attachments',
+                    attachments: [{ type: 'image', path: imagePath }],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      } as unknown as AppContext);
+
+      await expect(
+        invoke('attachment:imagePreview', {
+          workspaceId: 'ws1',
+          turnId: 'turn-1',
+          attachmentIndex: 0,
+        }),
+      ).resolves.toEqual({
+        dataUrl: 'data:image/png;base64,cHJldmlldw==',
+      });
+      expect(createThumbnailFromPath).toHaveBeenCalledWith(imagePath, {
+        width: 1024,
+        height: 1024,
+      });
+
+      createThumbnailFromPath.mockClear();
+      await expect(
+        invoke('attachment:imagePreview', {
+          workspaceId: 'ws1',
+          turnId: 'another-turn',
+          attachmentIndex: 0,
+        }),
+      ).rejects.toThrow('image attachment is unavailable');
+      expect(createThumbnailFromPath).not.toHaveBeenCalled();
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });
     }

@@ -154,6 +154,12 @@ export function useChat(workspaceId: string | null): UseChat {
         model,
         contextId,
       );
+      if (attachments.length > 0) {
+        appendEvent(workspaceId, {
+          kind: 'user_attachments',
+          attachments,
+        });
+      }
       setBusy(workspaceId, true);
       try {
         const turnArg = {

@@ -627,6 +627,11 @@ export interface Commands {
       | { source: 'plan'; path: string };
     res: void;
   };
+  /** Load a bounded raster preview from an attachment already persisted on this turn. */
+  'attachment:imagePreview': {
+    req: { workspaceId: string; turnId: string; attachmentIndex: number };
+    res: { dataUrl: string };
+  };
 }
 
 export type CommandChannel = keyof Commands;

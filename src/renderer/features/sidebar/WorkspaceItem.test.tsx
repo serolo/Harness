@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createQueryClient } from '@renderer/app/providers';
 import type { Workspace } from '@shared/models';
@@ -25,13 +31,16 @@ const WORKSPACE: Workspace = {
   location: 'worktree',
 };
 
-function renderItem(workspace: Workspace = WORKSPACE): void {
-  render(
+function renderItem(
+  workspace: Workspace = WORKSPACE,
+  isSelected = false,
+): ReturnType<typeof render> {
+  return render(
     <QueryClientProvider client={createQueryClient()}>
       <ul>
         <WorkspaceItem
           workspace={workspace}
-          isSelected={false}
+          isSelected={isSelected}
           onSelect={() => {}}
         />
       </ul>
@@ -45,6 +54,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   delete (window as unknown as { api?: unknown }).api;
   delete (navigator as unknown as { clipboard?: unknown }).clipboard;
@@ -77,13 +87,15 @@ describe('WorkspaceItem context menu', () => {
   });
 
   it.each([
-    ['open', false, 'Pull request #42 is open'],
-    ['open', true, 'Pull request #42 is draft'],
-    ['closed', false, 'Pull request #42 is closed'],
-    ['merged', false, 'Pull request #42 is merged'],
+    ['open', false, 'Pull request #42 is open', 'text-pr-open'],
+    ['open', true, 'Pull request #42 is draft', 'text-pr-draft'],
+    ['closed', false, 'Pull request #42 is closed', 'text-pr-closed'],
+    ['merged', false, 'Pull request #42 is merged', 'text-pr-merged'],
+    ['closed', true, 'Pull request #42 is closed', 'text-pr-closed'],
+    ['merged', true, 'Pull request #42 is merged', 'text-pr-merged'],
   ])(
     'shows the linked pull request icon for %s (draft: %s)',
-    async (state, draft, accessibleName) => {
+    async (state, draft, accessibleName, colorClass) => {
       const invoke = vi.fn((channel: string) =>
         Promise.resolve(
           channel === 'github:getWorkspacePr'
@@ -106,14 +118,195 @@ describe('WorkspaceItem context menu', () => {
 
       renderItem({ ...WORKSPACE, prNumber: 42 });
 
-      expect(
-        await screen.findByLabelText(accessibleName),
-      ).toBeInTheDocument();
+      expect(await screen.findByLabelText(accessibleName)).toHaveClass(
+        colorClass,
+      );
       expect(invoke).toHaveBeenCalledWith('github:getWorkspacePr', {
         workspaceId: WORKSPACE.id,
       });
     },
   );
+
+  it.each([
+    [
+      { state: 'open', mergeQueueState: 'awaiting_checks' },
+      'Pull request #42 is queued for merge',
+      'text-pr-queued',
+    ],
+    [
+      { state: 'queued' },
+      'Pull request #42 is queued for merge',
+      'text-pr-queued',
+    ],
+    [
+      { state: 'unexpected-api-state' },
+      'Pull request #42 has unknown state',
+      'text-fg-3',
+    ],
+  ])(
+    'renders a distinct accessible icon for nonstandard PR state %#',
+    async (pr, accessibleName, colorClass) => {
+      const invoke = vi.fn((channel: string) =>
+        Promise.resolve(
+          channel === 'github:getWorkspacePr'
+            ? {
+                number: 42,
+                url: 'https://github.com/acme/repo/pull/42',
+                title: 'Improve workspace list',
+                draft: false,
+                mergeableState: 'unknown',
+                ...pr,
+              }
+            : undefined,
+        ),
+      );
+      (window as unknown as { api: unknown }).api = {
+        invoke,
+        on: vi.fn(),
+        stream: vi.fn(),
+      };
+
+      renderItem({ ...WORKSPACE, prNumber: 42 });
+
+      expect(await screen.findByLabelText(accessibleName)).toHaveClass(
+        colorClass,
+      );
+    },
+  );
+
+  it('uses a distinct icon shape for every pull request state', async () => {
+    let response: {
+      state: string;
+      draft: boolean;
+      mergeQueueState?: string;
+    } = { state: 'open', draft: false };
+    const invoke = vi.fn((channel: string) =>
+      Promise.resolve(
+        channel === 'github:getWorkspacePr'
+          ? {
+              number: 42,
+              url: 'https://github.com/acme/repo/pull/42',
+              title: 'Improve workspace list',
+              draft: response.draft,
+              mergeableState: 'unknown',
+              state: response.state,
+              mergeQueueState: response.mergeQueueState,
+            }
+          : undefined,
+      ),
+    );
+    (window as unknown as { api: unknown }).api = {
+      invoke,
+      on: vi.fn(),
+      stream: vi.fn(),
+    };
+
+    const cases = [
+      { state: 'open', draft: false },
+      { state: 'open', draft: true },
+      {
+        state: 'open',
+        draft: false,
+        mergeQueueState: 'awaiting_checks',
+      },
+      { state: 'closed', draft: false },
+      { state: 'merged', draft: false },
+      { state: 'unexpected-api-state', draft: false },
+    ];
+    const iconShapes = new Set<string>();
+
+    for (const testCase of cases) {
+      response = testCase;
+      const view = renderItem({ ...WORKSPACE, prNumber: 42 });
+      const icon = await screen.findByTestId('workspace-pr-icon');
+      iconShapes.add(icon.innerHTML);
+      view.unmount();
+    }
+
+    expect(iconShapes.size).toBe(cases.length);
+  });
+
+  it('refreshes a mounted row when the live pull request state changes', async () => {
+    vi.useFakeTimers();
+    let state = 'open';
+    const invoke = vi.fn((channel: string) =>
+      Promise.resolve(
+        channel === 'github:getWorkspacePr'
+          ? {
+              number: 42,
+              url: 'https://github.com/acme/repo/pull/42',
+              title: 'Improve workspace list',
+              draft: false,
+              mergeableState: 'unknown',
+              state,
+            }
+          : undefined,
+      ),
+    );
+    (window as unknown as { api: unknown }).api = {
+      invoke,
+      on: vi.fn(),
+      stream: vi.fn(),
+    };
+
+    renderItem({ ...WORKSPACE, prNumber: 42 }, true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(
+      screen.getByLabelText('Pull request #42 is open'),
+    ).toBeInTheDocument();
+
+    state = 'closed';
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_001);
+      // TanStack Query schedules observer notifications after the refetch resolves.
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(invoke.mock.calls.length).toBeGreaterThan(1);
+    expect(
+      screen.getByLabelText('Pull request #42 is closed'),
+    ).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('does not poll live pull request state for an unselected row', async () => {
+    vi.useFakeTimers();
+    const invoke = vi.fn((channel: string) =>
+      Promise.resolve(
+        channel === 'github:getWorkspacePr'
+          ? {
+              number: 42,
+              url: 'https://github.com/acme/repo/pull/42',
+              title: 'Improve workspace list',
+              draft: false,
+              mergeableState: 'unknown',
+              state: 'open',
+            }
+          : undefined,
+      ),
+    );
+    (window as unknown as { api: unknown }).api = {
+      invoke,
+      on: vi.fn(),
+      stream: vi.fn(),
+    };
+
+    renderItem({ ...WORKSPACE, prNumber: 42 }, false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(
+      screen.getByLabelText('Pull request #42 is open'),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_001);
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
 
   it('discovers a pull request from the workspace branch without a stored PR number', async () => {
     const invoke = vi.fn((channel: string) =>

@@ -17,6 +17,7 @@ import { ProjectsRepo } from './projects';
 import { WorkspacesRepo } from './workspaces';
 import { TurnsRepo } from './turns';
 import { EventsRepo } from './events';
+import { ChatContextsRepo } from './chatContexts';
 
 // A UUIDv7 shape check: 8-4-4-4-12 hex with version nibble '7'.
 const UUID_V7 =
@@ -167,6 +168,66 @@ describe('TurnsRepo', () => {
     expect(await turns.listByWorkspace(wsId)).toEqual([]);
     expect(await turns.latestSessionId(wsId)).toBeUndefined();
     expect(await turns.nextIdx(wsId)).toBe(1);
+  });
+});
+
+describe('TurnsRepo contextId (migration 0016)', () => {
+  it('round-trips a contextId through create and read, and defaults to null when omitted', async () => {
+    db = openDb(dbFile);
+    const wsId = await seedWorkspace(db);
+    const turns = new TurnsRepo(db);
+    const context = await new ChatContextsRepo(db).create({
+      workspaceId: wsId,
+      label: 'Manual tab',
+    });
+
+    const owned = await turns.create({
+      workspaceId: wsId,
+      idx: 0,
+      status: 'completed',
+      contextId: context.id,
+    });
+    expect(owned.contextId).toBe(context.id);
+    expect((await turns.getById(owned.id))?.contextId).toBe(context.id);
+
+    // Omitted (task-owned/scheduler-fired turns) defaults to null, not undefined.
+    const unowned = await turns.create({
+      workspaceId: wsId,
+      idx: 1,
+      status: 'completed',
+    });
+    expect(unowned.contextId).toBeNull();
+    expect((await turns.getById(unowned.id))?.contextId).toBeNull();
+  });
+
+  it("listByWorkspace preserves each turn's contextId", async () => {
+    db = openDb(dbFile);
+    const wsId = await seedWorkspace(db);
+    const turns = new TurnsRepo(db);
+    const contexts = new ChatContextsRepo(db);
+    const contextA = await contexts.create({ workspaceId: wsId, label: 'A' });
+    const contextB = await contexts.create({ workspaceId: wsId, label: 'B' });
+
+    await turns.create({
+      workspaceId: wsId,
+      idx: 0,
+      status: 'completed',
+      contextId: contextA.id,
+    });
+    await turns.create({
+      workspaceId: wsId,
+      idx: 1,
+      status: 'completed',
+      contextId: contextB.id,
+    });
+    await turns.create({ workspaceId: wsId, idx: 2, status: 'completed' });
+
+    const list = await turns.listByWorkspace(wsId);
+    expect(list.map((t) => t.contextId)).toEqual([
+      contextA.id,
+      contextB.id,
+      null,
+    ]);
   });
 });
 

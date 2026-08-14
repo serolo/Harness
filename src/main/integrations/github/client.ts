@@ -25,6 +25,7 @@ import type {
   PrSummary,
   ReviewThread,
 } from '@shared/github';
+import { logger } from '../../logging';
 
 /** Upper bound on any single rate-limit / backoff sleep, so we never hang for long. */
 const MAX_BACKOFF_MS = 60_000;
@@ -50,6 +51,8 @@ export interface GithubClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Current epoch time in ms. Defaults to `Date.now`. */
   now?: () => number;
+  /** Token-safe diagnostic sink for optional-data fallbacks. */
+  log?: (message: string) => void;
 }
 
 // --- Local REST payload shapes (only the fields we map) ---------------------------------
@@ -126,6 +129,24 @@ interface ReviewThreadsGraphQL {
   } | null;
 }
 
+interface PullRequestQueueGraphQL {
+  repository: {
+    pullRequest: {
+      mergeQueueEntry: { state: string } | null;
+    } | null;
+  } | null;
+}
+
+const PULL_REQUEST_QUEUE_QUERY = `
+  query ($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        mergeQueueEntry { state }
+      }
+    }
+  }
+`;
+
 const REVIEW_THREADS_QUERY = `
   query ($owner: String!, $name: String!, $number: Int!) {
     repository(owner: $owner, name: $name) {
@@ -199,6 +220,7 @@ export class GithubClient {
   private readonly repo: string;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly log: (message: string) => void;
 
   /** Per-endpoint conditional-request cache: key → `{ etag, body }`. */
   private readonly etagCache = new Map<
@@ -220,6 +242,7 @@ export class GithubClient {
     this.owner = repo.owner;
     this.repo = repo.name;
     this.now = options.now ?? (() => Date.now());
+    this.log = options.log ?? ((message) => logger.debug(message));
     this.sleep =
       options.sleep ??
       ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -229,7 +252,8 @@ export class GithubClient {
 
   /**
    * The PR whose head is `owner:branch`, mapped to a {@link PrSummary}, or `null` when
-   * the branch has no open/closed PR. ETag-cached per branch.
+   * the branch has no open PR. ETag-cached per branch; creation workflows use this to
+   * avoid treating an older closed PR as the current open one.
    */
   async getPr(
     branch: string,
@@ -245,6 +269,23 @@ export class GithubClient {
     return first ? this.toPrSummary(first) : null;
   }
 
+  /** The most recently updated PR for a branch, including closed and merged PRs. */
+  async getLatestPr(branch: string): Promise<PrSummary | null> {
+    const data = await this.cachedGet<RestPull[]>(
+      `getLatestPr:${branch}`,
+      'GET /repos/{owner}/{repo}/pulls',
+      {
+        head: `${this.owner}:${branch}`,
+        state: 'all',
+        sort: 'updated',
+        direction: 'desc',
+        per_page: 1,
+      },
+    );
+    const first = data[0];
+    return first ? this.toPrSummary(first) : null;
+  }
+
   /** Fetch a PR by its number (full detail, so `mergeableState` is authoritative). */
   async getPrByNumber(number: number): Promise<PrSummary> {
     const pr = await this.plainRequest<RestPull>(
@@ -252,6 +293,37 @@ export class GithubClient {
       { pull_number: number },
     );
     return this.toPrSummary(pr);
+  }
+
+  /** Return the PR's active merge-queue state, or `null` when it is not queued. */
+  async getPrQueueState(number: number): Promise<string | null> {
+    const result = await this.runGraphql<PullRequestQueueGraphQL>(
+      PULL_REQUEST_QUEUE_QUERY,
+      { owner: this.owner, name: this.repo, number },
+    );
+    return result.repository?.pullRequest?.mergeQueueEntry?.state ?? null;
+  }
+
+  /**
+   * Best-effort merge-queue enrichment for sidebar summaries. The REST lifecycle state
+   * remains useful when GraphQL is unavailable or the server does not support queues.
+   */
+  async enrichPrWithQueueState(pullRequest: PrSummary): Promise<PrSummary> {
+    try {
+      const mergeQueueState = await this.getPrQueueState(pullRequest.number);
+      return mergeQueueState === null
+        ? pullRequest
+        : { ...pullRequest, mergeQueueState };
+    } catch (error) {
+      const detail =
+        error instanceof AppError
+          ? `${error.code}: ${error.message}`
+          : 'unknown error';
+      this.log(
+        `[github] merge-queue state unavailable for PR #${pullRequest.number}; using REST state (${detail})`,
+      );
+      return pullRequest;
+    }
   }
 
   /** Open a new pull request and return its summary. */

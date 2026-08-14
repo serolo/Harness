@@ -62,6 +62,13 @@ export interface HarnessSupervisorDeps {
   notifications: NotificationService;
   /** Persist the agent's current todo set when a `todo_update` event arrives (best-effort). */
   onTodoUpdate?: (workspaceId: string, todos: Todo[]) => void;
+  /** Capture any state needed to evaluate the turn before the adapter can mutate files.
+   *  Best-effort: failure must not prevent the turn from starting. */
+  onTurnStart?: (
+    workspaceId: string,
+    turnId: string,
+    opts: StartTurnOpts,
+  ) => Promise<void>;
   /** Fired at the end of finalize (after status flip) so Phase-4 can snapshot a checkpoint +
    *  recompute the diff off the finalize path (best-effort — must not throw). */
   onTurnEnd?: (workspaceId: string, turnId: string) => void;
@@ -168,6 +175,9 @@ export class HarnessSupervisor {
         mode: opts.mode,
         harness: harnessId,
         model: opts.model,
+        // Owning chat tab (validated at the IPC boundary); undefined for scheduler-fired
+        // turns, which stay unowned so task tabs keep reconstructing from `task:list`.
+        contextId: opts.contextId,
       });
     } catch (error) {
       this.starting.delete(workspaceId);
@@ -192,6 +202,13 @@ export class HarnessSupervisor {
       await this.safeEndTurn(turnId, 'error');
       throw error;
     }
+    if (this.deps.onTurnStart) {
+      try {
+        await this.deps.onTurnStart(workspaceId, turnId, opts);
+      } catch (err) {
+        this.logHookError('onTurnStart', workspaceId, err);
+      }
+    }
 
     // The sink the adapter pushes into: forward to the renderer, then enqueue the
     // persistence/finalize step on the per-turn write chain (order-preserving).
@@ -204,9 +221,9 @@ export class HarnessSupervisor {
         }
 
         const safeEvent: AgentEvent =
-            event.kind === 'error'
-                ? { ...event, message: sanitizeErrorMessage(event.message) }
-                : event;
+          event.kind === 'error'
+            ? { ...event, message: sanitizeErrorMessage(event.message) }
+            : event;
         // Provider metadata belongs in persistence, not in the visible transcript.
         if (safeEvent.kind !== 'model_info') {
           sink.push(safeEvent);
@@ -264,6 +281,12 @@ export class HarnessSupervisor {
         kind: 'user_message',
         text: opts.displayPrompt ?? opts.prompt,
       });
+      if (opts.attachments.length > 0) {
+        await this.deps.recorder.record(turnId, {
+          kind: 'user_attachments',
+          attachments: opts.attachments,
+        });
+      }
       if (opts.knowledgeSources?.length) {
         wrapped.push({
           kind: 'knowledge_context',
@@ -439,7 +462,7 @@ export class HarnessSupervisor {
   /** A best-effort side-hook (`onTodoUpdate`/`onTurnEnd`) threw synchronously — never
    *  propagate it into the supervisor; log and move on. */
   private logHookError(
-    hook: 'onTodoUpdate' | 'onTurnEnd',
+    hook: 'onTodoUpdate' | 'onTurnStart' | 'onTurnEnd',
     workspaceId: string,
     err: unknown,
   ): void {

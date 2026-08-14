@@ -17,7 +17,7 @@
 //   - Exactly one code path (`setStatus`) emits `workspace:status`.
 
 import { join, resolve } from 'node:path';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 
 import { AppError } from '@shared/errors';
 import type { CreateWorkspaceReq, Project, Workspace } from '@shared/models';
@@ -50,6 +50,17 @@ function sameFilesystemPath(left: string, right: string): boolean {
     // A stale Git registration can point at a missing path. Preserve a useful
     // lexical comparison without requiring either side to exist.
     return resolve(left) === resolve(right);
+  }
+}
+
+function worktreeDestinationIsOccupied(path: string): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    return !statSync(path).isDirectory() || readdirSync(path).length > 0;
+  } catch (error) {
+    // The destination can disappear between the existence check and inspection.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
   }
 }
 
@@ -266,7 +277,7 @@ export class WorkspaceManager {
     }
     let branch = requestedBranch ?? derivedSafeName;
     let worktreePath = join(
-      worktreesDir(project.id),
+      worktreesDir(project.directoryName),
       requestedWorktreeName ?? derivedSafeName,
     );
 
@@ -296,6 +307,13 @@ export class WorkspaceManager {
         // instead of asking Git to add its already-checked-out branch a second time.
         reuseManagedWorktree = true;
       } else {
+        if (worktreeDestinationIsOccupied(worktreePath)) {
+          throw new AppError(
+            'conflict',
+            `worktree folder already exists and is not empty: ${worktreePath}. Choose a different worktree name or move the existing folder.`,
+            { worktreePath },
+          );
+        }
         const branchWorktree = registered.find(
           (entry) => entry.branch === branch,
         );
@@ -755,7 +773,7 @@ export class WorkspaceManager {
       return (await this.deps.repos.workspaces.getById(id)) ?? ws;
     }
 
-    const worktreePath = join(worktreesDir(project.id), ws.name);
+    const worktreePath = join(worktreesDir(project.directoryName), ws.name);
     const exists = await this.deps.git.branchExists(
       project.repoPath,
       ws.branch,

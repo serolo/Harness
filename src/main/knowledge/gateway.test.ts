@@ -4,10 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 
-import {
-  ProjectKnowledgeGateway,
-  type KnowledgeToolResult,
-} from './gateway';
+import { ProjectKnowledgeGateway, type KnowledgeToolResult } from './gateway';
 
 let tempRoot: string;
 let projectRoot: string;
@@ -22,11 +19,7 @@ afterEach(async () => {
   await rm(tempRoot, { recursive: true, force: true });
 });
 
-function markdown(
-  title: string,
-  body: string,
-  status = 'canonical',
-): string {
+function markdown(title: string, body: string, status = 'canonical'): string {
   return `---\ntype: Component\ntitle: ${title}\nstatus: ${status}\n---\n\n# ${title}\n\n${body}\n`;
 }
 
@@ -47,7 +40,9 @@ function payload(result: KnowledgeToolResult): Record<string, unknown> {
 }
 
 function gateway(
-  overrides: Partial<ConstructorParameters<typeof ProjectKnowledgeGateway>[0]> = {},
+  overrides: Partial<
+    ConstructorParameters<typeof ProjectKnowledgeGateway>[0]
+  > = {},
 ): ProjectKnowledgeGateway {
   return new ProjectKnowledgeGateway({
     projectId: 'project-a',
@@ -130,8 +125,10 @@ describe('ProjectKnowledgeGateway search and confinement', () => {
       { path: 'components/linked.md', title: 'Outside', score: 0.98 },
       { path: 'index.md', title: 'Catalog', score: 0.97 },
     ]);
-    const result = await gateway({ provider: 'qmd', qmd: { search } })
-      .searchProjectKnowledge('deployment');
+    const result = await gateway({
+      provider: 'qmd',
+      qmd: { search },
+    }).searchProjectKnowledge('deployment');
 
     expect(payload(result).results).toEqual([
       expect.objectContaining({ path: 'components/local.md' }),
@@ -142,6 +139,58 @@ describe('ProjectKnowledgeGateway search and confinement', () => {
         root: await realpath(projectRoot),
       }),
     );
+  });
+
+  it('returns an accepted normalized page from QMD while excluding a non-canonical match', async () => {
+    await page(
+      projectRoot,
+      'components/imported.md',
+      'Imported component',
+      'Normalized ZIP knowledge is available after acceptance.',
+    );
+    await page(
+      projectRoot,
+      'research/experiment.md',
+      'Experiment',
+      'Normalized ZIP knowledge is still under research.',
+      'research',
+    );
+    const search = vi.fn(async () => [
+      {
+        path: 'components/imported.md',
+        title: 'Imported component',
+        score: 1,
+      },
+      {
+        path: 'research/experiment.md',
+        title: 'Experiment',
+        score: 0.99,
+      },
+    ]);
+    const subject = gateway({ provider: 'qmd', qmd: { search } });
+
+    const found = await subject.searchProjectKnowledge('normalized zip');
+    const read = await subject.readProjectKnowledge('components/imported.md');
+
+    expect(payload(found)).toMatchObject({
+      provider: 'qmd',
+      results: [
+        expect.objectContaining({
+          path: 'components/imported.md',
+          title: 'Imported component',
+        }),
+      ],
+    });
+    expect(read.isError).not.toBe(true);
+    expect(payload(read)).toMatchObject({
+      path: 'components/imported.md',
+      content: expect.stringContaining(
+        'Normalized ZIP knowledge is available after acceptance.',
+      ),
+    });
+    expect(
+      await subject.readProjectKnowledge('research/experiment.md'),
+    ).toMatchObject({ isError: true });
   });
 
   it('requires search before read and rejects reserved, absolute, and traversal paths', async () => {
@@ -158,7 +207,9 @@ describe('ProjectKnowledgeGateway search and confinement', () => {
       'components/payments.md',
     );
     expect(beforeSearch).toMatchObject({ isError: true });
-    expect(beforeSearch.content[0].text).toMatch(/search project knowledge first/i);
+    expect(beforeSearch.content[0].text).toMatch(
+      /search project knowledge first/i,
+    );
 
     await subject.searchProjectKnowledge('retry invoices');
     const allowed = await subject.readProjectKnowledge(
@@ -197,9 +248,7 @@ describe('ProjectKnowledgeGateway search and confinement', () => {
       'research',
     );
 
-    const result = await subject.readProjectKnowledge(
-      'components/payments.md',
-    );
+    const result = await subject.readProjectKnowledge('components/payments.md');
     expect(result).toMatchObject({ isError: true });
     expect(result.content[0].text).toMatch(/canonical.*not found/i);
   });
@@ -262,9 +311,9 @@ describe('ProjectKnowledgeGateway bounded reads and fallback', () => {
       );
       expect(result.isError, `${startLine}-${endLine}`).toBe(true);
     }
-    expect(subject.trace().filter((entry) => entry.operation === 'read')).toEqual(
-      [],
-    );
+    expect(
+      subject.trace().filter((entry) => entry.operation === 'read'),
+    ).toEqual([]);
   });
 
   it('enforces one cumulative 4000-token budget and truncates the final readable page', async () => {
@@ -301,8 +350,9 @@ describe('ProjectKnowledgeGateway bounded reads and fallback', () => {
     expect(second.isError).not.toBe(true);
     expect(payload(second).truncated).toBe(true);
     expect(reads).toHaveLength(2);
-    expect(trace.reduce((total, entry) => total + entry.contextTokens, 0))
-      .toBeLessThanOrEqual(4_000);
+    expect(
+      trace.reduce((total, entry) => total + entry.contextTokens, 0),
+    ).toBeLessThanOrEqual(4_000);
     expect(reads[1]).toMatchObject({
       path: 'components/beta.md',
       truncated: true,

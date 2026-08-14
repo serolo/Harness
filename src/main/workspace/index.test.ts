@@ -31,7 +31,7 @@ import { allocate as allocateName } from './naming';
 import { allocate as allocatePort } from './ports';
 import { runSetup } from './setup';
 import { WorkspaceManager } from './index';
-import { setUserDataRoot } from '../paths';
+import { setUserDataRoot, worktreesDir } from '../paths';
 import type { SettingsService } from '../settings';
 import type { WorkspaceManagerDeps } from './index';
 import type { EffectiveSettings } from '../settings/schema';
@@ -348,7 +348,7 @@ describe('WorkspaceManager.create', () => {
         userDataRoot,
         'harness',
         'projects',
-        projectId,
+        'test-project',
         'worktrees',
         'search-checkout',
       ),
@@ -383,13 +383,7 @@ describe('WorkspaceManager.create', () => {
 
   it('adopts an exact worktree orphan left by a failed DB insert', async () => {
     const git = new GitService();
-    const orphanPath = join(
-      userDataRoot,
-      'projects',
-      projectId,
-      'worktrees',
-      'orphan',
-    );
+    const orphanPath = join(worktreesDir('test-project'), 'orphan');
     await git.addWorktree(sourceRepoPath, orphanPath, 'orphan', 'main', true);
 
     const manager = buildManager('echo ok');
@@ -405,6 +399,31 @@ describe('WorkspaceManager.create', () => {
         (entry) => entry.branch === 'orphan',
       ),
     ).toHaveLength(1);
+  });
+
+  it('reports an unmanaged non-empty worktree folder before invoking git', async () => {
+    const worktreePath = join(worktreesDir('test-project'), 'occupied');
+    mkdirSync(worktreePath, { recursive: true });
+    mkdirSync(join(worktreePath, '.idea'));
+    const addWorktree = vi.spyOn(GitService.prototype, 'addWorktree');
+
+    await expect(
+      buildManager('echo ok').create({
+        projectId,
+        name: 'Occupied workspace',
+        worktreeName: 'occupied',
+        branch: 'feature/occupied',
+      }),
+    ).rejects.toMatchObject({
+      code: 'conflict',
+      message: expect.stringContaining(
+        'Choose a different worktree name or move the existing folder.',
+      ),
+      details: { worktreePath },
+    });
+
+    expect(addWorktree).not.toHaveBeenCalled();
+    expect(existsSync(join(worktreePath, '.idea'))).toBe(true);
   });
 
   it('removes a newly-created worktree when persistence fails', async () => {

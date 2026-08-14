@@ -85,6 +85,7 @@ describe('MCP-capable progressive knowledge setup', () => {
 
     const prepared = prepareMcpTurnKnowledge(
       projectId,
+      projectId,
       knowledgeConfig,
       4_000,
     );

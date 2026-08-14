@@ -18,6 +18,7 @@ import {
   Gauge,
   Info,
   Map,
+  MoreHorizontal,
   Plus,
   Star,
   X,
@@ -70,6 +71,7 @@ export interface ComposerProps {
     harness?: HarnessId,
     model?: string,
     effort?: ReasoningEffort,
+    displayPrompt?: string,
   ) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
   onClear?: () => void | Promise<void>;
@@ -554,13 +556,14 @@ export function Composer({
   const preHistoryDraftRef = useRef('');
   const modelSelectionInitializedRef = useRef(false);
   const activeDraftWorkspaceRef = useRef<string | null>(null);
+  const activeModeContextRef = useRef<string | null>(null);
+  const modesByContextRef = useRef<Record<string, AgentMode>>({});
   const draftsByWorkspaceRef = useRef<
     Record<
       string,
       {
         text: string;
         attachments: Attachment[];
-        mode: AgentMode;
       }
     >
   >({});
@@ -592,9 +595,30 @@ export function Composer({
     draftsByWorkspaceRef.current[workspace] = {
       text,
       attachments,
-      mode,
     };
-  }, [text, attachments, mode, selectedWorkspaceId]);
+  }, [text, attachments, selectedWorkspaceId]);
+
+  // Plan mode is an explicit choice for one chat context, not a workspace-wide
+  // default. Capture the outgoing context before loading the destination so an
+  // existing context restores its choice without seeding newly created contexts.
+  useEffect(() => {
+    const context = activeModeContextRef.current;
+    if (context === null) return;
+    modesByContextRef.current[context] = mode;
+  }, [contextId, mode, selectedWorkspaceId]);
+
+  useEffect(() => {
+    const context =
+      selectedWorkspaceId === null || contextId === undefined
+        ? null
+        : `${selectedWorkspaceId}\u0000${contextId}`;
+    activeModeContextRef.current = context;
+    setMode(
+      context === null
+        ? 'default'
+        : (modesByContextRef.current[context] ?? 'default'),
+    );
+  }, [contextId, selectedWorkspaceId]);
 
   // Composer state belongs to one workspace. The component itself survives navigation,
   // so swap in the destination workspace's cached draft and close transient UI. A
@@ -607,7 +631,6 @@ export function Composer({
     activeDraftWorkspaceRef.current = selectedWorkspaceId;
 
     setText(cached?.text ?? '');
-    setMode(cached?.mode ?? 'default');
     setAttachments(cached?.attachments ?? []);
     setSlashCommands([]);
     setSlashLoading(false);
@@ -693,7 +716,6 @@ export function Composer({
       harness === 'codex' ? CODEX_EFFORT_OPTIONS : CLAUDE_EFFORT_OPTIONS
     ).find((option) => option.id === preferences.defaultEffort);
     if (preferredEffort) setEffort(preferredEffort);
-    setMode(preferences.planMode ? 'plan' : 'default');
   }, [contextId, selectedWorkspace?.id, selectedWorkspace?.harness]);
 
   const selectedModel = selectedHarness ?? selectedWorkspace?.harness;
@@ -786,6 +808,11 @@ export function Composer({
   const context = useMemo(
     () => contextStats(turns, selectedModelLabel),
     [turns, selectedModelLabel],
+  );
+  const totalCostMicros = useMemo(
+    () =>
+      (turns ?? []).reduce((total, turn) => total + (turn.costMicros ?? 0), 0),
+    [turns],
   );
   const supportsPlan =
     selectedHarnessInfo?.capabilities.supportsPlanMode ?? true;
@@ -882,6 +909,9 @@ export function Composer({
       parsedSlash !== null && command !== undefined
         ? expandSlashTemplate(command.template, parsedSlash.args)
         : text;
+    // Keep expanded provider instructions out of the transcript. The original slash
+    // invocation remains in composer history and is the only user message rendered.
+    const displayPrompt = command === undefined ? undefined : text.trim();
     sentTextHistoryRef.current.push(text);
     sentTextHistoryIndexRef.current = -1;
     preHistoryDraftRef.current = '';
@@ -894,6 +924,7 @@ export function Composer({
         ? runtimeProviderModel(selectedProviderModelOption)
         : selectedProviderModel,
       effort.id,
+      displayPrompt,
     );
     setText('');
     setAttachments([]);
@@ -901,7 +932,12 @@ export function Composer({
 
   function togglePlanMode(): void {
     if (!supportsPlan) return;
-    setMode((prev) => (prev === 'plan' ? 'default' : 'plan'));
+    setMode((previous) => {
+      const next = previous === 'plan' ? 'default' : 'plan';
+      const context = activeModeContextRef.current;
+      if (context !== null) modesByContextRef.current[context] = next;
+      return next;
+    });
   }
 
   function chooseSlash(command: SlashCommand): void {
@@ -937,14 +973,19 @@ export function Composer({
     setAttachments((prev) => {
       const existingPaths = new Set(
         prev.flatMap((attachment) =>
-          attachment.type === 'file' ? [attachment.path] : [],
+          attachment.type === 'file' || attachment.type === 'image'
+            ? [attachment.path]
+            : [],
         ),
       );
       const additions: Attachment[] = [];
       for (const path of paths) {
         if (path.trim() === '' || existingPaths.has(path)) continue;
         existingPaths.add(path);
-        additions.push({ type: 'file', path });
+        additions.push({
+          type: /\.(?:png|jpe?g|gif|webp|bmp)$/i.test(path) ? 'image' : 'file',
+          path,
+        });
       }
       return additions.length === 0 ? prev : [...prev, ...additions];
     });
@@ -1140,7 +1181,7 @@ export function Composer({
           </div>
         ) : null}
         <div
-          className={`relative rounded-4 border bg-surface-panel shadow-3 transition-colors duration-fast ${
+          className={`composer-responsive relative rounded-4 border bg-surface-panel shadow-3 transition-colors duration-fast ${
             isDraggingFiles
               ? 'border-accent ring-2 ring-accent-border'
               : 'border-border-1'
@@ -1258,176 +1299,199 @@ export function Composer({
             data-testid="composer-controls"
           >
             <div
-              className="relative min-w-0 max-w-[22rem]"
-              ref={modelPickerRef}
+              className="flex min-w-0 flex-1 items-center gap-3"
+              data-testid="composer-primary-controls"
             >
-              <Tooltip content="Select model">
-                <button
-                  type="button"
-                  className="flex h-9 max-w-full min-w-0 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-                  data-testid="composer-model"
-                  aria-label="Select model"
-                  aria-expanded={modelOpen}
-                  title="Select model"
-                  onClick={() => setModelOpen((open) => !open)}
-                >
-                  <Zap className="h-5 w-5 text-fg-3" aria-hidden />
-                  <span className="min-w-0 truncate whitespace-nowrap">
-                    {selectedModelLabel}
-                  </span>
-                </button>
-              </Tooltip>
-              {modelOpen ? (
-                <div
-                  className="absolute bottom-[calc(100%+10px)] left-0 z-30 max-h-[70vh] w-[360px] overflow-y-auto rounded-4 border border-border-1 bg-surface-panel shadow-4"
-                  data-testid="composer-model-menu"
-                >
-                  {modelGroups.length === 0 ? (
-                    <div className="px-4 py-3 text-sm text-fg-3">
-                      No runnable models found
-                    </div>
-                  ) : (
-                    modelGroups.map((group, groupIndex) => (
-                      <div
-                        key={group.id}
-                        className={
-                          groupIndex === 0 ? '' : 'border-t border-border-1'
-                        }
-                      >
+              <div
+                className="relative min-w-0 max-w-[22rem]"
+                ref={modelPickerRef}
+              >
+                <Tooltip content="Select model">
+                  <button
+                    type="button"
+                    className="flex h-9 max-w-full min-w-0 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-2 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+                    data-testid="composer-model"
+                    aria-label="Select model"
+                    aria-expanded={modelOpen}
+                    title="Select model"
+                    onClick={() => setModelOpen((open) => !open)}
+                  >
+                    <Zap className="h-5 w-5 text-fg-3" aria-hidden />
+                    <span className="composer-responsive-label min-w-0 truncate whitespace-nowrap">
+                      {selectedModelLabel}
+                    </span>
+                  </button>
+                </Tooltip>
+                {modelOpen ? (
+                  <div
+                    className="absolute bottom-[calc(100%+10px)] left-0 z-30 max-h-[70vh] w-[360px] overflow-y-auto rounded-4 border border-border-1 bg-surface-panel shadow-4"
+                    data-testid="composer-model-menu"
+                  >
+                    {modelGroups.length === 0 ? (
+                      <div className="px-4 py-3 text-sm text-fg-3">
+                        No runnable models found
+                      </div>
+                    ) : (
+                      modelGroups.map((group, groupIndex) => (
                         <div
-                          className="flex items-center gap-2 px-4 pb-2 pt-3 text-sm font-medium text-fg-3"
-                          data-testid={`composer-model-${group.id}`}
+                          key={group.id}
+                          className={
+                            groupIndex === 0 ? '' : 'border-t border-border-1'
+                          }
                         >
-                          <Zap className="h-4 w-4 text-fg-3" aria-hidden />
-                          <span>{group.label}</span>
-                        </div>
-                        {group.options.map((option, index) => {
-                          const enabled =
-                            option.harness !== undefined &&
-                            availableHarnessIds.has(option.harness);
-                          const active = option.id === selectedProviderModel;
-                          return (
-                            <button
-                              key={option.id}
-                              type="button"
-                              className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors duration-fast ease-out ${
-                                active
-                                  ? 'bg-bg-3'
-                                  : enabled
-                                    ? 'hover:bg-bg-3'
-                                    : 'cursor-not-allowed opacity-50'
-                              }`}
-                              data-testid={`composer-model-option-${option.id}`}
-                              disabled={!enabled}
-                              onClick={() => {
-                                if (option.harness === undefined) return;
-                                if (
-                                  option.id !== selectedProviderModel &&
-                                  (turns?.length ?? 0) > 0
-                                ) {
-                                  setModelSwitchNotice(true);
-                                }
-                                setSelectedHarness(option.harness);
-                                setSelectedProviderModel(option.id);
-                                setModelOpen(false);
-                              }}
-                            >
-                              <Zap className="h-4 w-4 text-fg-3" aria-hidden />
-                              <span className="min-w-0 flex-1 truncate text-base font-medium text-fg-1">
-                                {option.label}
-                                {option.isNew ? (
-                                  <span className="ml-2 rounded border border-accent-border bg-accent-muted px-1.5 py-0.5 text-xs uppercase text-fg-2">
-                                    New
-                                  </span>
-                                ) : null}
-                              </span>
-                              {active ? (
-                                <Check
-                                  className="h-4 w-4 text-fg-2"
-                                  aria-hidden
-                                />
-                              ) : option.favorite ? (
-                                <Star
+                          <div
+                            className="flex items-center gap-2 px-4 pb-2 pt-3 text-sm font-medium text-fg-3"
+                            data-testid={`composer-model-${group.id}`}
+                          >
+                            <Zap className="h-4 w-4 text-fg-3" aria-hidden />
+                            <span>{group.label}</span>
+                          </div>
+                          {group.options.map((option, index) => {
+                            const enabled =
+                              option.harness !== undefined &&
+                              availableHarnessIds.has(option.harness);
+                            const active = option.id === selectedProviderModel;
+                            return (
+                              <button
+                                key={option.id}
+                                type="button"
+                                className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors duration-fast ease-out ${
+                                  active
+                                    ? 'bg-bg-3'
+                                    : enabled
+                                      ? 'hover:bg-bg-3'
+                                      : 'cursor-not-allowed opacity-50'
+                                }`}
+                                data-testid={`composer-model-option-${option.id}`}
+                                disabled={!enabled}
+                                onClick={() => {
+                                  if (option.harness === undefined) return;
+                                  if (
+                                    option.id !== selectedProviderModel &&
+                                    (turns?.length ?? 0) > 0
+                                  ) {
+                                    setModelSwitchNotice(true);
+                                  }
+                                  setSelectedHarness(option.harness);
+                                  setSelectedProviderModel(option.id);
+                                  setModelOpen(false);
+                                }}
+                              >
+                                <Zap
                                   className="h-4 w-4 text-fg-3"
                                   aria-hidden
                                 />
-                              ) : (
-                                <span className="text-sm text-fg-3">
-                                  {index + 1}
+                                <span className="min-w-0 flex-1 truncate text-base font-medium text-fg-1">
+                                  {option.label}
+                                  {option.isNew ? (
+                                    <span className="ml-2 rounded border border-accent-border bg-accent-muted px-1.5 py-0.5 text-xs uppercase text-fg-2">
+                                      New
+                                    </span>
+                                  ) : null}
                                 </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ))
-                  )}
-                </div>
-              ) : null}
-            </div>
-            <div className="relative shrink-0" ref={effortPickerRef}>
-              <Tooltip content="Select effort">
+                                {active ? (
+                                  <Check
+                                    className="h-4 w-4 text-fg-2"
+                                    aria-hidden
+                                  />
+                                ) : option.favorite ? (
+                                  <Star
+                                    className="h-4 w-4 text-fg-3"
+                                    aria-hidden
+                                  />
+                                ) : (
+                                  <span className="text-sm text-fg-3">
+                                    {index + 1}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <div className="relative shrink-0" ref={effortPickerRef}>
+                <Tooltip content="Select effort">
+                  <button
+                    type="button"
+                    className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
+                    data-testid="composer-effort"
+                    aria-label="Select effort"
+                    aria-expanded={effortOpen}
+                    title="Select effort"
+                    onClick={() => setEffortOpen((open) => !open)}
+                  >
+                    <Gauge className="h-5 w-5 text-fg-3" aria-hidden />
+                    <span className="composer-responsive-label">
+                      {effort.label}
+                    </span>
+                  </button>
+                </Tooltip>
+                {effortOpen ? (
+                  <div
+                    className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-44 rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
+                    data-testid="composer-effort-menu"
+                  >
+                    {effortOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className="flex w-full items-center justify-between rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                        data-testid={`composer-effort-${option.id}`}
+                        onClick={() => {
+                          setEffort(option);
+                          setEffortOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        {option.id === effort.id ? (
+                          <Check className="h-4 w-4 text-fg-3" aria-hidden />
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <Tooltip content="Plan mode">
                 <button
                   type="button"
-                  className="flex h-9 items-center gap-2 rounded-2 px-2 text-sm font-medium text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
-                  data-testid="composer-effort"
-                  aria-label="Select effort"
-                  aria-expanded={effortOpen}
-                  title="Select effort"
-                  onClick={() => setEffortOpen((open) => !open)}
+                  className={`shrink-0 rounded-1 p-1.5 transition-colors duration-fast ease-out ${
+                    mode === 'plan'
+                      ? 'bg-bg-3 text-fg-1'
+                      : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                  data-testid="composer-plan"
+                  aria-label="Plan mode"
+                  aria-pressed={mode === 'plan'}
+                  title="Plan mode"
+                  disabled={!supportsPlan}
+                  onClick={togglePlanMode}
                 >
-                  <Gauge className="h-5 w-5 text-fg-3" aria-hidden />
-                  <span>{effort.label}</span>
+                  <Map className="h-5 w-5" aria-hidden />
                 </button>
               </Tooltip>
-              {effortOpen ? (
-                <div
-                  className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-44 rounded-4 border border-border-1 bg-surface-panel p-2 shadow-4"
-                  data-testid="composer-effort-menu"
-                >
-                  {effortOptions.map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className="flex w-full items-center justify-between rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
-                      data-testid={`composer-effort-${option.id}`}
-                      onClick={() => {
-                        setEffort(option);
-                        setEffortOpen(false);
-                      }}
-                    >
-                      <span>{option.label}</span>
-                      {option.id === effort.id ? (
-                        <Check className="h-4 w-4 text-fg-3" aria-hidden />
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
             </div>
-            <Tooltip content="Plan mode">
-              <button
-                type="button"
-                className={`shrink-0 rounded-1 p-1.5 transition-colors duration-fast ease-out ${
-                  mode === 'plan'
-                    ? 'bg-bg-3 text-fg-1'
-                    : 'text-fg-3 hover:bg-bg-3 hover:text-fg-1'
-                } disabled:cursor-not-allowed disabled:opacity-40`}
-                data-testid="composer-plan"
-                aria-label="Plan mode"
-                aria-pressed={mode === 'plan'}
-                title="Plan mode"
-                disabled={!supportsPlan}
-                onClick={togglePlanMode}
+            <div
+              className="ml-auto flex shrink-0 items-center gap-3"
+              data-testid="composer-secondary-controls"
+            >
+              <div
+                className="composer-wide-only"
+                data-testid="composer-cost-inline"
               >
-                <Map className="h-5 w-5" aria-hidden />
-              </button>
-            </Tooltip>
-            <div className="ml-auto flex shrink-0 items-center gap-3">
-              <CostIndicator turns={turns ?? []} />
-              <ContextIndicator stats={context} />
+                <CostIndicator turns={turns ?? []} />
+              </div>
+              <div
+                className="composer-wide-only"
+                data-testid="composer-context-inline"
+              >
+                <ContextIndicator stats={context} />
+              </div>
               <div className="relative shrink-0" ref={plusPickerRef}>
-                <Tooltip content="Attachments and options">
+                <Tooltip content="More composer actions">
                   <button
                     type="button"
                     className="rounded-1 p-1.5 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1"
@@ -1440,7 +1504,16 @@ export function Composer({
                       setPlusPanel('root');
                     }}
                   >
-                    <Plus className="h-5 w-5" aria-hidden />
+                    <MoreHorizontal
+                      className="composer-narrow-only h-5 w-5"
+                      data-testid="composer-more-icon"
+                      aria-hidden
+                    />
+                    <Plus
+                      className="composer-wide-only h-5 w-5"
+                      data-testid="composer-plus-icon"
+                      aria-hidden
+                    />
                   </button>
                 </Tooltip>
                 {plusOpen ? (
@@ -1450,6 +1523,37 @@ export function Composer({
                   >
                     {plusPanel === 'root' ? (
                       <div className="grid gap-1">
+                        <div className="composer-narrow-grid gap-1 border-b border-border-1 pb-2">
+                          <div
+                            className="flex items-center gap-3 rounded-2 px-3 py-2 text-sm text-fg-2"
+                            data-testid="composer-overflow-cost"
+                          >
+                            <DollarSign
+                              className="h-4 w-4 shrink-0 text-fg-3"
+                              aria-hidden
+                            />
+                            <span className="min-w-0 flex-1">
+                              Estimated API cost
+                            </span>
+                            <span className="shrink-0 font-mono text-fg-3">
+                              {formatUsdMicros(totalCostMicros)}
+                            </span>
+                          </div>
+                          <div
+                            className="flex items-center gap-3 rounded-2 px-3 py-2 text-sm text-fg-2"
+                            data-testid="composer-overflow-context"
+                          >
+                            <BookOpenText
+                              className="h-4 w-4 shrink-0 text-fg-3"
+                              aria-hidden
+                            />
+                            <span className="min-w-0 flex-1">Context</span>
+                            <span className="shrink-0 font-mono text-fg-3">
+                              {compactNumber(context.used)}/
+                              {compactNumber(context.capacity)}
+                            </span>
+                          </div>
+                        </div>
                         <button
                           type="button"
                           className="rounded-2 px-3 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"

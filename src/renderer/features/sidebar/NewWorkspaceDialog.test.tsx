@@ -176,6 +176,9 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     );
     expect(screen.getByTestId('worktree-name-input')).toHaveValue('paris');
     expect(screen.getByTestId('branch-name-input')).toHaveValue('paris');
+    expect(screen.getByTestId('workspace-name-input')).toHaveClass('w-full');
+    expect(screen.getByTestId('worktree-name-input')).toHaveClass('w-full');
+    expect(screen.getByTestId('branch-name-input')).toHaveClass('w-full');
     expect(screen.queryByTestId('workspace-name-automatic')).toBeNull();
     expect(screen.queryByTestId('worktree-name-automatic')).toBeNull();
   });
@@ -230,8 +233,23 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     const onClose = vi.fn();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />);
 
-    fireEvent.click(screen.getByTestId('new-workspace-dialog'));
+    const outside = screen.getByTestId('new-workspace-dialog');
+    fireEvent.pointerDown(outside);
+    fireEvent.click(outside);
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('stays open when a text-selection drag starts inside and ends outside', async () => {
+    installApi();
+    const onClose = vi.fn();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={onClose} />);
+
+    const outside = screen.getByTestId('new-workspace-dialog');
+    fireEvent.pointerDown(screen.getByText('New Workspace'));
+    fireEvent.pointerUp(outside);
+    fireEvent.click(outside);
+
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('stays open when clicking inside the modal panel', async () => {
@@ -412,6 +430,59 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     });
   });
 
+  it('normalizes typed worktree names to the filesystem-safe format', async () => {
+    installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+    const input = screen.getByTestId('worktree-name-input');
+
+    fireEvent.change(input, { target: { value: 'W2BT-17908' } });
+    expect(input).toHaveValue('w2bt-17908');
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+
+    fireEvent.change(input, { target: { value: ' Feature / Search ' } });
+    expect(input).toHaveValue('feature-search-');
+    fireEvent.blur(input);
+    expect(input).toHaveValue('feature-search');
+
+    fireEvent.change(input, { target: { value: 'Résumé---Été' } });
+    expect(input).toHaveValue('resume-ete');
+
+    fireEvent.change(input, { target: { value: '///' } });
+    expect(input).toHaveValue('');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByTestId('create-workspace-submit')).toBeDisabled();
+  });
+
+  it('fully normalizes pasted worktree names and submits the result', async () => {
+    const api = installApi();
+    render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
+    const input = screen.getByTestId('worktree-name-input');
+    await waitFor(() => expect(input).toHaveValue('paris'));
+    (input as HTMLInputElement).setSelectionRange(0, 'paris'.length);
+
+    fireEvent.paste(input, {
+      clipboardData: {
+        getData: () => ` W2BT / Feature ${'A'.repeat(80)} `,
+      },
+    });
+
+    const expected = `w2bt-feature-${'a'.repeat(50)}`;
+    expect(input).toHaveValue(expected);
+    expect(expected).toHaveLength(63);
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('branch-item').length).toBe(3);
+    });
+    fireEvent.click(screen.getAllByTestId('branch-item')[0]);
+    fireEvent.click(screen.getByTestId('create-workspace-submit'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    expect(
+      api.stream.mock.calls.find((call) => call[0] === 'workspace:create')?.[1],
+    ).toMatchObject({ worktreeName: expected });
+  });
+
   it('sends separate custom workspace and branch names', async () => {
     const api = installApi();
     render(<NewWorkspaceDialog projectId={PROJECT_ID} onClose={() => {}} />);
@@ -429,11 +500,12 @@ describe('NewWorkspaceDialog — Branch tab', () => {
     fireEvent.click(screen.getByTestId('create-workspace-submit'));
 
     await waitFor(() => expect(api.stream).toHaveBeenCalled());
-    expect(api.stream.mock.calls.find((call) => call[0] === 'workspace:create')?.[1])
-      .toMatchObject({
-        name: 'search-workspace',
-        branch: 'feature/search',
-      });
+    expect(
+      api.stream.mock.calls.find((call) => call[0] === 'workspace:create')?.[1],
+    ).toMatchObject({
+      name: 'search-workspace',
+      branch: 'feature/search',
+    });
   });
 
   it('accepts a human-readable workspace name', async () => {

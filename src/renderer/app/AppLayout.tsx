@@ -13,6 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   PanelLeft,
@@ -61,12 +62,21 @@ interface InspectFileRequest {
   workspaceId: string;
   path: string;
   mode: 'edit' | 'diff';
+  diffQuery?: {
+    targetRef: string;
+    scope:
+      | { kind: 'all' }
+      | { kind: 'uncommitted' }
+      | { kind: 'commit'; sha: string };
+  };
 }
 
 const DEFAULT_PANE_WIDTH: Record<SidePane, number> = {
   left: 280,
   right: 360,
 };
+const MIN_CENTER_PANE_WIDTH = 560;
+const MIN_SIDE_PANE_WIDTH = 240;
 const PANE_STORAGE_KEY: Record<SidePane, string> = {
   left: 'harness.layout.leftPaneWidth',
   right: 'harness.layout.rightPaneWidth',
@@ -91,6 +101,26 @@ function measuredWorkPaneHeight(pane: WorkPane): number {
 
 function validSize(size: number): number {
   return Math.max(0, size);
+}
+
+function measuredSidePaneWidth(side: SidePane, fallback: number): number {
+  const measuredWidth = document
+    .querySelector<HTMLElement>(`[data-testid="${side}-pane"]`)
+    ?.getBoundingClientRect().width;
+  return measuredWidth && measuredWidth > 0 ? measuredWidth : fallback;
+}
+
+function maximumSidePaneWidth(currentWidth: number): number {
+  const centerWidth = document
+    .querySelector<HTMLElement>('[data-testid="center-pane"]')
+    ?.getBoundingClientRect().width;
+  return centerWidth && centerWidth > 0
+    ? currentWidth + Math.max(0, centerWidth - MIN_CENTER_PANE_WIDTH)
+    : Number.POSITIVE_INFINITY;
+}
+
+function constrainedSidePaneWidth(size: number, maximum: number): number {
+  return Math.min(maximum, Math.max(MIN_SIDE_PANE_WIDTH, size));
 }
 
 function readStoredPaneWidth(side: SidePane): number {
@@ -124,13 +154,16 @@ function PaneResizeHandle({
     event.preventDefault();
     cleanupRef.current?.();
     const startX = event.clientX;
-    const startWidth = width;
+    const startWidth = measuredSidePaneWidth(side, width);
+    // Freeze the available center slack for this gesture. Once the center reaches its
+    // minimum, further pointer movement is ignored instead of shrinking another pane.
+    const maximumWidth = maximumSidePaneWidth(startWidth);
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
     const handleMouseMove = (moveEvent: MouseEvent): void => {
       const pointerDelta = moveEvent.clientX - startX;
       const paneDelta = side === 'left' ? pointerDelta : -pointerDelta;
-      onResize(validSize(startWidth + paneDelta));
+      onResize(constrainedSidePaneWidth(startWidth + paneDelta, maximumWidth));
     };
     const cleanup = (): void => {
       window.removeEventListener('mousemove', handleMouseMove);
@@ -151,7 +184,13 @@ function PaneResizeHandle({
     event.preventDefault();
     const pointerDelta = event.key === 'ArrowRight' ? 16 : -16;
     const paneDelta = side === 'left' ? pointerDelta : -pointerDelta;
-    onResize(validSize(width + paneDelta));
+    const currentWidth = measuredSidePaneWidth(side, width);
+    onResize(
+      constrainedSidePaneWidth(
+        currentWidth + paneDelta,
+        maximumSidePaneWidth(currentWidth),
+      ),
+    );
   };
 
   return (
@@ -254,8 +293,12 @@ function WorkPaneResizeHandle({
 /** The top-level adjustable 3-pane shell: [rail | content | context]. */
 export function AppLayout(): React.JSX.Element {
   useSchedulerTurnEvents();
+  const queryClient = useQueryClient();
   const appUpdate = useAppUpdate();
   const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
+  const selectedWorkspace = useWorkspacesStore((s) =>
+    s.workspaces.find((workspace) => workspace.id === s.selectedWorkspaceId),
+  );
   const selectedProjectId = useWorkspacesStore((s) => s.selectedProjectId);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -343,18 +386,22 @@ export function AppLayout(): React.JSX.Element {
       openPr: () => {
         const { selectedWorkspaceId } = useWorkspacesStore.getState();
         if (!selectedWorkspaceId) return;
-        void invoke('pr:open', { workspaceId: selectedWorkspaceId }).catch(
-          () => {
+        void invoke('pr:open', { workspaceId: selectedWorkspaceId })
+          .then(() =>
+            queryClient.invalidateQueries({
+              queryKey: ['workspace-pr', selectedWorkspaceId],
+            }),
+          )
+          .catch(() => {
             /* PR errors surface in the Checks pane; a menu action must not throw. */
-          },
-        );
+          });
       },
       checkForUpdates: () => {
         void appUpdate.manualCheck();
       },
       selectWorkspace: (id) => selectWorkspace(id),
     }),
-    [appUpdate.manualCheck, selectWorkspace, setNewWorkspaceOpen],
+    [appUpdate.manualCheck, queryClient, selectWorkspace, setNewWorkspaceOpen],
   );
 
   // Keep the current registry reachable from the (once-subscribed) menu handler without
@@ -476,12 +523,15 @@ export function AppLayout(): React.JSX.Element {
       className="relative flex h-screen w-screen flex-col bg-surface-app text-fg-2"
       data-testid="app-layout"
     >
-      <div className="flex min-h-0 flex-1" data-testid="app-panes">
+      <div
+        className="flex min-h-0 flex-1 overflow-hidden"
+        data-testid="app-panes"
+      >
         {/* Left rail: sidebar + IPC health footer. */}
         {leftPaneOpen ? (
           <>
             <aside
-              className="flex shrink-0 flex-col border-r border-border-1 bg-surface-panel"
+              className="flex min-w-[240px] shrink-0 flex-col border-r border-border-1 bg-surface-panel"
               style={{ width: leftPaneWidth }}
               data-testid="left-pane"
             >
@@ -548,7 +598,7 @@ export function AppLayout(): React.JSX.Element {
         {/* Center content pane: chat stays central; terminal and Git changes live in
             the right work area so they remain visible beside the conversation. */}
         <main
-          className="flex min-w-0 flex-1 flex-col overflow-hidden bg-surface-app"
+          className="flex min-w-[560px] flex-1 flex-col overflow-hidden bg-surface-app"
           data-testid="center-pane"
         >
           {/* The workspace title belongs to the center column, so it remains centered
@@ -590,7 +640,7 @@ export function AppLayout(): React.JSX.Element {
               onResize={setRightPaneWidth}
             />
             <aside
-              className="flex shrink-0 flex-col overflow-hidden bg-surface-panel"
+              className="flex min-w-[240px] shrink-0 flex-col overflow-hidden bg-surface-panel"
               style={{ width: rightPaneWidth }}
               data-testid="right-pane"
             >
@@ -605,13 +655,16 @@ export function AppLayout(): React.JSX.Element {
                 >
                   <DiffPanel
                     workspaceId={selectedWorkspaceId}
-                    onInspectFile={(path) => {
+                    workspaceBranch={selectedWorkspace?.branch ?? null}
+                    workspacePrNumber={selectedWorkspace?.prNumber ?? null}
+                    onInspectFile={(path, diffQuery) => {
                       if (!selectedWorkspaceId) return;
                       setInspectFileRequest({
                         id: Date.now(),
                         workspaceId: selectedWorkspaceId,
                         path,
                         mode: 'diff',
+                        ...(diffQuery === undefined ? {} : { diffQuery }),
                       });
                     }}
                   />

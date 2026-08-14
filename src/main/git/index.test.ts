@@ -242,7 +242,13 @@ describe('GitService error handling', () => {
     const badWt = join(tmpRoot, 'bad-wt');
     await expect(
       git.addWorktree(freshRepo, badWt, 'agent/err', 'nonexistent-ref', true),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      code: 'git',
+      message: expect.stringContaining('nonexistent-ref'),
+      details: expect.objectContaining({
+        stderr: expect.stringContaining('nonexistent-ref'),
+      }),
+    });
   });
 });
 

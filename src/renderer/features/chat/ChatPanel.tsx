@@ -5,7 +5,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Copy, FileText, History, Pencil, Plus, X } from 'lucide-react';
 import { invoke, onEvent } from '@renderer/ipc';
-import type { FileDiff } from '@shared/review';
+import type { ChatContextRecord } from '@shared/models';
+import type { DiffQuery, FileDiff } from '@shared/review';
 import type { ScheduledTask } from '@shared/tasks';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
@@ -14,7 +15,7 @@ import { FileReferencePill } from './FileReferencePill';
 import { Markdown } from './markdown';
 import { WorkspaceCreationTerminal } from './WorkspaceCreationTerminal';
 import { WorkspaceArchiveTerminal } from './WorkspaceArchiveTerminal';
-import { useChatStore, type TaskTurnOwner } from '@renderer/stores/chat';
+import { useChatStore, type RenderedTurn } from '@renderer/stores/chat';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 
 export interface ChatPanelProps {
@@ -24,12 +25,14 @@ export interface ChatPanelProps {
     workspaceId: string;
     path: string;
     mode?: 'edit' | 'diff';
+    diffQuery?: Omit<DiffQuery, 'workspaceId'>;
   } | null;
 }
 
 interface FileTab {
   id: string;
   path: string;
+  source: 'workspace' | 'plan';
   content: string | null;
   error: string | null;
   loading: boolean;
@@ -38,18 +41,35 @@ interface FileTab {
   diffError: string | null;
   loadingDiff: boolean;
   diffStatus: 'unknown' | 'loading' | 'available' | 'none' | 'error';
+  diffQuery: Omit<DiffQuery, 'workspaceId'> | null;
+  diffRequestKey: string | null;
 }
 
 interface ChatContext {
   id: string;
   label: string;
+  /**
+   * Turn membership for `task:` tabs only — those are reconstructed from `task:list` /
+   * `task:turnStarted`. Manual tabs are persisted (`chat_contexts`) and derive their
+   * membership from `turn.contextId`, so their `turnIds` stays empty.
+   */
   turnIds: string[];
   /** `null` means this window must begin a fresh agent session. */
   initialSessionId?: string | null;
 }
 
-type ActiveTab = 'chat' | string;
-const EMPTY_TASK_TURN_OWNERS: Readonly<Record<string, TaskTurnOwner>> = {};
+/** A tab id: a persisted chat-context id, a `task:<id>` tab, or a `file:<path>` tab. */
+type ActiveTab = string;
+
+/** Map a persisted `ChatContextRecord` onto the panel's tab shape. */
+function toChatContext(record: ChatContextRecord): ChatContext {
+  return {
+    id: record.id,
+    label: record.label,
+    turnIds: [],
+    initialSessionId: record.initialSessionId,
+  };
+}
 
 function labelForPath(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -59,6 +79,18 @@ function labelForTask(prompt: string): string {
   const singleLine = prompt.replace(/\s+/g, ' ').trim();
   if (singleLine.length <= 36) return `Task: ${singleLine || 'Untitled'}`;
   return `Task: ${singleLine.slice(0, 33)}…`;
+}
+
+function diffQueryKey(
+  path: string,
+  query?: Omit<DiffQuery, 'workspaceId'>,
+): string {
+  if (!query) return `${path}\0legacy`;
+  const scope =
+    query.scope.kind === 'commit'
+      ? `commit:${query.scope.sha}`
+      : query.scope.kind;
+  return `${path}\0${query.targetRef}\0${scope}`;
 }
 
 function highlightedLine(line: string): React.ReactNode[] {
@@ -181,10 +213,13 @@ function DiffRows({ fileDiff }: { fileDiff: FileDiff }): React.JSX.Element {
 function FileViewer({
   file,
   onModeChange,
+  onRevealFile,
 }: {
   file: FileTab;
   onModeChange: (mode: FileTab['mode']) => void;
+  onRevealFile: () => Promise<void>;
 }): React.JSX.Element {
+  const [revealError, setRevealError] = useState<string | null>(null);
   const isMarkdown = /\.(?:md|markdown)$/i.test(file.path);
   const lines = (file.content ?? '').split('\n');
   if (lines.at(-1) === '') lines.pop();
@@ -192,6 +227,13 @@ function FileViewer({
   const copyFile = (): void => {
     if (file.content === null) return;
     void navigator.clipboard?.writeText(file.content);
+  };
+
+  const revealFile = (): void => {
+    setRevealError(null);
+    void onRevealFile().catch((error: unknown) => {
+      setRevealError(error instanceof Error ? error.message : String(error));
+    });
   };
 
   return (
@@ -205,8 +247,14 @@ function FileViewer({
             <FileReferencePill
               path={file.path}
               label={file.path}
-              onOpenFile={undefined}
+              onOpenFile={revealFile}
+              actionLabel={`Reveal ${file.path} in Finder`}
             />
+            {revealError ? (
+              <p className="mt-1 truncate text-xs text-danger" role="alert">
+                {revealError}
+              </p>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <button
@@ -319,25 +367,51 @@ export function ChatPanel({
     state.projects.find((candidate) => candidate.id === workspace?.projectId),
   );
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
-  const [chatContexts, setChatContexts] = useState<ChatContext[]>([
-    { id: 'chat', label: 'Untitled', turnIds: [] },
-  ]);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('chat');
+  const [chatContexts, setChatContexts] = useState<ChatContext[]>([]);
+  const [activeTab, setActiveTab] = useState<ActiveTab | null>(null);
   const [editingContextId, setEditingContextId] = useState<string | null>(null);
   const [contextNameDraft, setContextNameDraft] = useState('');
+  // Mirrors `chatContexts` for reads across an `await` (e.g. in `closeChatContext`):
+  // a plain closure captured before an `await` can miss a task tab that lands (via
+  // `task:turnStarted`) while an IPC round trip is in flight, silently wiping it back
+  // out on the other side. The ref is committed one render behind at worst, which is
+  // still far fresher than the pre-`await` snapshot.
+  const chatContextsRef = useRef<ChatContext[]>(chatContexts);
+  useEffect(() => {
+    chatContextsRef.current = chatContexts;
+  }, [chatContexts]);
   const handledInspectRequests = useRef(new Set<number>());
-  const taskTurnOwners = useChatStore((state) =>
-    workspaceId
-      ? (state.taskTurnsByWorkspace[workspaceId] ?? EMPTY_TASK_TURN_OWNERS)
-      : EMPTY_TASK_TURN_OWNERS,
-  );
   const registerTaskTurn = useChatStore((state) => state.registerTaskTurn);
 
+  // Bootstrap the workspace's tab bar from the persisted `chat_contexts` rows. Main's
+  // `listOrBootstrap` is the single source of truth for "at least one tab exists", so a
+  // remount (or navigating away and back) rehydrates the same tabs instead of collapsing
+  // them into a fresh local default.
   useEffect(() => {
     setFileTabs([]);
-    setChatContexts([{ id: 'chat', label: 'Untitled', turnIds: [] }]);
-    setActiveTab('chat');
+    setChatContexts([]);
+    setActiveTab(null);
     setEditingContextId(null);
+    if (!workspaceId) return;
+    let active = true;
+    void invoke('chat:contexts:list', { workspaceId })
+      .then((records) => {
+        if (!active) return;
+        const manual = records.map(toChatContext);
+        // The task-list hydration effect races this one; keep whatever it already added.
+        setChatContexts((current) => [
+          ...manual,
+          ...current.filter((context) => context.id.startsWith('task:')),
+        ]);
+        // Likewise, don't clobber a task tab `task:turnStarted` may have just selected.
+        setActiveTab((current) => current ?? manual[0]?.id ?? null);
+      })
+      .catch(() => {
+        /* Leaves an empty tab bar; the next workspace switch retries. */
+      });
+    return () => {
+      active = false;
+    };
   }, [workspaceId]);
 
   const upsertTaskContext = useCallback(
@@ -410,44 +484,45 @@ export function ChatPanel({
     };
   }, [registerTaskTurn, upsertTaskContext, workspaceId]);
 
-  useEffect(() => {
-    setChatContexts((contexts) => {
-      const owned = new Set(contexts.flatMap((context) => context.turnIds));
-      const unowned = turns
-        .map((turn) => turn.turnId)
-        .filter(
-          (turnId) =>
-            !owned.has(turnId) && taskTurnOwners[turnId] === undefined,
-        );
-      if (unowned.length === 0) return contexts;
-      return contexts.map((context) =>
-        context.id === activeTab
-          ? { ...context, turnIds: [...context.turnIds, ...unowned] }
-          : context,
-      );
-    });
-  }, [activeTab, taskTurnOwners, turns]);
+  // NOTE: there is deliberately no effect assigning "unowned" turns to the active tab.
+  // That was the bug: on remount every turn got dumped into whichever tab was active,
+  // flattening previously-separate sessions. Manual-tab membership is now a pure derived
+  // filter on the persisted `turn.contextId` (see `contextTurns` below).
 
   const fetchFileDiff = useCallback(
-    (id: string, path: string): void => {
+    (
+      id: string,
+      path: string,
+      diffQuery?: Omit<DiffQuery, 'workspaceId'>,
+    ): void => {
       if (!workspaceId) return;
+      const requestKey = diffQueryKey(path, diffQuery);
       setFileTabs((tabs) =>
         tabs.map((tab) =>
-          tab.id === id && tab.diffStatus === 'unknown'
+          tab.id === id
             ? {
                 ...tab,
+                diffRequestKey: requestKey,
                 diffStatus: 'loading',
                 loadingDiff: tab.mode === 'diff',
               }
             : tab,
         ),
       );
-      void invoke('diff:file', { workspaceId, path })
+      const request = diffQuery
+        ? invoke('diff:fileQuery', {
+            workspaceId,
+            targetRef: diffQuery.targetRef,
+            scope: diffQuery.scope,
+            path,
+          })
+        : invoke('diff:file', { workspaceId, path });
+      void request
         .then((fileDiff) => {
           const hasHunks = fileDiff.hunks.length > 0;
           setFileTabs((tabs) =>
             tabs.map((tab) =>
-              tab.id === id
+              tab.id === id && tab.diffRequestKey === requestKey
                 ? {
                     ...tab,
                     fileDiff,
@@ -465,7 +540,7 @@ export function ChatPanel({
             error instanceof Error ? error.message : String(error);
           setFileTabs((tabs) =>
             tabs.map((tab) =>
-              tab.id === id
+              tab.id === id && tab.diffRequestKey === requestKey
                 ? {
                     ...tab,
                     fileDiff: null,
@@ -483,7 +558,11 @@ export function ChatPanel({
   );
 
   const openFile = useCallback(
-    (path: string, mode: FileTab['mode'] = 'edit'): void => {
+    (
+      path: string,
+      mode: FileTab['mode'] = 'edit',
+      diffQuery?: Omit<DiffQuery, 'workspaceId'>,
+    ): void => {
       if (!workspaceId) return;
       const isClaudePlan = /\/\.claude\/plans\/[^/]+\.md$/.test(path);
       const id = `file:${path}`;
@@ -495,10 +574,12 @@ export function ChatPanel({
             tab.id === id
               ? {
                   ...tab,
-                  mode:
-                    mode === 'diff' && tab.diffStatus === 'none'
-                      ? 'edit'
-                      : mode,
+                  diffQuery: diffQuery ?? null,
+                  fileDiff: null,
+                  diffError: null,
+                  diffStatus: 'unknown',
+                  diffRequestKey: null,
+                  mode,
                 }
               : tab,
           );
@@ -508,6 +589,7 @@ export function ChatPanel({
           {
             id,
             path,
+            source: isClaudePlan ? 'plan' : 'workspace',
             content: null,
             error: null,
             loading: true,
@@ -516,6 +598,8 @@ export function ChatPanel({
             diffError: null,
             loadingDiff: mode === 'diff',
             diffStatus: 'unknown',
+            diffQuery: diffQuery ?? null,
+            diffRequestKey: null,
           },
         ];
       });
@@ -551,7 +635,7 @@ export function ChatPanel({
           );
         });
       if (!isClaudePlan) {
-        fetchFileDiff(id, path);
+        fetchFileDiff(id, path, diffQuery);
       }
     },
     [fetchFileDiff, workspaceId],
@@ -566,12 +650,20 @@ export function ChatPanel({
       return;
     }
     handledInspectRequests.current.add(inspectFileRequest.id);
-    openFile(inspectFileRequest.path, inspectFileRequest.mode ?? 'edit');
+    openFile(
+      inspectFileRequest.path,
+      inspectFileRequest.mode ?? 'edit',
+      inspectFileRequest.diffQuery,
+    );
   }, [inspectFileRequest, openFile, workspaceId]);
 
   const closeFileTab = (id: string): void => {
     setFileTabs((tabs) => tabs.filter((tab) => tab.id !== id));
-    setActiveTab((current) => (current === id ? 'chat' : current));
+    // Fall back to the first chat tab — tab ids are persisted context ids now, so there
+    // is no synthetic `'chat'` id to fall back to.
+    setActiveTab((current) =>
+      current === id ? (chatContexts[0]?.id ?? null) : current,
+    );
   };
 
   const setFileMode = (file: FileTab, mode: FileTab['mode']): void => {
@@ -592,68 +684,89 @@ export function ChatPanel({
       ),
     );
     if (mode === 'diff' && file.diffStatus === 'unknown') {
-      fetchFileDiff(file.id, file.path);
+      fetchFileDiff(file.id, file.path, file.diffQuery ?? undefined);
     }
   };
 
-  const startNewChat = (): void => {
-    const id = `chat:${Date.now()}:${chatContexts.length}`;
-    setChatContexts((contexts) => [
-      ...contexts,
-      {
-        id,
-        label: 'Untitled',
-        turnIds: [],
-        initialSessionId: null,
-      },
-    ]);
-    setActiveTab(id);
+  /**
+   * Create a persisted tab, adopt the server-assigned record, and select it. Returns
+   * `null` if main refused the write, in which case the tab bar is left as it was rather
+   * than showing a tab that does not exist on disk.
+   */
+  const createChatContext = async (
+    workspace: string,
+    label: string,
+  ): Promise<ChatContext | null> => {
+    let created: ChatContext;
+    try {
+      created = toChatContext(
+        await invoke('chat:contexts:create', {
+          workspaceId: workspace,
+          label,
+          initialSessionId: null,
+        }),
+      );
+    } catch {
+      return null;
+    }
+    setChatContexts((contexts) => [...contexts, created]);
+    setActiveTab(created.id);
+    return created;
   };
 
-  const handoffPlan = (plan: string): void => {
-    const id = `chat:${Date.now()}:plan`;
-    setChatContexts((contexts) => [
-      ...contexts,
-      {
-        id,
-        label: 'Plan implementation',
-        turnIds: [],
-        initialSessionId: null,
-      },
-    ]);
-    setActiveTab(id);
-    void sendTurn(
+  const startNewChat = async (): Promise<void> => {
+    if (!workspaceId) return;
+    await createChatContext(workspaceId, 'Untitled');
+  };
+
+  const handoffPlan = async (plan: string): Promise<void> => {
+    if (!workspaceId) return;
+    const created = await createChatContext(workspaceId, 'Plan implementation');
+    if (created === null) return;
+    // Use `created.id`, not `activeContext` — this render tick's state is still stale.
+    await sendTurn(
       `Implement the following approved plan in this workspace.\n\n${plan}`,
       [],
       'default',
       undefined,
       null,
+      undefined,
+      undefined,
+      created.id,
     );
   };
 
-  const closeChatContext = (id: string): void => {
+  const closeChatContext = async (id: string): Promise<void> => {
     if (isBusy) return;
-    const closingIndex = chatContexts.findIndex((context) => context.id === id);
-    if (closingIndex < 0) return;
-    if (chatContexts.length === 1) {
-      const replacement: ChatContext = {
-        id: `chat:${Date.now()}:replacement`,
-        label: 'Untitled',
-        turnIds: [],
-        initialSessionId: null,
-      };
-      setChatContexts([replacement]);
-      setActiveTab(replacement.id);
+    if (!chatContexts.some((context) => context.id === id)) return;
+    // Task tabs have no `chat_contexts` row — they are reconstructed from `task:list` —
+    // so closing one is purely local.
+    if (!id.startsWith('task:')) {
+      try {
+        await invoke('chat:contexts:close', { contextId: id });
+      } catch {
+        // The row is still there; keep showing the tab rather than losing it from the UI.
+        return;
+      }
+    }
+    // Filter and pick the fallback active tab from `chatContextsRef`, not the pre-`await`
+    // `chatContexts` closure above — a task tab can land (via `task:turnStarted` or the
+    // `task:list` hydration effect) while `chat:contexts:close` is in flight, and filtering
+    // the stale closure would silently wipe it back out once we set state below.
+    const liveContexts = chatContextsRef.current;
+    const closingIndex = liveContexts.findIndex((context) => context.id === id);
+    const remaining = liveContexts.filter((context) => context.id !== id);
+    const fallbackId =
+      remaining[Math.min(closingIndex, remaining.length - 1)]?.id ?? null;
+    setChatContexts(remaining);
+    if (remaining.length === 0) {
+      // Closing the last tab: let main mint the replacement so the fresh tab is a real
+      // persisted context rather than a local synthetic one.
+      setActiveTab(null);
+      if (workspaceId) await createChatContext(workspaceId, 'Untitled');
       return;
     }
-    const remaining = chatContexts.filter((context) => context.id !== id);
-    setChatContexts(remaining);
-    setActiveTab((current) => {
-      if (current !== id) return current;
-      return (
-        remaining[Math.min(closingIndex, remaining.length - 1)]?.id ?? 'chat'
-      );
-    });
+    setActiveTab((current) => (current === id ? fallbackId : current));
   };
 
   const beginRenameContext = (context: ChatContext): void => {
@@ -661,24 +774,50 @@ export function ChatPanel({
     setContextNameDraft(context.label);
   };
 
-  const finishRenameContext = (): void => {
+  const finishRenameContext = async (): Promise<void> => {
     if (editingContextId === null) return;
+    const contextId = editingContextId;
     const label = contextNameDraft.trim() || 'Untitled';
+    // Close the editor immediately so a blur can't re-enter this on the round trip.
+    setEditingContextId(null);
+    // Task tabs derive their label from the task prompt and have no persisted row.
+    if (!contextId.startsWith('task:')) {
+      try {
+        // Only adopt the new label once main has persisted it.
+        await invoke('chat:contexts:rename', { contextId, label });
+      } catch {
+        // Rename refused — leave the tab showing the label it already had.
+        return;
+      }
+    }
     setChatContexts((contexts) =>
       contexts.map((context) =>
-        context.id === editingContextId ? { ...context, label } : context,
+        context.id === contextId ? { ...context, label } : context,
       ),
     );
-    setEditingContextId(null);
   };
 
   const activeFile = fileTabs.find((tab) => tab.id === activeTab) ?? null;
   const activeContext =
     chatContexts.find((context) => context.id === activeTab) ?? chatContexts[0];
   const activeTurnIds = new Set(activeContext?.turnIds ?? []);
-  const contextTurns = turns.filter((turn) => activeTurnIds.has(turn.turnId));
+  // Task tabs own their turns by id (`scheduled_tasks.turn_id`); manual tabs are the
+  // persisted `chat_contexts` rows, so their turns are the ones pointing back at them.
+  const contextTurns: RenderedTurn[] =
+    activeContext === undefined
+      ? []
+      : activeContext.id.startsWith('task:')
+        ? turns.filter((turn) => activeTurnIds.has(turn.turnId))
+        : turns.filter((turn) => turn.contextId === activeContext.id);
   const contextSessionId =
     contextTurns.at(-1)?.sessionId ?? activeContext?.initialSessionId;
+  // The `contextId` a new turn should be filed under. A `task:` tab is synthetic — it has
+  // no `chat_contexts` row (scheduler-fired turns are always `context_id = NULL`) — so
+  // never send its id to `turn:start`, which validates the id and would reject the turn.
+  const activeContextId =
+    activeContext !== undefined && !activeContext.id.startsWith('task:')
+      ? activeContext.id
+      : undefined;
 
   if (!workspaceId) {
     return (
@@ -718,9 +857,9 @@ export function ChatPanel({
                   data-testid="chat-context-name-input"
                   className="h-6 w-28 rounded-1 border border-border-2 bg-surface-well px-1.5 text-xs text-fg-1 outline-none focus:border-accent"
                   onChange={(event) => setContextNameDraft(event.target.value)}
-                  onBlur={finishRenameContext}
+                  onBlur={() => void finishRenameContext()}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') finishRenameContext();
+                    if (event.key === 'Enter') void finishRenameContext();
                     if (event.key === 'Escape') setEditingContextId(null);
                   }}
                 />
@@ -749,7 +888,7 @@ export function ChatPanel({
                 aria-label={`Close ${context.label}`}
                 data-testid={`chat-context-close-${index}`}
                 disabled={isBusy}
-                onClick={() => closeChatContext(context.id)}
+                onClick={() => void closeChatContext(context.id)}
               >
                 <X className="h-3 w-3" aria-hidden />
               </button>
@@ -791,7 +930,7 @@ export function ChatPanel({
             aria-label="New chat"
             data-testid="chat-new"
             disabled={isBusy}
-            onClick={startNewChat}
+            onClick={() => void startNewChat()}
           >
             <Plus className="h-4 w-4" aria-hidden />
           </button>
@@ -806,8 +945,21 @@ export function ChatPanel({
       </div>
       {activeFile ? (
         <FileViewer
+          key={activeFile.id}
           file={activeFile}
           onModeChange={(mode) => setFileMode(activeFile, mode)}
+          onRevealFile={() =>
+            activeFile.source === 'plan'
+              ? invoke('file:revealInFinder', {
+                  source: 'plan',
+                  path: activeFile.path,
+                })
+              : invoke('file:revealInFinder', {
+                  source: 'workspace',
+                  workspaceId: workspaceId!,
+                  path: activeFile.path,
+                })
+          }
         />
       ) : (
         <>
@@ -826,6 +978,8 @@ export function ChatPanel({
                 contextTurns.at(-1)?.harness,
                 contextSessionId,
                 contextTurns.at(-1)?.model,
+                undefined,
+                activeContextId,
               )
             }
             onApprovePlan={() =>
@@ -835,18 +989,30 @@ export function ChatPanel({
                 'default',
                 undefined,
                 contextSessionId,
+                undefined,
+                undefined,
+                activeContextId,
               )
             }
-            onHandoffPlan={handoffPlan}
+            onHandoffPlan={(plan) => void handoffPlan(plan)}
           />
           <WorkspaceCreationTerminal workspaceId={workspaceId} />
           <WorkspaceArchiveTerminal workspaceId={workspaceId} />
           <Composer
             isBusy={isBusy}
+            disabled={activeContext === undefined}
             workspaceId={workspaceId}
             contextId={activeContext?.id}
             turns={contextTurns}
-            onSend={(prompt, attachments, mode, harness, model, effort) =>
+            onSend={(
+              prompt,
+              attachments,
+              mode,
+              harness,
+              model,
+              effort,
+              displayPrompt,
+            ) =>
               sendTurn(
                 prompt,
                 attachments,
@@ -855,6 +1021,8 @@ export function ChatPanel({
                 contextSessionId,
                 model,
                 effort,
+                activeContextId,
+                displayPrompt,
               )
             }
             onInterrupt={interrupt}

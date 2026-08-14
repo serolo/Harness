@@ -120,6 +120,8 @@ export interface WikiCatalogUpdateResult {
   updated: boolean;
   pageCount: number;
   commit?: string;
+  /** Legacy typed pages made explicitly canonical during this update. */
+  repairedCount: number;
 }
 
 export interface QmdStatus {
@@ -139,11 +141,7 @@ export interface CreateWikiProposalInput {
 export type AgentMemoryProvider = 'claude_code' | 'codex';
 
 export type AgentMemoryExclusionReason =
-  | 'binary'
-  | 'secret_detected'
-  | 'too_large'
-  | 'unsupported'
-  | 'unreadable';
+  'binary' | 'secret_detected' | 'too_large' | 'unsupported' | 'unreadable';
 
 export interface AgentMemorySource {
   id: string;

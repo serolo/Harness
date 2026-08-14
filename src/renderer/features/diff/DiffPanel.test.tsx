@@ -4,9 +4,17 @@
 // components run. Monaco can't render in jsdom, so `@monaco-editor/react` is mocked.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
 
 import { DiffPanel } from './DiffPanel';
+import { createQueryClient } from '@renderer/app/providers';
 import { useDiffStore } from '@renderer/stores/diff';
 import { useChatStore } from '@renderer/stores/chat';
 import type {
@@ -18,6 +26,7 @@ import type {
   SendToAgentResult,
 } from '@shared/review';
 import type { TurnStreamChunk } from '@shared/ipc';
+import type { PrSummary } from '@shared/github';
 
 // Monaco cannot render in jsdom — stub the DiffEditor as a plain div so DiffView
 // mounts without pulling in the real editor.
@@ -100,11 +109,15 @@ function installApi(opts: {
   comments?: DiffComment[];
   sendToAgentResult?: SendToAgentResult;
   stream?: ApiStub['stream'];
+  diffSet?: DiffSet;
+  workspacePr?: PrSummary | null;
+  workspacePrError?: Error;
+  workspacePrOpenError?: Error;
 }): ApiStub {
   const invoke = vi.fn((channel: string, req?: unknown) => {
     switch (channel) {
       case 'diff:get':
-        return Promise.resolve(DIFF_SET);
+        return Promise.resolve(opts.diffSet ?? DIFF_SET);
       case 'diff:menu': {
         const targetRef =
           (req as { targetRef?: string } | undefined)?.targetRef ??
@@ -182,6 +195,14 @@ function installApi(opts: {
         return Promise.resolve({ turns: [] });
       case 'harness:list':
         return Promise.resolve([]);
+      case 'github:getWorkspacePr':
+        return opts.workspacePrError
+          ? Promise.reject(opts.workspacePrError)
+          : Promise.resolve(opts.workspacePr ?? null);
+      case 'github:openPrUrl':
+        return opts.workspacePrOpenError
+          ? Promise.reject(opts.workspacePrOpenError)
+          : Promise.resolve(undefined);
       default:
         return Promise.resolve(undefined);
     }
@@ -193,6 +214,16 @@ function installApi(opts: {
   };
   (window as unknown as { api: ApiStub }).api = api;
   return api;
+}
+
+function renderDiffPanel(
+  props: React.ComponentProps<typeof DiffPanel>,
+): ReturnType<typeof render> {
+  return render(
+    <QueryClientProvider client={createQueryClient()}>
+      <DiffPanel {...props} />
+    </QueryClientProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -210,6 +241,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   delete (window as unknown as { api?: unknown }).api;
 });
@@ -219,15 +251,15 @@ describe('DiffPanel file list + diff view', () => {
     const api = installApi({});
     const onInspectFile = vi.fn();
 
-    render(<DiffPanel workspaceId="ws1" onInspectFile={onInspectFile} />);
-    await screen.findByTestId('diff-file-src/foo.ts');
+    renderDiffPanel({ workspaceId: 'ws1', onInspectFile });
+    await screen.findByTestId('diff-file-src/pending.ts');
 
-    fireEvent.click(screen.getByRole('button', { name: 'All files' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'All files' }));
 
     expect(
       await screen.findByTestId('workspace-file-tree'),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'All files' })).toHaveAttribute(
+    expect(screen.getByRole('tab', { name: 'All files' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
@@ -250,11 +282,15 @@ describe('DiffPanel file list + diff view', () => {
   it('renders the file list from diff:get, then fetches diff:file and mounts the DiffEditor on selection', async () => {
     installApi({});
 
-    render(<DiffPanel workspaceId="ws1" />);
+    renderDiffPanel({ workspaceId: 'ws1' });
 
-    const fileRow = await screen.findByTestId('diff-file-src/foo.ts');
+    const fileRow = await screen.findByTestId('diff-file-src/pending.ts');
     expect(screen.getByTestId('git-changes-header')).toHaveTextContent(
       'Changes 1',
+    );
+    expect(screen.getByTestId('git-changes-header')).toHaveAttribute(
+      'data-ui',
+      'panel-tab-bar',
     );
     expect(screen.getByText('All files')).toBeInTheDocument();
 
@@ -266,8 +302,7 @@ describe('DiffPanel file list + diff view', () => {
     );
 
     expect(fileRow).toBeInTheDocument();
-    expect(fileRow).toHaveTextContent('+3');
-    expect(fileRow).toHaveTextContent('-1');
+    expect(fileRow).toHaveTextContent('+1');
 
     fireEvent.click(fileRow);
 
@@ -276,11 +311,31 @@ describe('DiffPanel file list + diff view', () => {
     expect(monaco).toHaveAttribute('data-modified', 'new line\n');
   });
 
+  it('passes the selected target and scope to the center file inspector', async () => {
+    installApi({});
+    const onInspectFile = vi.fn();
+    renderDiffPanel({ workspaceId: 'ws1', onInspectFile });
+
+    fireEvent.click(await screen.findByTestId('diff-file-src/pending.ts'));
+    expect(onInspectFile).toHaveBeenLastCalledWith('src/pending.ts', {
+      targetRef: 'origin/main',
+      scope: { kind: 'uncommitted' },
+    });
+
+    fireEvent.click(screen.getByTestId('git-more'));
+    fireEvent.click(screen.getByTestId('git-scope-all'));
+    fireEvent.click(await screen.findByTestId('diff-file-src/foo.ts'));
+    expect(onInspectFile).toHaveBeenLastCalledWith('src/foo.ts', {
+      targetRef: 'origin/main',
+      scope: { kind: 'all' },
+    });
+  });
+
   it('changes the target branch and scopes the list to uncommitted or the latest commit', async () => {
     const api = installApi({});
 
-    render(<DiffPanel workspaceId="ws1" />);
-    await screen.findByTestId('diff-file-src/foo.ts');
+    renderDiffPanel({ workspaceId: 'ws1' });
+    await screen.findByTestId('diff-file-src/pending.ts');
 
     fireEvent.click(screen.getByTestId('git-more'));
     fireEvent.click(screen.getByTestId('git-target-branch'));
@@ -296,24 +351,21 @@ describe('DiffPanel file list + diff view', () => {
       expect(api.invoke).toHaveBeenCalledWith('diff:query', {
         workspaceId: 'ws1',
         targetRef: 'origin/develop',
-        scope: { kind: 'all' },
+        scope: { kind: 'uncommitted' },
       }),
     );
     fireEvent.click(screen.getByTestId('git-more'));
-    fireEvent.click(screen.getByTestId('git-scope-uncommitted'));
+    fireEvent.click(screen.getByTestId('git-scope-all'));
     await waitFor(() =>
       expect(api.invoke).toHaveBeenCalledWith('diff:query', {
         workspaceId: 'ws1',
         targetRef: 'origin/develop',
-        scope: { kind: 'uncommitted' },
+        scope: { kind: 'all' },
       }),
     );
     expect(
-      await screen.findByTestId('diff-file-src/pending.ts'),
+      await screen.findByTestId('diff-file-src/foo.ts'),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId('diff-file-src/foo.ts'),
-    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('git-more'));
     fireEvent.click(screen.getByTestId(`git-scope-commit-${COMMITS[0].sha}`));
@@ -327,13 +379,193 @@ describe('DiffPanel file list + diff view', () => {
   });
 });
 
+describe('DiffPanel existing pull request action', () => {
+  const WORKSPACE_PR: PrSummary = {
+    number: 42,
+    url: 'https://github.com/acme/repo/pull/42',
+    title: 'Improve the Git changes toolbar',
+    draft: false,
+    mergeableState: 'clean',
+    state: 'open',
+  };
+
+  it('opens the active workspace existing PR through the narrow IPC command without creating one', async () => {
+    const api = installApi({ workspacePr: WORKSPACE_PR });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+
+    const openPr = await screen.findByRole('button', { name: 'Open PR' });
+    expect(api.invoke).toHaveBeenCalledWith('github:getWorkspacePr', {
+      workspaceId: 'ws1',
+    });
+    expect(screen.getByTestId('git-changes-header')).toContainElement(openPr);
+
+    fireEvent.click(openPr);
+
+    expect(api.invoke).toHaveBeenCalledWith('github:openPrUrl', {
+      url: WORKSPACE_PR.url,
+    });
+    expect(api.invoke).not.toHaveBeenCalledWith('pr:open', expect.anything());
+  });
+
+  it('keeps Open PR available in the Git changes toolbar when there are no file changes', async () => {
+    installApi({
+      workspacePr: WORKSPACE_PR,
+      diffSet: { ...DIFF_SET, files: [] },
+    });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+
+    expect(await screen.findByTestId('diff-no-changes')).toBeInTheDocument();
+    const openPr = await screen.findByRole('button', { name: 'Open PR' });
+    expect(screen.getByTestId('git-changes-header')).toContainElement(openPr);
+  });
+
+  it('keeps refreshing a non-terminal PR while the Git pane is mounted', async () => {
+    vi.useFakeTimers();
+    const api = installApi({ workspacePr: WORKSPACE_PR });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(
+      api.invoke.mock.calls.filter(
+        ([channel]) => channel === 'github:getWorkspacePr',
+      ),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_001);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(
+      api.invoke.mock.calls.filter(
+        ([channel]) => channel === 'github:getWorkspacePr',
+      ).length,
+    ).toBeGreaterThan(1);
+  });
+
+  it('reports a browser launch failure without exposing error details', async () => {
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    installApi({
+      workspacePr: WORKSPACE_PR,
+      workspacePrOpenError: new Error('secret diagnostic details'),
+    });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Open PR' }));
+
+    await waitFor(() =>
+      expect(alert).toHaveBeenCalledWith(
+        'Failed to open the pull request in your browser.',
+      ),
+    );
+    expect(alert).not.toHaveBeenCalledWith(
+      expect.stringContaining('secret diagnostic details'),
+    );
+  });
+
+  it('refetches the workspace PR when its branch or PR-number cache revision changes', async () => {
+    const api = installApi({ workspacePr: WORKSPACE_PR });
+    const queryClient = createQueryClient();
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <DiffPanel
+          workspaceId="ws1"
+          workspaceBranch="agent/first-branch"
+          workspacePrNumber={null}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(
+        api.invoke.mock.calls.filter(
+          ([channel]) => channel === 'github:getWorkspacePr',
+        ),
+      ).toHaveLength(1),
+    );
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DiffPanel
+          workspaceId="ws1"
+          workspaceBranch="agent/renamed-branch"
+          workspacePrNumber={null}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(
+        api.invoke.mock.calls.filter(
+          ([channel]) => channel === 'github:getWorkspacePr',
+        ),
+      ).toHaveLength(2),
+    );
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <DiffPanel
+          workspaceId="ws1"
+          workspaceBranch="agent/renamed-branch"
+          workspacePrNumber={42}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(
+        api.invoke.mock.calls.filter(
+          ([channel]) => channel === 'github:getWorkspacePr',
+        ),
+      ).toHaveLength(3),
+    );
+  });
+
+  it.each([
+    ['the workspace has no PR', { workspacePr: null }],
+    [
+      'the PR lookup fails',
+      { workspacePrError: new Error('GitHub unavailable') },
+    ],
+  ])('hides Open PR when %s', async (_case, apiOptions) => {
+    const api = installApi(apiOptions);
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('github:getWorkspacePr', {
+        workspaceId: 'ws1',
+      }),
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Open PR' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not look up or show a PR action without an active workspace', () => {
+    const api = installApi({ workspacePr: WORKSPACE_PR });
+
+    renderDiffPanel({ workspaceId: null });
+
+    expect(api.invoke).not.toHaveBeenCalledWith(
+      'github:getWorkspacePr',
+      expect.anything(),
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Open PR' }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe('DiffPanel comments', () => {
   it('creating a comment via the popover calls comment:create', async () => {
     const api = installApi({});
 
-    render(<DiffPanel workspaceId="ws1" />);
+    renderDiffPanel({ workspaceId: 'ws1' });
 
-    fireEvent.click(await screen.findByTestId('diff-file-src/foo.ts'));
+    fireEvent.click(await screen.findByTestId('diff-file-src/pending.ts'));
     await screen.findByTestId('monaco-diff');
 
     fireEvent.click(screen.getByTestId('diff-view-add-comment'));
@@ -350,7 +582,7 @@ describe('DiffPanel comments', () => {
         'comment:create',
         expect.objectContaining({
           workspaceId: 'ws1',
-          filePath: 'src/foo.ts',
+          filePath: 'src/pending.ts',
           lineStart: 2,
           lineEnd: 2,
           side: 'new',
@@ -409,9 +641,9 @@ describe('DiffPanel comments', () => {
       stream,
     });
 
-    render(<DiffPanel workspaceId="ws1" />);
+    renderDiffPanel({ workspaceId: 'ws1' });
 
-    fireEvent.click(await screen.findByTestId('diff-file-src/foo.ts'));
+    fireEvent.click(await screen.findByTestId('diff-file-src/pending.ts'));
     const sendButton = await screen.findByTestId('send-to-agent');
     expect(sendButton).toHaveTextContent('Send to agent (1)');
     fireEvent.click(sendButton);

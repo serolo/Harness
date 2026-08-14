@@ -35,13 +35,14 @@ export interface McpTurnKnowledge {
 /** Build a private per-turn gateway config; it contains no page content or user prompt. */
 export function prepareMcpTurnKnowledge(
   projectId: string,
+  projectDirectoryName: string,
   config: KnowledgeConfig,
   maxContextTokens: number,
 ): McpTurnKnowledge {
   const cleanupDir = mkdtempSync(join(tmpdir(), 'harness-knowledge-mcp-'));
   const configFile = join(cleanupDir, 'config.json');
   const traceFile = join(cleanupDir, 'trace.jsonl');
-  const root = knowledgeDir(projectId);
+  const root = knowledgeDir(projectDirectoryName);
   const metadata: GatewayConfigFile = {
     projectId,
     root,
@@ -52,8 +53,14 @@ export function prepareMcpTurnKnowledge(
     qmdStateRoot: dirname(root),
     traceFile,
   };
-  writeFileSync(configFile, JSON.stringify(metadata), { encoding: 'utf8', mode: 0o600 });
-  const entry = join(dirname(fileURLToPath(import.meta.url)), 'knowledge-mcp.js');
+  writeFileSync(configFile, JSON.stringify(metadata), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  const entry = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'knowledge-mcp.js',
+  );
   return {
     instruction: KNOWLEDGE_MCP_INSTRUCTION,
     server: {
@@ -75,18 +82,22 @@ function sanitizeTraceEvent(value: unknown): AgentEvent | null {
   if (
     row.kind !== 'knowledge_retrieval' ||
     (row.operation !== 'search' && row.operation !== 'read') ||
-    (row.provider !== 'qmd' && row.provider !== 'basic' && row.provider !== 'none') ||
+    (row.provider !== 'qmd' &&
+      row.provider !== 'basic' &&
+      row.provider !== 'none') ||
     typeof row.contextTokens !== 'number' ||
     !Number.isFinite(row.contextTokens) ||
     row.contextTokens < 0
-  ) return null;
+  )
+    return null;
   if (row.operation === 'search') {
     return {
       kind: 'knowledge_retrieval',
       operation: 'search',
       provider: row.provider,
       contextTokens: row.contextTokens,
-      ...(typeof row.resultCount === 'number' && Number.isFinite(row.resultCount)
+      ...(typeof row.resultCount === 'number' &&
+      Number.isFinite(row.resultCount)
         ? { resultCount: Math.max(0, Math.floor(row.resultCount)) }
         : {}),
     };
@@ -95,7 +106,8 @@ function sanitizeTraceEvent(value: unknown): AgentEvent | null {
     typeof row.path !== 'string' ||
     row.path.startsWith('/') ||
     row.path.replaceAll('\\', '/').split('/').includes('..')
-  ) return null;
+  )
+    return null;
   return {
     kind: 'knowledge_retrieval',
     operation: 'read',
@@ -107,7 +119,9 @@ function sanitizeTraceEvent(value: unknown): AgentEvent | null {
 }
 
 /** Consume only sanitized relative-path/count metadata, then remove the private turn dir. */
-export function consumeKnowledgeTrace(trace: PrivateKnowledgeTrace | undefined): AgentEvent[] {
+export function consumeKnowledgeTrace(
+  trace: PrivateKnowledgeTrace | undefined,
+): AgentEvent[] {
   if (!trace) return [];
   try {
     const content = readFileSync(trace.filePath, 'utf8');
@@ -116,11 +130,15 @@ export function consumeKnowledgeTrace(trace: PrivateKnowledgeTrace | undefined):
       try {
         const event = sanitizeTraceEvent(JSON.parse(line) as unknown);
         return event ? [event] : [];
+      } catch {
+        return [];
       }
-      catch { return []; }
     });
-  } catch { return []; }
-  finally { rmSync(trace.cleanupDir, { recursive: true, force: true }); }
+  } catch {
+    return [];
+  } finally {
+    rmSync(trace.cleanupDir, { recursive: true, force: true });
+  }
 }
 
 export function usesKnowledgeMcp(harness: HarnessId): boolean {

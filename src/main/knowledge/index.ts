@@ -119,6 +119,8 @@ function truncateSection(section: string, maxCharacters: number): string {
 
 export const KNOWLEDGE_RECONCILIATION_INSTRUCTION = `
 After answering the user, reconcile whether this turn produced durable project knowledge.
+Only emit a proposal when this turn changed durable files in the repository.
+Planning, analysis, generated plan files, and read-only investigation never qualify.
 Do not edit provider-private memory files. If there is durable knowledge to preserve,
 append one or more ${PROPOSAL_OPEN} JSON blocks ${PROPOSAL_CLOSE}.
 Each JSON object must have "title", "summary", and "operations". Operations are
@@ -318,14 +320,48 @@ function normalizeImportedPage(content: string): string {
   }
 
   const parsed = parseOkfMarkdown(content);
+  const missingFields: string[] = [];
   if (
-    typeof parsed.frontmatter.type === 'string' &&
-    parsed.frontmatter.type.trim() !== ''
+    typeof parsed.frontmatter.type !== 'string' ||
+    parsed.frontmatter.type.trim() === ''
   ) {
-    return content;
+    missingFields.push('type: Document');
   }
+  if (!Object.hasOwn(parsed.frontmatter, 'status')) {
+    missingFields.push('status: canonical');
+  }
+  return missingFields.length === 0
+    ? content
+    : content.replace(/^---\n/, `---\n${missingFields.join('\n')}\n`);
+}
 
-  return content.replace(/^---\n/, '---\ntype: Document\n');
+/**
+ * Make the implicit legacy default durable without changing authored metadata.
+ * Malformed and untyped pages remain untouched so lint can report them verbatim.
+ */
+async function statuslessPages(root: string): Promise<Map<string, string>> {
+  const candidates = new Map<string, string>();
+  for (const path of await markdownFiles(root)) {
+    if (RESERVED.has(path.split('/').at(-1) ?? '')) continue;
+    const target = confinedPath(root, path);
+    const content = await readFile(target, 'utf8');
+    let frontmatter: Record<string, unknown>;
+    try {
+      ({ frontmatter } = parseOkfMarkdown(content));
+    } catch {
+      // Catalog refresh must preserve malformed pages for lint and manual repair.
+      continue;
+    }
+    if (
+      Object.hasOwn(frontmatter, 'status') ||
+      typeof frontmatter.type !== 'string' ||
+      frontmatter.type.trim() === ''
+    ) {
+      continue;
+    }
+    candidates.set(path, content);
+  }
+  return candidates;
 }
 
 function pageFromContent(path: string, content: string): WikiPage {
@@ -447,6 +483,8 @@ export class WikiService {
   constructor(
     private readonly db: AppDatabase,
     private readonly qmd = new QmdSearchProvider(),
+    private readonly gitFactory: (baseDir: string) => SimpleGit = (baseDir) =>
+      simpleGit({ baseDir }),
   ) {}
 
   async getConfig(projectId: string): Promise<KnowledgeConfig> {
@@ -489,16 +527,30 @@ export class WikiService {
     }
   }
 
-  private git(projectId: string): SimpleGit {
-    return simpleGit({ baseDir: knowledgeDir(projectId) });
+  private async directoryName(projectId: string): Promise<string> {
+    const project = await new ProjectsRepo(this.db).getById(projectId);
+    if (project === null) throw new AppError('not_found', 'project not found');
+    return project.directoryName;
+  }
+
+  private async root(projectId: string): Promise<string> {
+    return knowledgeDir(await this.directoryName(projectId));
+  }
+
+  private async proposalsRoot(projectId: string): Promise<string> {
+    return knowledgeProposalsDir(await this.directoryName(projectId));
+  }
+
+  private async git(projectId: string): Promise<SimpleGit> {
+    return this.gitFactory(await this.root(projectId));
   }
 
   async initializeProject(projectId: string): Promise<{ commit: string }> {
     await this.assertEnabled(projectId);
     const project = await new ProjectsRepo(this.db).getById(projectId);
     if (project === null) throw new AppError('not_found', 'project not found');
-    const root = knowledgeDir(projectId);
-    const git = this.git(projectId);
+    const root = await this.root(projectId);
+    const git = await this.git(projectId);
     if (!(await git.checkIsRepo())) {
       await git.init();
       await git.addConfig('user.name', 'Harness Knowledge');
@@ -520,11 +572,11 @@ export class WikiService {
 
   private async ensure(projectId: string): Promise<string> {
     await this.initializeProject(projectId);
-    return knowledgeDir(projectId);
+    return this.root(projectId);
   }
 
   private async head(projectId: string): Promise<string> {
-    return (await this.git(projectId).revparse(['HEAD'])).trim();
+    return (await (await this.git(projectId)).revparse(['HEAD'])).trim();
   }
 
   async listPages(projectId: string): Promise<WikiPageSummary[]> {
@@ -617,7 +669,7 @@ export class WikiService {
         );
         const qmdResults = await this.qmd.search({
           projectId,
-          root: knowledgeDir(projectId),
+          root: await this.root(projectId),
           commit: await this.head(projectId),
           query,
           limit: limit ?? config.search.maxResults,
@@ -1037,7 +1089,7 @@ export class WikiService {
       status: 'pending_review',
       createdAt: Date.now(),
     };
-    const dir = resolve(knowledgeProposalsDir(input.projectId), proposal.id);
+    const dir = resolve(await this.proposalsRoot(input.projectId), proposal.id);
     await mkdir(dir, { recursive: true });
     await writeFile(
       resolve(dir, 'proposal.json'),
@@ -1049,7 +1101,7 @@ export class WikiService {
 
   async listProposals(projectId: string): Promise<WikiProposal[]> {
     await this.assertEnabled(projectId);
-    const root = knowledgeProposalsDir(projectId);
+    const root = await this.proposalsRoot(projectId);
     const proposals: WikiProposal[] = [];
     for (const entry of await readdir(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
@@ -1069,7 +1121,7 @@ export class WikiService {
   private async saveProposal(proposal: WikiProposal): Promise<void> {
     await writeFile(
       resolve(
-        knowledgeProposalsDir(proposal.projectId),
+        await this.proposalsRoot(proposal.projectId),
         proposal.id,
         'proposal.json',
       ),
@@ -1079,7 +1131,7 @@ export class WikiService {
   }
 
   private async rebuildIndex(projectId: string): Promise<void> {
-    const root = knowledgeDir(projectId);
+    const root = await this.root(projectId);
     const pages = await this.listPages(projectId);
     const lines = pages
       .filter((page) => page.status !== 'deprecated')
@@ -1115,21 +1167,72 @@ export class WikiService {
     }
     this.accepting.add(projectId);
     try {
-      await this.ensure(projectId);
-      await this.rebuildIndex(projectId);
-      const pages = await this.listPages(projectId);
-      const git = this.git(projectId);
-      const status = await git.status();
-      if (!status.files.some((file) => file.path === 'index.md')) {
-        return { updated: false, pageCount: pages.length };
+      const root = await this.ensure(projectId);
+      const git = await this.git(projectId);
+      const initialStatus = await git.status();
+      if (initialStatus.staged.length > 0) {
+        throw new AppError(
+          'conflict',
+          'knowledge catalog cannot update while the knowledge repository has staged changes',
+          { stagedPaths: initialStatus.staged },
+        );
       }
-      await git.add(['index.md']);
-      await git.commit('wiki: refresh knowledge catalog');
-      return {
-        updated: true,
-        pageCount: pages.length,
-        commit: await this.head(projectId),
+      const baseCommit = await this.head(projectId);
+      const originalFiles = await statuslessPages(root);
+      originalFiles.set(
+        'index.md',
+        await readFile(confinedPath(root, 'index.md'), 'utf8'),
+      );
+      const repairedPaths = [...originalFiles.keys()].filter(
+        (path) => path !== 'index.md',
+      );
+      const restore = async (): Promise<void> => {
+        for (const [path, content] of originalFiles) {
+          await writeFile(confinedPath(root, path), content, 'utf8');
+        }
       };
+
+      try {
+        for (const path of repairedPaths) {
+          const content = originalFiles.get(path);
+          if (content === undefined) continue;
+          await writeFile(
+            confinedPath(root, path),
+            content.replace(/^---\n/, '---\nstatus: canonical\n'),
+            'utf8',
+          );
+        }
+        await this.rebuildIndex(projectId);
+        const pages = await this.listPages(projectId);
+        const status = await git.status();
+        const stagedPaths = [...repairedPaths, 'index.md'];
+        const changedPaths = new Set(status.files.map((file) => file.path));
+        if (!stagedPaths.some((path) => changedPaths.has(path))) {
+          return {
+            updated: false,
+            pageCount: pages.length,
+            repairedCount: 0,
+          };
+        }
+        await git.add(stagedPaths);
+        await git.commit('wiki: refresh knowledge catalog', stagedPaths);
+        return {
+          updated: true,
+          pageCount: pages.length,
+          repairedCount: repairedPaths.length,
+          commit: await this.head(projectId),
+        };
+      } catch (error) {
+        await git.reset(['--mixed', baseCommit]).catch((resetError) => {
+          logger.error(
+            `[knowledge:catalog] failed to restore Git state for ${projectId}: ${String(
+              resetError,
+            )}`,
+          );
+        });
+        await restore();
+        throw error;
+      }
     } finally {
       this.accepting.delete(projectId);
     }
@@ -1171,7 +1274,7 @@ export class WikiService {
       await this.saveProposal(proposal);
       return proposal;
     }
-    const root = knowledgeDir(projectId);
+    const root = await this.root(projectId);
     const touched = new Map<string, string | null>();
     const remember = async (path: string): Promise<void> => {
       if (touched.has(path)) return;
@@ -1198,7 +1301,7 @@ export class WikiService {
         }
       }
     };
-    const git = this.git(projectId);
+    const git = await this.git(projectId);
     try {
       for (const operation of proposal.operations) {
         if (operation.op === 'move') {
@@ -1341,7 +1444,7 @@ export class WikiService {
 
   async history(projectId: string): Promise<WikiHistoryEntry[]> {
     await this.ensure(projectId);
-    const log = await this.git(projectId).log({ maxCount: 100 });
+    const log = await (await this.git(projectId)).log({ maxCount: 100 });
     return log.all.map((entry) => ({
       commit: entry.hash,
       subject: entry.message,
@@ -1464,7 +1567,7 @@ export class WikiService {
         }
       }
 
-      const root = knowledgeDir(projectId);
+      const root = await this.root(projectId);
       const existing = new Map<string, boolean>();
       const remember = async (path: string): Promise<void> => {
         try {

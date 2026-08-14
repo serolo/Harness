@@ -4,11 +4,25 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const capturedHandlers = new Map<string, unknown>();
+const { openExternal, showItemInFolder, createThumbnailFromPath } = vi.hoisted(
+  () => ({
+    openExternal: vi.fn(),
+    showItemInFolder: vi.fn(),
+    createThumbnailFromPath: vi.fn(),
+  }),
+);
 vi.mock('electron', () => {
   const noop = (): void => {};
   const app = new Proxy(
@@ -31,6 +45,8 @@ vi.mock('electron', () => {
       removeAllListeners: noop,
     },
     MessageChannelMain: class {},
+    nativeImage: { createThumbnailFromPath },
+    shell: { openExternal, showItemInFolder },
   };
 });
 
@@ -53,6 +69,10 @@ async function invoke<C extends CommandChannel>(
 
 beforeEach(() => {
   capturedHandlers.clear();
+  openExternal.mockReset();
+  openExternal.mockResolvedValue(undefined);
+  showItemInFolder.mockReset();
+  createThumbnailFromPath.mockReset();
 });
 
 afterEach(() => {
@@ -142,6 +162,34 @@ describe('diff IPC menu/query handlers', () => {
   });
 });
 
+describe('github:openPrUrl', () => {
+  it('opens a validated github.com pull request in the system browser', async () => {
+    registerIpc({} as AppContext);
+
+    await expect(
+      invoke('github:openPrUrl', {
+        url: 'https://github.com/acme/repo/pull/42',
+      }),
+    ).resolves.toBeUndefined();
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://github.com/acme/repo/pull/42',
+    );
+  });
+
+  it.each([
+    'http://github.com/acme/repo/pull/42',
+    'https://evil.example/acme/repo/pull/42',
+    'https://github.com/acme/repo/issues/42',
+    'file:///tmp/pull/42',
+    'not a URL',
+  ])('rejects an unsafe or non-PR URL: %s', async (url) => {
+    registerIpc({} as AppContext);
+
+    await expect(invoke('github:openPrUrl', { url })).rejects.toThrow();
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+});
+
 describe('workspace directory browser IPC', () => {
   it('lists directories first and confines traversal after following symlinks', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'harness-files-'));
@@ -179,6 +227,118 @@ describe('workspace directory browser IPC', () => {
           path: 'outside-link',
         }),
       ).rejects.toThrow('file path must stay inside workspace');
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('file:revealInFinder', () => {
+  it('reveals a real workspace file and rejects traversal, directories, and escaping symlinks', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'harness-reveal-'));
+    const workspaceRoot = join(fixtureRoot, 'workspace');
+    const outsideRoot = join(fixtureRoot, 'outside');
+    await mkdir(join(workspaceRoot, 'src'), { recursive: true });
+    await mkdir(outsideRoot);
+    const filePath = join(workspaceRoot, 'src', 'index.ts');
+    await writeFile(filePath, 'export {};\n');
+    await writeFile(join(outsideRoot, 'secret.ts'), 'secret\n');
+    await symlink(
+      join(outsideRoot, 'secret.ts'),
+      join(workspaceRoot, 'escape.ts'),
+    );
+
+    try {
+      registerIpc({
+        workspaces: {
+          get: async () => ({ id: 'ws1', worktreePath: workspaceRoot }),
+        },
+      } as unknown as AppContext);
+
+      await expect(
+        invoke('file:revealInFinder', {
+          source: 'workspace',
+          workspaceId: 'ws1',
+          path: 'src/index.ts',
+        }),
+      ).resolves.toBeUndefined();
+      expect(showItemInFolder).toHaveBeenCalledWith(await realpath(filePath));
+
+      for (const path of [
+        '../outside/secret.ts',
+        filePath,
+        'src',
+        'escape.ts',
+      ]) {
+        showItemInFolder.mockClear();
+        await expect(
+          invoke('file:revealInFinder', {
+            source: 'workspace',
+            workspaceId: 'ws1',
+            path,
+          }),
+        ).rejects.toThrow();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+      }
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('attachment:imagePreview', () => {
+  it('derives the path from the persisted turn and returns a re-encoded thumbnail', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'harness-attachment-'));
+    const imagePath = join(fixtureRoot, 'screen.png');
+    await writeFile(imagePath, 'not decoded by the mocked nativeImage');
+    createThumbnailFromPath.mockResolvedValue({
+      isEmpty: () => false,
+      toPNG: () => Buffer.from('preview'),
+    });
+
+    try {
+      registerIpc({
+        recorder: {
+          history: async (workspaceId: string) => [
+            {
+              id: 'turn-1',
+              workspaceId,
+              events: [
+                {
+                  event: {
+                    kind: 'user_attachments',
+                    attachments: [{ type: 'image', path: imagePath }],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      } as unknown as AppContext);
+
+      await expect(
+        invoke('attachment:imagePreview', {
+          workspaceId: 'ws1',
+          turnId: 'turn-1',
+          attachmentIndex: 0,
+        }),
+      ).resolves.toEqual({
+        dataUrl: 'data:image/png;base64,cHJldmlldw==',
+      });
+      expect(createThumbnailFromPath).toHaveBeenCalledWith(imagePath, {
+        width: 1024,
+        height: 1024,
+      });
+
+      createThumbnailFromPath.mockClear();
+      await expect(
+        invoke('attachment:imagePreview', {
+          workspaceId: 'ws1',
+          turnId: 'another-turn',
+          attachmentIndex: 0,
+        }),
+      ).rejects.toThrow('image attachment is unavailable');
+      expect(createThumbnailFromPath).not.toHaveBeenCalled();
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });
     }

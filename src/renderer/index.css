@@ -56,6 +56,43 @@ body,
   background-color: rgba(255, 255, 255, 0.42);
 }
 
+/* The composer lives inside resizable panes, so viewport breakpoints cannot tell when
+   its toolbar is out of room. Keep Send pinned, compact labels first, then move status
+   controls into the actions menu based on the prompt card's own width. */
+.composer-responsive {
+  container-type: inline-size;
+}
+
+.composer-responsive-label,
+.composer-wide-only {
+  display: none;
+}
+
+.composer-narrow-only {
+  display: block;
+}
+
+.composer-narrow-grid {
+  display: grid;
+}
+
+@container (min-width: 42rem) {
+  .composer-responsive-label {
+    display: inline;
+  }
+}
+
+@container (min-width: 48rem) {
+  .composer-wide-only {
+    display: block;
+  }
+
+  .composer-narrow-only,
+  .composer-narrow-grid {
+    display: none;
+  }
+}
+
 /* xterm requires a scrollable viewport for wheel/trackpad navigation, but its native
    scrollbar reserves a visible gutter inside the terminal surface. Hide only the
    scrollbar chrome; overflow and programmatic scrolling remain intact. */

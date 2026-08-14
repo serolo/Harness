@@ -29,6 +29,7 @@ import type {
   Todo,
 } from './harness';
 import type {
+  ChatContextRecord,
   CreateWorkspaceReq,
   Project,
   TurnRecord,
@@ -230,6 +231,34 @@ export interface Commands {
   'chat:history': { req: { workspaceId: string }; res: ChatHistory };
   /** Delete all persisted turns/events for a workspace transcript. */
   'chat:clear': { req: { workspaceId: string }; res: void };
+  /**
+   * Durable chat tabs for a workspace, in `position` order. Bootstraps a single
+   * 'Untitled' tab when the workspace has none, so the renderer never invents one
+   * (one source of truth, no duplicate-default race across panel mounts). APPEND-ONLY.
+   */
+  'chat:contexts:list': {
+    req: { workspaceId: string };
+    res: ChatContextRecord[];
+  };
+  /** Open a new chat tab at the next `position`. APPEND-ONLY. */
+  'chat:contexts:create': {
+    req: {
+      workspaceId: string;
+      label?: string;
+      initialSessionId?: string | null;
+    };
+    res: ChatContextRecord;
+  };
+  /** Relabel a chat tab. APPEND-ONLY. */
+  'chat:contexts:rename': {
+    req: { contextId: string; label: string };
+    res: void;
+  };
+  /**
+   * Close a chat tab: its turns are orphaned (`contextId` → null) and the tab row is
+   * deleted, in one transaction. Turn history itself is never deleted. APPEND-ONLY.
+   */
+  'chat:contexts:close': { req: { contextId: string }; res: void };
   /** Global estimated spend aggregated across all non-reverted turns. */
   'usage:monthly': {
     req: { month: string; startAt: number; endAt: number };
@@ -660,6 +689,20 @@ export interface Commands {
     req: { workspaceId: string; path: string };
     res: WorkspaceDirectoryEntry[];
   };
+  /** Open a validated github.com pull-request URL in the system browser. */
+  'github:openPrUrl': { req: { url: string }; res: void };
+  /** Reveal a validated, currently displayed file in the operating-system file manager. */
+  'file:revealInFinder': {
+    req:
+      | { source: 'workspace'; workspaceId: string; path: string }
+      | { source: 'plan'; path: string };
+    res: void;
+  };
+  /** Load a bounded raster preview from an attachment already persisted on this turn. */
+  'attachment:imagePreview': {
+    req: { workspaceId: string; turnId: string; attachmentIndex: number };
+    res: { dataUrl: string };
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -836,6 +879,10 @@ export interface TurnStartArg {
    * omitted preserves the legacy behaviour of resuming the workspace's latest session.
    */
   sessionId?: string | null;
+  /** The chat tab this turn belongs to. Omitted turns are orphaned (context_id = NULL). */
+  contextId?: string;
+  /** User-facing text when `prompt` contains an expanded slash command. APPEND-ONLY. */
+  displayPrompt?: string;
 }
 
 /**

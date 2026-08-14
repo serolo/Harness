@@ -194,6 +194,30 @@ describe('HarnessSupervisor turn lifecycle', () => {
     });
   });
 
+  it('persists submitted attachments immediately after the user message', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const h = await makeHarness(db, new MockHarness({ defaultDelayMs: 0 }));
+    const { sink, done } = collectSink();
+    const attachments = [
+      { type: 'image' as const, path: '/tmp/example.png' },
+      { type: 'file' as const, path: '/tmp/notes.txt' },
+    ];
+
+    await h.supervisor.startTurn(
+      h.workspace.id,
+      { ...baseOpts, attachments },
+      sink,
+    );
+    await done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    const [turn] = await h.recorder.history(h.workspace.id);
+    expect(turn.events.slice(0, 2).map(({ event }) => event)).toEqual([
+      { kind: 'user_message', text: 'do the thing' },
+      { kind: 'user_attachments', attachments },
+    ]);
+  });
+
   it('rejects a concurrent turn with AppError(conflict)', async () => {
     db = openDb(join(tmpDir, 'test.db'));
     // Long-running script so the first turn stays active.

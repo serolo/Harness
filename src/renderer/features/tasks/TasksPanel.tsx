@@ -4,8 +4,8 @@
 // form can show the resolved inherited mode. All main access happens inside
 // `useTasks` / a one-shot `settings:getEffective`, via `@renderer/ipc`.
 
-import { useEffect, useState } from 'react';
-import { CircleCheck, CircleOff, History, Plus } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { CircleCheck, CircleOff, History, Plus, Search } from 'lucide-react';
 import type { AgentMode } from '@shared/harness';
 import type { ScheduledTask } from '@shared/tasks';
 import type {
@@ -14,9 +14,10 @@ import type {
   WikiPage,
   WikiPageSummary,
   WikiProposal,
+  WikiSearchResult,
 } from '@shared/knowledge';
 import { invoke, onEvent } from '@renderer/ipc';
-import { Button } from '@renderer/components/ui';
+import { Button, PanelTab, PanelTabBar } from '@renderer/components/ui';
 import { useTasks } from './useTasks';
 import { TaskRow } from './TaskRow';
 import { TaskForm, type TaskFormValues } from './TaskForm';
@@ -154,43 +155,45 @@ export function TasksPanel({
       className="flex h-full min-h-0 flex-col bg-surface-app"
       data-testid="tasks-panel"
     >
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-1 bg-surface-panel px-3">
-        <div
-          className="flex h-full items-end"
-          role="tablist"
-          aria-label="Workspace tools"
+      <PanelTabBar
+        label="Workspace tools"
+        testId="workspace-tools-header"
+        actions={
+          activeTab === 'tasks' ? (
+            <Button
+              variant="primary"
+              size="sm"
+              data-testid="task-new"
+              onClick={() => setForm({ kind: 'create' })}
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+              New task
+            </Button>
+          ) : null
+        }
+      >
+        <PanelTab
+          active={activeTab === 'tasks'}
+          testId="workspace-tab-tasks"
+          onClick={() => setActiveTab('tasks')}
         >
-          <WorkspaceToolTab
-            active={activeTab === 'tasks'}
-            label="Tasks"
-            testId="workspace-tab-tasks"
-            onClick={() => setActiveTab('tasks')}
-          />
-          <WorkspaceToolTab
-            active={activeTab === 'agents'}
-            label="Agents"
-            testId="workspace-tab-agents"
-            onClick={() => setActiveTab('agents')}
-          />
-          <WorkspaceToolTab
-            active={activeTab === 'knowledge'}
-            label="Knowledge"
-            testId="workspace-tab-knowledge"
-            onClick={() => setActiveTab('knowledge')}
-          />
-        </div>
-        {activeTab === 'tasks' ? (
-          <Button
-            variant="primary"
-            size="sm"
-            data-testid="task-new"
-            onClick={() => setForm({ kind: 'create' })}
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden />
-            New task
-          </Button>
-        ) : null}
-      </div>
+          Tasks
+        </PanelTab>
+        <PanelTab
+          active={activeTab === 'agents'}
+          testId="workspace-tab-agents"
+          onClick={() => setActiveTab('agents')}
+        >
+          Agents
+        </PanelTab>
+        <PanelTab
+          active={activeTab === 'knowledge'}
+          testId="workspace-tab-knowledge"
+          onClick={() => setActiveTab('knowledge')}
+        >
+          Knowledge
+        </PanelTab>
+      </PanelTabBar>
 
       {activeTab === 'agents' ? (
         <AgentsPanel projectId={projectId} workspaceId={workspaceId} />
@@ -275,35 +278,6 @@ export function TasksPanel({
   );
 }
 
-function WorkspaceToolTab({
-  active,
-  label,
-  testId,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  testId: string;
-  onClick: () => void;
-}): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      data-testid={testId}
-      onClick={onClick}
-      className={`h-full border-b-2 px-3 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] ${
-        active
-          ? 'border-accent text-fg-1'
-          : 'border-transparent text-fg-3 hover:text-fg-1'
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
 function WorkspaceKnowledgeStatus({
   projectId,
   reviewRequestId,
@@ -332,6 +306,10 @@ function WorkspaceKnowledgeStatus({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<WikiSearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setConfig(null);
@@ -343,6 +321,8 @@ function WorkspaceKnowledgeStatus({
     setProposals([]);
     setProposalsError(false);
     setError(false);
+    setSearchQuery('');
+    setSearchResults([]);
     if (projectId === null) {
       setLoading(false);
       return;
@@ -375,6 +355,29 @@ function WorkspaceKnowledgeStatus({
     void invoke('knowledge:getPage', { projectId, path })
       .then(setSelectedPage)
       .catch(() => setError(true));
+  };
+
+  const handleSearchChange = (query: string): void => {
+    setSearchQuery(query);
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    const trimmed = query.trim();
+    if (!trimmed || projectId === null) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    setSearchLoading(true);
+    searchDebounce.current = setTimeout(() => {
+      void invoke('knowledge:search', { projectId, query: trimmed })
+        .then((results) => {
+          setSearchResults(results);
+          setSearchLoading(false);
+        })
+        .catch(() => {
+          setSearchResults([]);
+          setSearchLoading(false);
+        });
+    }, 250);
   };
 
   const openHistory = (): void => {
@@ -582,13 +585,42 @@ function WorkspaceKnowledgeStatus({
           </div>
         </div>
       ) : (
-        <KnowledgeFolderBrowser
-          pages={pages}
-          onOpenPage={openPage}
-          compact
-          expandedFolders={expandedFolders}
-          onExpandedFoldersChange={onExpandedFoldersChange}
-        />
+        <>
+          <div className="relative mb-3">
+            <Search
+              className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-3"
+              aria-hidden
+            />
+            <input
+              type="search"
+              placeholder="Search knowledge pages…"
+              aria-label="Search knowledge pages"
+              data-testid="knowledge-search-input"
+              className="w-full rounded-2 border border-border-1 bg-bg-3 py-1.5 pl-8 pr-3 text-xs text-fg-1 placeholder:text-fg-3 outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+            />
+          </div>
+          {searchQuery.trim() ? (
+            <KnowledgeSearchResults
+              results={searchResults}
+              loading={searchLoading}
+              onOpenPage={(path) => {
+                openPage(path);
+                setSearchQuery('');
+                setSearchResults([]);
+              }}
+            />
+          ) : (
+            <KnowledgeFolderBrowser
+              pages={pages}
+              onOpenPage={openPage}
+              compact
+              expandedFolders={expandedFolders}
+              onExpandedFoldersChange={onExpandedFoldersChange}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -765,6 +797,62 @@ function KnowledgeHistory({
         </li>
       ))}
     </ol>
+  );
+}
+
+function KnowledgeSearchResults({
+  results,
+  loading,
+  onOpenPage,
+}: {
+  results: WikiSearchResult[];
+  loading: boolean;
+  onOpenPage: (path: string) => void;
+}): React.JSX.Element {
+  if (loading) {
+    return <div className="py-8 text-center text-xs text-fg-3">Searching…</div>;
+  }
+  if (results.length === 0) {
+    return (
+      <div
+        className="py-8 text-center text-xs text-fg-3"
+        data-testid="knowledge-search-empty"
+      >
+        No matching pages found.
+      </div>
+    );
+  }
+  return (
+    <ul className="space-y-1" data-testid="knowledge-search-results">
+      {results.map((result) => (
+        <li key={result.path}>
+          <button
+            type="button"
+            title={result.path}
+            onClick={() => onOpenPage(result.path)}
+            className="flex w-full items-start gap-2 rounded-2 px-2 py-1.5 text-left outline-none transition-colors duration-fast hover:bg-bg-3 focus-visible:ring-2 focus-visible:ring-focus-ring"
+          >
+            <Search
+              className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fg-3"
+              aria-hidden
+            />
+            <span className="min-w-0">
+              <span className="block truncate text-xs text-fg-1">
+                {result.title}
+              </span>
+              {result.heading ? (
+                <span className="block truncate text-2xs text-fg-2">
+                  § {result.heading}
+                </span>
+              ) : null}
+              <span className="mt-0.5 block text-2xs leading-relaxed text-fg-3 line-clamp-2">
+                {result.snippet}
+              </span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

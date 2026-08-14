@@ -25,6 +25,8 @@ export interface RenderedTurn {
   model?: string;
   costMicros?: number;
   pricingKey?: string;
+  /** Owning chat tab; null/undefined for task-owned turns and turns whose tab was closed. */
+  contextId?: string | null;
 }
 
 export interface TaskTurnOwner {
@@ -52,6 +54,7 @@ export interface ChatState {
     mode?: AgentMode,
     harness?: HarnessId,
     model?: string,
+    contextId?: string,
   ) => void;
   /** Atomically claim and begin a scheduled-task turn. */
   startTaskTurn: (
@@ -139,6 +142,8 @@ function startTurnInList(
   mode?: AgentMode,
   harness?: HarnessId,
   model?: string,
+  contextId?: string,
+  // Internal flag — kept last so `startTaskTurn`'s explicit `false` stays at the tail.
   replacePending = true,
 ): RenderedTurn[] {
   const existingIndex = turns.findIndex((turn) => turn.turnId === turnId);
@@ -165,6 +170,7 @@ function startTurnInList(
       mode: mode ?? existing.mode,
       harness: harness ?? existing.harness,
       model: model ?? existing.model,
+      contextId: contextId ?? existing.contextId,
     };
     return next;
   }
@@ -179,6 +185,7 @@ function startTurnInList(
     startedAt: startedAt ?? Date.now(),
     harness,
     model,
+    contextId,
   };
   if (
     replacePending &&
@@ -194,6 +201,7 @@ function startTurnInList(
         mode: turn.mode ?? last.mode,
         harness: turn.harness ?? last.harness,
         model: turn.model ?? last.model,
+        contextId: turn.contextId ?? last.contextId,
       },
     ];
   }
@@ -219,6 +227,7 @@ export const useChatStore = create<ChatState>((set) => ({
     mode,
     harness,
     model,
+    contextId,
   ) =>
     set((state) => {
       const turns = state.byWorkspace[workspaceId] ?? [];
@@ -234,6 +243,7 @@ export const useChatStore = create<ChatState>((set) => ({
             mode,
             harness,
             model,
+            contextId,
           ),
         },
       };
@@ -248,11 +258,12 @@ export const useChatStore = create<ChatState>((set) => ({
           turnId,
           sessionId,
           { kind: 'user_message', text: prompt },
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          false,
+          undefined, // startedAt
+          undefined, // mode
+          undefined, // harness
+          undefined, // model
+          undefined, // contextId — scheduler-fired turns never belong to a chat tab
+          false, // replacePending
         ),
       },
       busyByWorkspace: {

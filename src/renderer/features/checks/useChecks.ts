@@ -11,6 +11,7 @@
 // agent's reply streams into the ChatPanel rather than being re-implemented here.
 
 import { useCallback, useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { MergeMethod } from '@shared/github';
 import type { ChecksResult } from '@shared/checks';
 import { AppError } from '@shared/errors';
@@ -66,6 +67,7 @@ export interface UseChecks {
  * reuse `useChat().sendTurn` so their composed prompt streams into the shared transcript.
  */
 export function useChecks(workspaceId: string | null): UseChecks {
+  const queryClient = useQueryClient();
   const result = useChecksStore((s) =>
     workspaceId ? (s.resultByWorkspace[workspaceId] ?? null) : null,
   );
@@ -137,6 +139,9 @@ export function useChecks(workspaceId: string | null): UseChecks {
         // Publishing the branch / opening the PR mutates git+GitHub state; the server
         // emits `checks:updated`, but refetch too so the roll-up updates immediately.
         await invoke('pr:open', { workspaceId });
+        await queryClient.invalidateQueries({
+          queryKey: ['workspace-pr', workspaceId],
+        });
         refetch();
         return;
       }
@@ -146,7 +151,7 @@ export function useChecks(workspaceId: string | null): UseChecks {
       const { prompt, attachments } = await invoke(command, { workspaceId });
       await sendTurn(prompt, attachments);
     },
-    [workspaceId, refetch, sendTurn],
+    [workspaceId, queryClient, refetch, sendTurn],
   );
 
   const merge = useCallback(
@@ -155,9 +160,12 @@ export function useChecks(workspaceId: string | null): UseChecks {
       // The server re-gates the merge on green; if it succeeds the roll-up changes, so
       // refetch to reflect the merged state.
       await invoke('pr:merge', { workspaceId, method });
+      await queryClient.invalidateQueries({
+        queryKey: ['workspace-pr', workspaceId],
+      });
       refetch();
     },
-    [workspaceId, refetch],
+    [workspaceId, queryClient, refetch],
   );
 
   const resolveThread = useCallback(

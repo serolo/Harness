@@ -21,6 +21,7 @@ import { ErrorCard } from './ErrorCard';
 import { TurnDivider } from './TurnDivider';
 import { LimitResumeOffer } from './LimitResumeOffer';
 import { UserMessage } from './UserMessage';
+import { UserAttachments } from './UserAttachments';
 import { QuestionCard } from './QuestionCard';
 import { PermissionCard } from './PermissionCard';
 import { permissionFromToolResult } from './toolResults';
@@ -54,6 +55,42 @@ function contextUsage(events: AgentEvent[]): Usage | undefined {
     if (event?.kind === 'context_usage') return event.usage;
   }
   return undefined;
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function toolFilePath(input: unknown): string | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return undefined;
+  }
+  const record = input as Record<string, unknown>;
+  for (const key of ['file_path', 'path', 'notebook_path']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim() !== '') return value;
+  }
+  return undefined;
+}
+
+/**
+ * Final summaries often shorten paths that were already emitted by Read/Edit tools.
+ * Resolve only a unique basename match; ambiguous names stay untouched rather than
+ * silently opening the wrong file.
+ */
+function resolveTurnFilePath(path: string, events: AgentEvent[]): string {
+  if (path.includes('/') || path.includes('\\')) return path;
+  const candidates = new Set<string>();
+  for (const event of events) {
+    const candidate =
+      event.kind === 'file_edit'
+        ? event.path
+        : event.kind === 'tool_use'
+          ? toolFilePath(event.input)
+          : undefined;
+    if (candidate && fileName(candidate) === path) candidates.add(candidate);
+  }
+  return candidates.size === 1 ? [...candidates][0] : path;
 }
 
 export interface TranscriptProps {
@@ -184,6 +221,8 @@ function transcriptScrollKey(turns: RenderedTurn[]): string {
               return `text:${event.delta.length}`;
             case 'user_message':
               return `user:${event.text.length}`;
+            case 'user_attachments':
+              return `attachments:${event.attachments.length}`;
             case 'activity':
               return `activity:${event.title}:${event.detail ?? ''}`;
             case 'tool_use':
@@ -209,6 +248,7 @@ function renderEvent(
   event: AgentEvent,
   key: string,
   workspaceId?: string | null,
+  turnId?: string,
   toolResult?: unknown,
   onOpenFile?: (path: string) => void,
   onAnswerQuestion?: (answer: string) => void,
@@ -217,6 +257,15 @@ function renderEvent(
   switch (event.kind) {
     case 'user_message':
       return <UserMessage key={key} text={visibleUserText(event.text)} />;
+    case 'user_attachments':
+      return (
+        <UserAttachments
+          key={key}
+          workspaceId={workspaceId}
+          turnId={turnId ?? ''}
+          attachments={event.attachments}
+        />
+      );
     case 'question_request':
       return (
         <QuestionCard
@@ -329,7 +378,9 @@ function renderEvent(
         >
           {event.operation === 'search' ? (
             <>
-              <span className="font-medium text-fg-1">Project knowledge search</span>
+              <span className="font-medium text-fg-1">
+                Project knowledge search
+              </span>
               {' · local search is free · '}
               {event.resultCount ?? 0} results returned
               {event.contextTokens > 0
@@ -338,7 +389,9 @@ function renderEvent(
             </>
           ) : (
             <>
-              <span className="font-medium text-fg-1">Project knowledge read</span>
+              <span className="font-medium text-fg-1">
+                Project knowledge read
+              </span>
               {event.path ? ` · ${event.path}` : ''}
               {` · ~${event.contextTokens.toLocaleString()} context tokens returned`}
               {event.truncated ? ' · truncated to the turn budget' : ''}
@@ -670,6 +723,7 @@ function renderEvents(
           event,
           `${keyPrefix}-${absoluteIndex}`,
           workspaceId,
+          keyPrefix,
           toolResults.get(absoluteIndex),
           onOpenFile,
           onAnswerQuestion,
@@ -702,6 +756,7 @@ function renderEvents(
         event,
         `${keyPrefix}-${absoluteIndex}`,
         workspaceId,
+        keyPrefix,
         toolResults.get(absoluteIndex),
         onOpenFile,
         onAnswerQuestion,
@@ -727,6 +782,7 @@ function renderEvents(
       latestText,
       `${keyPrefix}-${absoluteIndex}`,
       workspaceId,
+      keyPrefix,
       toolResults.get(absoluteIndex),
       onOpenFile,
       onAnswerQuestion,
@@ -742,6 +798,7 @@ function renderEvents(
       event,
       `${keyPrefix}-${index}`,
       workspaceId,
+      keyPrefix,
       toolResults.get(index),
       onOpenFile,
       onAnswerQuestion,
@@ -803,54 +860,60 @@ export function Transcript({
         {turns.length === 0 && workspace ? (
           <NewChatWorkspaceContext workspace={workspace} project={project} />
         ) : null}
-        {turns.map((turn, index) => (
-          <div
-            key={turn.turnId}
-            className="space-y-4"
-            data-testid="turn"
-            data-status={turn.status}
-          >
-            <div className="space-y-3">
-              {renderEvents(
-                turn.events,
-                turn.turnId,
-                workspaceId,
-                onOpenFile,
-                index === turns.length - 1 && turn.status !== 'streaming'
-                  ? onAnswerQuestion
-                  : undefined,
-                isBusy || turn.status === 'streaming',
+        {turns.map((turn, index) => {
+          const openTurnFile = onOpenFile
+            ? (path: string) =>
+                onOpenFile(resolveTurnFilePath(path, turn.events))
+            : undefined;
+          return (
+            <div
+              key={turn.turnId}
+              className="space-y-4"
+              data-testid="turn"
+              data-status={turn.status}
+            >
+              <div className="space-y-3">
+                {renderEvents(
+                  turn.events,
+                  turn.turnId,
+                  workspaceId,
+                  openTurnFile,
+                  index === turns.length - 1 && turn.status !== 'streaming'
+                    ? onAnswerQuestion
+                    : undefined,
+                  isBusy || turn.status === 'streaming',
+                )}
+              </div>
+              {index === turns.length - 1 &&
+              turn.mode === 'plan' &&
+              turn.status === 'completed' &&
+              !turn.events.some(isQuestionEvent) &&
+              !endsWithUserResponseRequest(turn.events) &&
+              turn.events.some(
+                (event) => event.kind === 'text' && event.delta.trim() !== '',
+              ) &&
+              onApprovePlan &&
+              onHandoffPlan ? (
+                <PlanReady
+                  events={turn.events}
+                  onApprove={onApprovePlan}
+                  onHandoff={onHandoffPlan}
+                  onOpenFile={openTurnFile}
+                />
+              ) : null}
+              {turn.status === 'streaming' ? (
+                <StreamingElapsed startedAt={turn.startedAt} />
+              ) : (
+                <TurnDivider
+                  status={turn.status}
+                  usage={contextUsage(turn.events) ?? turn.usage}
+                  model={turn.model}
+                  costMicros={turn.costMicros}
+                />
               )}
             </div>
-            {index === turns.length - 1 &&
-            turn.mode === 'plan' &&
-            turn.status === 'completed' &&
-            !turn.events.some(isQuestionEvent) &&
-            !endsWithUserResponseRequest(turn.events) &&
-            turn.events.some(
-              (event) => event.kind === 'text' && event.delta.trim() !== '',
-            ) &&
-            onApprovePlan &&
-            onHandoffPlan ? (
-              <PlanReady
-                events={turn.events}
-                onApprove={onApprovePlan}
-                onHandoff={onHandoffPlan}
-                onOpenFile={onOpenFile}
-              />
-            ) : null}
-            {turn.status === 'streaming' ? (
-              <StreamingElapsed startedAt={turn.startedAt} />
-            ) : (
-              <TurnDivider
-                status={turn.status}
-                usage={contextUsage(turn.events) ?? turn.usage}
-                model={turn.model}
-                costMicros={turn.costMicros}
-              />
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

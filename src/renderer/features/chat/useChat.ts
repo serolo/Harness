@@ -44,6 +44,7 @@ function historyToTurns(history: ChatHistory): RenderedTurn[] {
     model: t.model ?? undefined,
     costMicros: t.costMicros ?? undefined,
     pricingKey: t.pricingKey ?? undefined,
+    contextId: t.contextId ?? undefined,
     usage:
       t.inputTokens != null || t.outputTokens != null
         ? {
@@ -66,6 +67,8 @@ export interface UseChat {
     sessionId?: string | null,
     model?: string,
     effort?: ReasoningEffort,
+    contextId?: string,
+    displayPrompt?: string,
   ) => Promise<void>;
   interrupt: () => Promise<void>;
   clear: () => Promise<void>;
@@ -130,6 +133,8 @@ export function useChat(workspaceId: string | null): UseChat {
       sessionId?: string | null,
       model?: string,
       effort?: ReasoningEffort,
+      contextId?: string,
+      displayPrompt?: string,
     ): Promise<void> => {
       if (!workspaceId) return;
       const startedAt = Date.now();
@@ -141,13 +146,20 @@ export function useChat(workspaceId: string | null): UseChat {
         '',
         {
           kind: 'user_message',
-          text: prompt,
+          text: displayPrompt ?? prompt,
         },
         startedAt,
         mode,
         harness,
         model,
+        contextId,
       );
+      if (attachments.length > 0) {
+        appendEvent(workspaceId, {
+          kind: 'user_attachments',
+          attachments,
+        });
+      }
       setBusy(workspaceId, true);
       try {
         const turnArg = {
@@ -159,6 +171,8 @@ export function useChat(workspaceId: string | null): UseChat {
           model,
           effort,
           ...(sessionId === undefined ? {} : { sessionId }),
+          ...(contextId === undefined ? {} : { contextId }),
+          ...(displayPrompt === undefined ? {} : { displayPrompt }),
         };
         await subscribeStream('turn:start', turnArg, (chunk) => {
           if (chunk.kind === 'started') {
@@ -170,6 +184,9 @@ export function useChat(workspaceId: string | null): UseChat {
               undefined,
               undefined,
               chunk.mode,
+              undefined, // harness
+              undefined, // model
+              contextId,
             );
             return;
           }

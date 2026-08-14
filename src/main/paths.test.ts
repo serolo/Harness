@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os';
 
 import {
   builtinAgentsDir,
+  allocateProjectDirectoryName,
   defaultRootDirectory,
   projectDir,
+  projectDirectoryBaseName,
   rootDirectory,
   setRootDirectory,
   setUserDataRoot,
@@ -51,5 +53,23 @@ describe('managed root directory', () => {
     expect(
       builtinAgentsDir({ packaged: true, resourcesPath: '/app/resources' }),
     ).toBe(join('/app/resources', 'builtin-agents'));
+  });
+});
+
+describe('project directory names', () => {
+  it('normalizes project names into readable filesystem-safe slugs', () => {
+    expect(projectDirectoryBaseName(' W2 Platform / Café ')).toBe(
+      'w2-platform-cafe',
+    );
+    expect(projectDirectoryBaseName('🛠️')).toBe('project');
+  });
+
+  it('allocates case-insensitive collision suffixes within the length limit', () => {
+    expect(
+      allocateProjectDirectoryName('Harness', ['harness', 'HARNESS-2']),
+    ).toBe('harness-3');
+    expect(allocateProjectDirectoryName('x'.repeat(80), ['x'.repeat(63)])).toBe(
+      `${'x'.repeat(61)}-2`,
+    );
   });
 });

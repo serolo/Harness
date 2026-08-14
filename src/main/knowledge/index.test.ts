@@ -1,10 +1,12 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { simpleGit, type SimpleGit } from 'simple-git';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDb, type AppDatabase } from '../db';
 import { ProjectsRepo } from '../db/repos/projects';
 import { knowledgeDir, setUserDataRoot } from '../paths';
+import { ProjectKnowledgeGateway } from './gateway';
 import { parseOkfMarkdown, WikiService } from './index';
 import { QmdSearchProvider } from './qmd';
 import { storedZip } from './zipFixture';
@@ -241,7 +243,7 @@ describe('OKF project knowledge', () => {
     const { service, projectId } = await fixture();
     await service.initializeProject(projectId);
     await writeFile(
-      join(knowledgeDir(projectId), 'index.md'),
+      join(knowledgeDir('atlas'), 'index.md'),
       '---\nokf_version: "0.1"\n---\n\n# Stale catalog\n',
     );
 
@@ -509,7 +511,247 @@ describe('OKF project knowledge', () => {
       expect(page.type).toBe('Document');
       expect(page.status).toBe('canonical');
       expect(page.content).toContain('type: Document');
+      expect(page.content).toContain('status: canonical');
     }
+  });
+
+  it('adds an explicit canonical status to typed imports without overriding an explicit status', async () => {
+    const { service, projectId, root } = await fixture();
+    const zipPath = join(root, 'knowledge.zip');
+    await writeFile(
+      zipPath,
+      storedZip([
+        {
+          path: 'bundle/components/accepted.md',
+          content:
+            '---\ntype: Component\ntitle: Accepted import\n---\n\n# Accepted import\n\nReady for use.\n',
+        },
+        {
+          path: 'bundle/research/experiment.md',
+          content:
+            '---\ntype: Research\ntitle: Experiment\nstatus: research\n---\n\n# Experiment\n\nNot canonical yet.\n',
+        },
+        {
+          path: 'bundle/research/untyped.md',
+          content:
+            '---\ntitle: Untyped experiment\nstatus: research\n---\n\n# Untyped experiment\n\nPreserve the authored status.\n',
+        },
+      ]),
+    );
+
+    const result = await service.importZip(projectId, zipPath);
+    const proposal = (await service.listProposals(projectId)).find(
+      (candidate) => candidate.id === result.proposalId,
+    );
+    const acceptedOperation = proposal?.operations.find(
+      (operation) =>
+        operation.op !== 'move' && operation.path === 'components/accepted.md',
+    );
+    const researchOperation = proposal?.operations.find(
+      (operation) =>
+        operation.op !== 'move' && operation.path === 'research/experiment.md',
+    );
+    const untypedResearchOperation = proposal?.operations.find(
+      (operation) =>
+        operation.op !== 'move' && operation.path === 'research/untyped.md',
+    );
+
+    expect(acceptedOperation).toMatchObject({
+      op: 'create',
+      content: expect.stringContaining('status: canonical'),
+    });
+    expect(researchOperation).toMatchObject({
+      op: 'create',
+      content: expect.stringContaining('status: research'),
+    });
+    expect(
+      researchOperation && researchOperation.op !== 'move'
+        ? researchOperation.content.match(/^status:/gm)
+        : [],
+    ).toHaveLength(1);
+    expect(untypedResearchOperation).toMatchObject({
+      op: 'create',
+      content: expect.stringContaining('type: Document'),
+    });
+    expect(
+      untypedResearchOperation && untypedResearchOperation.op !== 'move'
+        ? untypedResearchOperation.content.match(/^status: research$/gm)
+        : [],
+    ).toHaveLength(1);
+
+    await service.acceptProposal(projectId, result.proposalId!);
+    expect(
+      (await service.getPage(projectId, 'components/accepted.md')).content,
+    ).toContain('status: canonical');
+    expect(
+      (await service.getPage(projectId, 'research/experiment.md')).content,
+    ).toContain('status: research');
+    expect(
+      await service.getPage(projectId, 'research/untyped.md'),
+    ).toMatchObject({
+      type: 'Document',
+      status: 'research',
+    });
+
+    const knowledgeGateway = new ProjectKnowledgeGateway({
+      projectId,
+      root: knowledgeDir('atlas'),
+      provider: 'basic',
+      maxResults: 10,
+      maxContextTokens: 4_000,
+      rerank: false,
+    });
+    const found = await knowledgeGateway.searchProjectKnowledge('ready use');
+    const foundPayload = JSON.parse(found.content[0].text) as {
+      results: Array<{ path: string }>;
+    };
+    expect(foundPayload.results).toContainEqual(
+      expect.objectContaining({ path: 'components/accepted.md' }),
+    );
+    expect(
+      await knowledgeGateway.readProjectKnowledge('components/accepted.md'),
+    ).not.toMatchObject({ isError: true });
+    const research =
+      await knowledgeGateway.searchProjectKnowledge('untyped experiment');
+    expect(JSON.parse(research.content[0].text)).toMatchObject({ results: [] });
+  });
+
+  it('repairs statusless typed pages during a catalog update without rewriting explicit or malformed pages', async () => {
+    const { service, projectId } = await fixture();
+    await service.initializeProject(projectId);
+    const root = knowledgeDir('atlas');
+    const statuslessPath = join(root, 'overview.md');
+    const explicitPath = join(root, 'WIKI.md');
+    const malformedPath = join(root, 'components', 'malformed.md');
+    const statusless =
+      '---\ntype: Project Overview\ntitle: Atlas\n---\n\n# Atlas\n\nStatus migration target.\n';
+    const explicit =
+      '---\ntype: Maintenance Guide\ntitle: Wiki maintenance\nstatus: research\n---\n\n# Wiki maintenance\n\nExplicit status stays intact.\n';
+    const malformed =
+      '---\ntype: Component\n\n# Missing frontmatter delimiter\n';
+    await writeFile(explicitPath, explicit, 'utf8');
+    await writeFile(malformedPath, malformed, 'utf8');
+    const git = simpleGit({ baseDir: root });
+    await git.add(['WIKI.md', 'components/malformed.md']);
+    await git.commit('test: establish catalog repair baseline');
+    await writeFile(statuslessPath, statusless, 'utf8');
+
+    const first = await service.updateCatalog(projectId);
+    const historyAfterFirst = await service.history(projectId);
+
+    expect(first).toMatchObject({
+      updated: true,
+      repairedCount: 1,
+      commit: expect.stringMatching(/^[0-9a-f]{40}$/),
+    });
+    expect(await readFile(statuslessPath, 'utf8')).toBe(
+      statusless.replace(/^---\n/, '---\nstatus: canonical\n'),
+    );
+    expect(await readFile(explicitPath, 'utf8')).toBe(explicit);
+    expect(await readFile(malformedPath, 'utf8')).toBe(malformed);
+    expect(historyAfterFirst).toHaveLength(3);
+    expect(historyAfterFirst[0]).toMatchObject({
+      commit: first.commit,
+      subject: 'wiki: refresh knowledge catalog',
+    });
+    expect((await git.status()).files).toEqual([]);
+    const committedPaths = (
+      await git.raw(['show', '--pretty=format:', '--name-only', first.commit!])
+    )
+      .split('\n')
+      .filter(Boolean)
+      .sort();
+    expect(committedPaths).toEqual(['index.md', 'overview.md']);
+
+    const repaired = await readFile(statuslessPath, 'utf8');
+    const catalog = await readFile(join(root, 'index.md'), 'utf8');
+    const second = await service.updateCatalog(projectId);
+
+    expect(second).toMatchObject({
+      updated: false,
+      pageCount: 2,
+      repairedCount: 0,
+    });
+    expect(await readFile(statuslessPath, 'utf8')).toBe(repaired);
+    expect(await readFile(join(root, 'index.md'), 'utf8')).toBe(catalog);
+    expect(await service.history(projectId)).toEqual(historyAfterFirst);
+  });
+
+  it('restores repaired pages, catalog, and Git state when the catalog commit fails', async () => {
+    const { service, projectId } = await fixture();
+    await service.initializeProject(projectId);
+    const root = knowledgeDir('atlas');
+    const statuslessPath = join(root, 'overview.md');
+    const indexPath = join(root, 'index.md');
+    const statusless =
+      '---\ntype: Project Overview\ntitle: Atlas\n---\n\n# Atlas\n\nRollback target.\n';
+    const staleIndex =
+      '---\nokf_version: "0.1"\n---\n\n# Original stale catalog\n';
+    await writeFile(statuslessPath, statusless, 'utf8');
+    await writeFile(indexPath, staleIndex, 'utf8');
+
+    const failingService = new WikiService(
+      db!,
+      new QmdSearchProvider(),
+      (baseDir) => {
+        const git = simpleGit({ baseDir });
+        git.commit = vi.fn(async () => {
+          throw new Error('injected catalog commit failure');
+        }) as unknown as SimpleGit['commit'];
+        return git;
+      },
+    );
+
+    await expect(failingService.updateCatalog(projectId)).rejects.toThrow(
+      'injected catalog commit failure',
+    );
+
+    expect(await readFile(statuslessPath, 'utf8')).toBe(statusless);
+    expect(await readFile(indexPath, 'utf8')).toBe(staleIndex);
+    expect(await service.history(projectId)).toHaveLength(1);
+    const restoredStatus = await simpleGit({ baseDir: root }).status();
+    expect(restoredStatus.staged).toEqual([]);
+    expect(restoredStatus.files.map((file) => file.path).sort()).toEqual([
+      'index.md',
+      'overview.md',
+    ]);
+  });
+
+  it('rejects a catalog update before mutation when the knowledge index has staged paths', async () => {
+    const { service, projectId } = await fixture();
+    await service.initializeProject(projectId);
+    const root = knowledgeDir('atlas');
+    const statuslessPath = join(root, 'overview.md');
+    const unrelatedPath = join(root, 'WIKI.md');
+    const indexPath = join(root, 'index.md');
+    const statusless =
+      '---\ntype: Project Overview\ntitle: Atlas\n---\n\n# Atlas\n\nStaged repair candidate.\n';
+    const unrelated =
+      '---\ntype: Maintenance Guide\nstatus: canonical\n---\n\n# Staged unrelated edit\n';
+    const staleIndex =
+      '---\nokf_version: "0.1"\n---\n\n# Unstaged stale catalog\n';
+    await writeFile(statuslessPath, statusless, 'utf8');
+    await writeFile(unrelatedPath, unrelated, 'utf8');
+    await writeFile(indexPath, staleIndex, 'utf8');
+    const git = simpleGit({ baseDir: root });
+    await git.add(['overview.md', 'WIKI.md']);
+    const statusBefore = await git.status();
+    const stagedDiffBefore = await git.diff(['--cached', '--binary']);
+
+    await expect(service.updateCatalog(projectId)).rejects.toThrow(
+      'knowledge repository has staged changes',
+    );
+
+    expect(await readFile(statuslessPath, 'utf8')).toBe(statusless);
+    expect(await readFile(unrelatedPath, 'utf8')).toBe(unrelated);
+    expect(await readFile(indexPath, 'utf8')).toBe(staleIndex);
+    const statusAfter = await git.status();
+    expect(statusAfter.staged).toEqual(statusBefore.staged);
+    expect(statusAfter.files.map((file) => ({ ...file }))).toEqual(
+      statusBefore.files.map((file) => ({ ...file })),
+    );
+    expect(await git.diff(['--cached', '--binary'])).toBe(stagedDiffBefore);
+    expect(await service.history(projectId)).toHaveLength(1);
   });
 
   it('rejects ZIP content that resembles a secret before proposal creation', async () => {

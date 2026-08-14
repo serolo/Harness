@@ -33,10 +33,12 @@ export function FileReferencePill({
   path,
   label,
   onOpenFile,
+  actionLabel,
 }: {
   path: string;
   label?: string;
   onOpenFile?: (path: string) => void;
+  actionLabel?: string;
 }): React.JSX.Element {
   const ext = extension(path);
   const content = (
@@ -49,7 +51,9 @@ export function FileReferencePill({
       >
         {ext}
       </span>
-      <span className="min-w-0 truncate font-medium">{label ?? fileName(path)}</span>
+      <span className="min-w-0 truncate font-medium">
+        {label ?? fileName(path)}
+      </span>
     </>
   );
 
@@ -68,8 +72,8 @@ export function FileReferencePill({
     <button
       type="button"
       className="inline-flex max-w-72 items-center gap-1.5 rounded-2 border border-border-2 bg-bg-3 px-2 py-1 text-sm text-fg-1 transition-colors hover:border-accent hover:bg-bg-4"
-      title={`Open ${path}`}
-      aria-label={`Open ${path}`}
+      title={actionLabel ?? `Open ${path}`}
+      aria-label={actionLabel ?? `Open ${path}`}
       onClick={() => onOpenFile(path)}
     >
       {content}

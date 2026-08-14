@@ -812,7 +812,11 @@ function RepoSettingsContent({
       .then((result) =>
         setKnowledgeCatalogMessage(
           result.updated
-            ? `Catalog updated with ${result.pageCount} pages.`
+            ? `Catalog updated with ${result.pageCount} pages.${
+                result.repairedCount > 0
+                  ? ` Repaired ${result.repairedCount} statusless ${result.repairedCount === 1 ? 'page' : 'pages'}.`
+                  : ''
+              }`
             : `Catalog is already current with ${result.pageCount} pages.`,
         ),
       )
@@ -1194,13 +1198,6 @@ function ModelsSettings(): React.JSX.Element {
           onModelChange={(value) => updatePreference('reviewModel', value)}
           onEffortChange={(value) => updatePreference('reviewEffort', value)}
           testId="review"
-        />
-        <SettingsToggleRow
-          title="Default to plan mode"
-          description="Start new chats in plan mode"
-          checked={preferences.planMode}
-          onCheckedChange={(value) => updatePreference('planMode', value)}
-          testId="models-plan-mode"
         />
         <SettingsToggleRow
           title="Default to fast mode"

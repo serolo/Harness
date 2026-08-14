@@ -35,6 +35,7 @@ export interface ProjectsTable {
   default_branch: string; // TEXT NOT NULL
   repo_path: string; // TEXT NOT NULL
   created_at: number; // INTEGER NOT NULL — epoch millis
+  directory_name: string | null; // stable filesystem-safe name, migration 0017
 }
 
 export interface ProjectSettingsTable {
@@ -93,6 +94,7 @@ export interface TurnsTable {
   cache_write_input_tokens: number | null; // INTEGER — prompt-cache writes
   cost_micros: number | null; // INTEGER — estimated USD micro-dollars
   pricing_key: string | null; // TEXT — versioned catalogue/rate key
+  context_id: string | null; // TEXT — owning chat tab (migration 0016); NULL for task-owned/closed
 }
 
 /**
@@ -251,6 +253,21 @@ export interface AgentDispatchesTable {
 }
 
 /**
+ * `chat_contexts` table (migration 0016). One durable chat tab for a workspace:
+ * a label, a 0-based `position` (tab order), and an optional `initial_session_id`
+ * (the provider session the tab resumes from; NULL = start fresh). Turn membership
+ * lives on the other side of the edge, in `turns.context_id`.
+ */
+export interface ChatContextsTable {
+  id: string; // TEXT PRIMARY KEY — UUIDv7
+  workspace_id: string; // TEXT NOT NULL REFERENCES workspaces(id)
+  label: string; // TEXT NOT NULL — user-visible tab label
+  initial_session_id: string | null; // TEXT — NULL = fresh session (no resume)
+  position: number; // INTEGER NOT NULL — 0-based tab order
+  created_at: number; // INTEGER NOT NULL — epoch millis
+}
+
+/**
  * The Kysely database interface. One key per table. Later phases APPEND their
  * tables here (turns, events, checkpoints, …) alongside their new migration —
  * never edit an existing table type in a way that diverges from a shipped
@@ -269,4 +286,5 @@ export interface Database {
   scheduled_tasks: ScheduledTasksTable;
   agent_runs: AgentRunsTable;
   agent_dispatches: AgentDispatchesTable;
+  chat_contexts: ChatContextsTable;
 }

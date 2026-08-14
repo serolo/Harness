@@ -30,6 +30,7 @@ import {
 } from 'electron';
 
 import { openDb } from './db';
+import { reconcileProjectStorage } from './projectStorage';
 import { SettingsService } from './settings';
 import { loadStoredProjectSettings } from './settings/projectStore';
 import { GitService } from './git';
@@ -73,6 +74,7 @@ import {
 } from './paths';
 import { loadReleaseUpdater, UpdateService } from './update';
 import { WikiService } from './knowledge';
+import { hasEligibleRepositoryChanges } from './knowledge/reconciliation';
 import { PricingService } from './billing/pricing';
 import { SecretStore } from './integrations/secrets';
 import { PrWorkflow } from './integrations/github/pr';
@@ -115,7 +117,9 @@ const DEEP_LINK_SCHEME = 'harness';
 const WINDOW_DEFAULTS = {
   width: 1440,
   height: 900,
-  minWidth: 960,
+  // 560px center workspace + 280px/360px default side panes + two 1px dividers.
+  // Side panes are fixed while open, so the native window must preserve this total.
+  minWidth: 1202,
   minHeight: 600,
   // macOS only: inset the native traffic lights into the renderer's custom titlebar
   // strip (Harness design system) instead of drawing a full native title bar. Real
@@ -277,6 +281,10 @@ async function createAppContext(): Promise<AppContext> {
   const db = openDb();
   logger.info('[startup] database opened + migrations applied');
 
+  const storageGit = new GitService();
+  await reconcileProjectStorage(db, storageGit);
+  logger.info('[startup] project storage paths reconciled');
+
   const settings = new SettingsService();
   settings.load();
   logger.info('[startup] settings loaded');
@@ -290,7 +298,7 @@ async function createAppContext(): Promise<AppContext> {
   // Phase 1: repos + git + allocators + broadcast emitter, injected into the manager.
   const projectsRepo = new ProjectsRepo(db);
   const workspacesRepo = new WorkspacesRepo(db);
-  const git = new GitService();
+  const git = storageGit;
 
   // One-time compatibility import: preserve every valid legacy project settings
   // file in SQLite before removing the file from the repository checkout.
@@ -451,6 +459,9 @@ async function createAppContext(): Promise<AppContext> {
   // required (not const) because that closure captures `scheduler` before this assignment.
   // eslint-disable-next-line prefer-const -- forward-referenced by the onTurnEnd closure above its assignment
   let scheduler: TaskScheduler | undefined;
+  // Detached Git snapshots captured before adapters can mutate a worktree. Keying by
+  // workspace keeps this bounded if an adapter fails before emitting a terminal event.
+  const turnBaselines = new Map<string, { turnId: string; sha: string }>();
 
   // The harness supervisor owns live turns + drives status through the turn lifecycle.
   // Phase 4 wires two best-effort hooks: persist the agent's todo set on each
@@ -470,14 +481,32 @@ async function createAppContext(): Promise<AppContext> {
         );
       });
     },
+    onTurnStart: async (workspaceId, turnId, opts) => {
+      turnBaselines.delete(workspaceId);
+      if (opts.mode === 'plan') return;
+      const workspace = await workspaces.get(workspaceId);
+      if (workspace === null || workspace.worktreePath === null) return;
+      const config = await knowledge.getConfig(workspace.projectId);
+      if (!config.enabled || !config.extractAfterTurn) return;
+      const sha = await git.commitTree(
+        workspace.worktreePath,
+        `knowledge baseline: turn ${turnId}`,
+      );
+      turnBaselines.set(workspaceId, { turnId, sha });
+    },
     onTurnEnd: (workspaceId, turnId) => {
       // Phase 12: drain the workspace's queued scheduled tasks (FIFO, one per turn-end).
       // Fire-and-forget with its own error handling inside the scheduler.
       scheduler?.onWorkspaceTurnEnd(workspaceId);
       void (async () => {
+        const storedBaseline = turnBaselines.get(workspaceId);
+        const baseline =
+          storedBaseline?.turnId === turnId ? storedBaseline.sha : undefined;
+        turnBaselines.delete(workspaceId);
+        let checkpointSha: string | undefined;
         // Snapshot the worktree under refs/checkpoints/<ws>/<idx> (best-effort).
         try {
-          await checkpoint.snapshot(workspaceId, turnId);
+          checkpointSha = (await checkpoint.snapshot(workspaceId, turnId)).sha;
         } catch (err) {
           logger.error(
             `[turn-end] checkpoint snapshot for ${workspaceId} failed: ${String(err)}`,
@@ -512,6 +541,27 @@ async function createAppContext(): Promise<AppContext> {
               workspace.projectId,
             );
             if (!knowledgeConfig.enabled || !knowledgeConfig.extractAfterTurn) {
+              return;
+            }
+            if (
+              workspace.worktreePath === null ||
+              baseline === undefined ||
+              checkpointSha === undefined
+            ) {
+              return;
+            }
+            const changedPaths = (
+              await git.diffBetween(
+                workspace.worktreePath,
+                baseline,
+                checkpointSha,
+              )
+            ).files.flatMap((file) =>
+              [file.oldPath, file.path].filter(
+                (path): path is string => typeof path === 'string',
+              ),
+            );
+            if (!hasEligibleRepositoryChanges(turn.mode, changedPaths)) {
               return;
             }
             const responseText = turn.events

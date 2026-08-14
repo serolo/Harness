@@ -11,6 +11,8 @@ export { Kbd } from './Kbd';
 export type { KbdProps } from './Kbd';
 export { Tabs } from './Tabs';
 export type { TabsProps, TabItem } from './Tabs';
+export { PanelTab, PanelTabBar } from './PanelTabs';
+export type { PanelTabProps, PanelTabBarProps } from './PanelTabs';
 export { Dialog } from './Dialog';
 export type { DialogProps } from './Dialog';
 export { Input } from './Input';

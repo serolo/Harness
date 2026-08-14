@@ -39,13 +39,22 @@ function nativeRoots(
   workspaceDir: string | undefined,
   harness: HarnessId | undefined,
 ): { path: string; kind: 'command' | 'skill'; provider: string }[] {
-  const roots: { path: string; kind: 'command' | 'skill'; provider: string }[] = [];
+  const roots: { path: string; kind: 'command' | 'skill'; provider: string }[] =
+    [];
 
   if (harness === undefined || harness === 'claude_code') {
     if (workspaceDir !== undefined) {
       roots.push(
-        { path: join(workspaceDir, '.claude'), kind: 'command', provider: 'Claude' },
-        { path: join(workspaceDir, '.claude'), kind: 'skill', provider: 'Claude' },
+        {
+          path: join(workspaceDir, '.claude'),
+          kind: 'command',
+          provider: 'Claude',
+        },
+        {
+          path: join(workspaceDir, '.claude'),
+          kind: 'skill',
+          provider: 'Claude',
+        },
       );
     }
     roots.push(
@@ -56,9 +65,17 @@ function nativeRoots(
 
   if (harness === undefined || harness === 'codex') {
     if (workspaceDir !== undefined) {
-      roots.push({ path: join(workspaceDir, '.codex'), kind: 'skill', provider: 'Codex' });
+      roots.push({
+        path: join(workspaceDir, '.codex'),
+        kind: 'skill',
+        provider: 'Codex',
+      });
     }
-    roots.push({ path: join(home, '.codex'), kind: 'skill', provider: 'Codex' });
+    roots.push({
+      path: join(home, '.codex'),
+      kind: 'skill',
+      provider: 'Codex',
+    });
   }
 
   return roots;
@@ -87,9 +104,17 @@ async function collectFiles(
         await walk(path, depth + 1);
       } else if (entry.isFile()) {
         const parts = relative(root, path).split(sep);
-        if (kind === 'command' && entry.name.endsWith('.md') && parts.includes('commands')) {
+        if (
+          kind === 'command' &&
+          entry.name.endsWith('.md') &&
+          parts.includes('commands')
+        ) {
           files.push(path);
-        } else if (kind === 'skill' && entry.name === 'SKILL.md' && parts.includes('skills')) {
+        } else if (
+          kind === 'skill' &&
+          entry.name === 'SKILL.md' &&
+          parts.includes('skills')
+        ) {
           files.push(path);
         }
       }
@@ -111,7 +136,8 @@ async function commandFromMarkdown(
   if (name === null) return null;
   return {
     name,
-    template: parsed.body.trim() === '' ? `Run /${name}.\n\n$ARGS` : parsed.body,
+    template:
+      parsed.body.trim() === '' ? `Run /${name}.\n\n$ARGS` : parsed.body,
     description: parsed.description ?? `${provider} command`,
   };
 }
@@ -127,8 +153,11 @@ async function skillFromMarkdown(
   if (name === null) return null;
   return {
     name,
-    template: `Use the ${name} skill.\n\n$ARGS`,
-    description: parsed.description ?? firstSentence(parsed.body) ?? `${provider} skill`,
+    // Preserve the explicit slash invocation. Skills such as harness-plan deliberately
+    // require direct user invocation and reject a prose request to invoke them.
+    template: `/${name} $ARGS`,
+    description:
+      parsed.description ?? firstSentence(parsed.body) ?? `${provider} skill`,
   };
 }
 
@@ -140,12 +169,17 @@ async function readMarkdown(path: string): Promise<string | null> {
   }
 }
 
-function parseMarkdownMeta(raw: string): { body: string; description?: string } {
+function parseMarkdownMeta(raw: string): {
+  body: string;
+  description?: string;
+} {
   if (!raw.startsWith('---\n')) return { body: raw };
   const end = raw.indexOf('\n---', 4);
   if (end === -1) return { body: raw };
   const frontmatter = raw.slice(4, end);
-  const description = /^description:\s*['"]?(.+?)['"]?\s*$/m.exec(frontmatter)?.[1];
+  const description = /^description:\s*['"]?(.+?)['"]?\s*$/m.exec(
+    frontmatter,
+  )?.[1];
   return { body: raw.slice(end + 4).trimStart(), description };
 }
 

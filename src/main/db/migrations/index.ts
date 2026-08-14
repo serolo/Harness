@@ -26,6 +26,8 @@ import { migration0013TaskAttachments } from './0013_task_attachments';
 import { migration0014TaskEffort } from './0014_task_effort';
 import { migration0015MetaAgents } from './0015_meta_agents';
 import { migration0015KnowledgeContextBudget } from './0015_knowledge_context_budget';
+import { migration0016ChatContexts } from './0016_chat_contexts';
+import { migration0017ProjectDirectoryName } from './0017_project_directory_name';
 
 /**
  * One numbered migration. `up` receives the raw better-sqlite3 handle and runs
@@ -61,6 +63,8 @@ const migrations: readonly Migration[] = [
   migration0014TaskEffort,
   migration0015MetaAgents,
   migration0015KnowledgeContextBudget,
+  migration0016ChatContexts,
+  migration0017ProjectDirectoryName,
 ];
 
 /** Read the current schema version from `PRAGMA user_version`. */

@@ -56,6 +56,11 @@ export interface StartTurnOpts {
   metaRunId?: string;
   /** Require provider-enforced workspace-scoped writes for an internal meta child. APPEND-ONLY. */
   scopedWriteMode?: boolean;
+  /**
+   * The chat tab (`ChatContextRecord.id`) this turn belongs to; persisted onto the turn
+   * row, never passed to a CLI. Omitted leaves the turn unowned. APPEND-ONLY.
+   */
+  contextId?: string;
 }
 
 export interface TurnHandle {
@@ -94,6 +99,8 @@ export type AgentEvent =
   | { kind: 'error'; message: string }
   /** App-originated prompt persisted beside harness events for chat reconstruction. */
   | { kind: 'user_message'; text: string }
+  /** Attachments submitted with the adjacent user message. APPEND-ONLY. */
+  | { kind: 'user_attachments'; attachments: Attachment[] }
   /** A structured question that needs a conversational answer from the user. */
   | {
       kind: 'question_request';

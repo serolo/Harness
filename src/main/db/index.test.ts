@@ -78,16 +78,16 @@ const UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe('migration runner (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 15 and task additive columns exist', () => {
+  it('applies all migrations: user_version becomes 17 and additive columns exist', () => {
     db = openDb(dbFile);
     expect(existsSync(dbFile)).toBe(true);
 
     // Inspect the raw file with a fresh handle (asserts persisted state, not the Kysely cache).
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      // A fresh database applies every registered migration through 0015.
+      // A fresh database applies every registered migration through 0017.
       const version = raw.pragma('user_version', { simple: true });
-      expect(version).toBe(15);
+      expect(version).toBe(17);
 
       const tables = raw
         .prepare(
@@ -122,6 +122,10 @@ describe('migration runner (fresh temp DB)', () => {
           'meta_run_id',
         ]),
       );
+      const projectColumns = (
+        raw.pragma('table_info(projects)') as Array<{ name: string }>
+      ).map((column) => column.name);
+      expect(projectColumns).toContain('directory_name');
     } finally {
       raw.close();
     }
@@ -152,7 +156,7 @@ describe('migration runner (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(15);
+      expect(raw.pragma('user_version', { simple: true })).toBe(17);
       // Exactly one projects table — a double-apply would have thrown "table already exists".
       const count = raw
         .prepare(
@@ -183,6 +187,7 @@ describe('ProjectsRepo CRUD round-trip', () => {
     expect(created.originUrl).toBe('git@github.com:acme/demo.git');
     expect(created.defaultBranch).toBe('main');
     expect(created.repoPath).toBe('/tmp/repo/demo');
+    expect(created.directoryName).toBe('acme');
 
     const fetched = await repo.getById(created.id);
     expect(fetched).toEqual(created);
@@ -206,6 +211,18 @@ describe('ProjectsRepo CRUD round-trip', () => {
     const list = await repo.list();
     // UUIDv7 is time-sortable and ordered created_at desc, id desc → newest first.
     expect(list.map((p) => p.id)).toEqual([b.id, a.id]);
+  });
+
+  it('persists a stable collision-safe directory name', async () => {
+    db = openDb(dbFile);
+    const repo = new ProjectsRepo(db);
+    const first = await repo.create(projectInput({ name: 'W2 Platform' }));
+    const second = await repo.create(
+      projectInput({ name: 'w2-platform', repoPath: '/tmp/w2-platform-2' }),
+    );
+
+    expect(first.directoryName).toBe('w2-platform');
+    expect(second.directoryName).toBe('w2-platform-2');
   });
 });
 

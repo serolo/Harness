@@ -91,6 +91,26 @@ jobs:
           test -n "$APPLE_TEAM_ID"
           npm run release:mac
 
+      # electron-builder notarizes the app before it creates the DMG. Submit the
+      # finished disk image separately so the distributable itself gets a ticket.
+      - name: Notarize and staple macOS disk image
+        env:
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          shopt -s nullglob
+          dmgs=(dist/*.dmg)
+          test "${#dmgs[@]}" -gt 0
+          for dmg in "${dmgs[@]}"; do
+            xcrun notarytool submit "$dmg" \
+              --key "$APPLE_API_KEY" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER" \
+              --wait
+            xcrun stapler staple "$dmg"
+          done
+
       - name: Verify signed and notarized release output
         run: |
           codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Harness.app

@@ -96,7 +96,9 @@ jobs:
           dmg="$(find dist -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$dmg"
           xcrun stapler validate "$dmg"
-          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+
+          # electron-builder leaves DMGs unsigned by design. The stapler check
+          # above validates the DMG ticket; verify the signed payload below.
 
           mount_point="$(mktemp -d)"
           cleanup_mount() {

@@ -129,9 +129,10 @@ jobs:
           done < <(find dist/mac-arm64/Harness.app -name '*.node')
           for artifact in dist/*.dmg; do
             xcrun stapler validate "$artifact"
-            spctl --assess --type open --context context:primary-signature --verbose=4 "$artifact"
           done
 
+          # electron-builder leaves DMGs unsigned by design. Validate each
+          # stapled DMG above and assess the signed app payload below.
           dmg="$(find dist -maxdepth 1 -name '*.dmg' -print -quit)"
           mount_point="$(mktemp -d)"
           cleanup_mount() {

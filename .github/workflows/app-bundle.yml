@@ -22,9 +22,23 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' ||
           (github.event.workflow_run.conclusion == 'success' &&
            github.event.workflow_run.event == 'push') }}
-    # v1 packaging is macOS-only, and native modules need to be rebuilt on the
-    # same platform used to produce the distributable app bundle.
-    runs-on: macos-latest
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            host_arch: arm64
+            binary_arch: arm64
+            app_dir: mac-arm64
+          - arch: x64
+            runner: macos-15-intel
+            host_arch: x86_64
+            binary_arch: x86_64
+            app_dir: mac
+    # Native modules are rebuilt on a runner matching the target architecture.
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +50,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      - name: Verify runner architecture
+        run: test "$(uname -m)" = "${{ matrix.host_arch }}"
 
       - name: Install dependencies
         run: npm ci
@@ -67,7 +84,7 @@ jobs:
           test -n "$APPLE_API_KEY_ID"
           test -n "$APPLE_API_ISSUER"
           test -n "$APPLE_TEAM_ID"
-          npm run release:mac
+          npm run release:mac -- --${{ matrix.arch }}
 
       # electron-builder notarizes the app before it creates the DMG. Submit the
       # finished disk image separately so the distributable itself gets a ticket.
@@ -91,8 +108,16 @@ jobs:
 
       - name: Verify signed and notarized DMG
         run: |
-          codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Harness.app
-          spctl --assess --type execute --verbose=4 dist/mac-arm64/Harness.app
+          app="dist/${{ matrix.app_dir }}/Harness.app"
+          test -d "$app"
+          file "$app/Contents/MacOS/Harness" | grep -q '${{ matrix.binary_arch }}'
+          find "$app" -path '*/better-sqlite3/build/Release/better_sqlite3.node' -print -quit | grep -q .
+          find "$app" -path '*/node-pty/build/Release/pty.node' -print -quit | grep -q .
+          while IFS= read -r native_module; do
+            file "$native_module" | grep -q '${{ matrix.binary_arch }}'
+          done < <(find "$app" -name '*.node')
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=4 "$app"
           dmg="$(find dist -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$dmg"
           xcrun stapler validate "$dmg"
@@ -119,9 +144,9 @@ jobs:
       - name: Upload signed app bundle artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Harness-signed-notarized-macOS-${{ github.event.workflow_run.head_sha || github.sha }}
+          name: Harness-signed-notarized-macOS-${{ matrix.arch }}-${{ github.event.workflow_run.head_sha || github.sha }}
           path: |
-            dist/mac-arm64/*.app
+            dist/${{ matrix.app_dir }}/*.app
             dist/*.dmg
             dist/*.zip
             dist/*.blockmap

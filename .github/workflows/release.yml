@@ -89,7 +89,7 @@ jobs:
           test -n "$APPLE_API_KEY_ID"
           test -n "$APPLE_API_ISSUER"
           test -n "$APPLE_TEAM_ID"
-          npm run release:mac
+          npm run release:mac -- --arm64
 
       # electron-builder notarizes the app before it creates the DMG. Submit the
       # finished disk image separately so the distributable itself gets a ticket.

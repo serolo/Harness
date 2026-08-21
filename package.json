@@ -12,7 +12,7 @@
     "dev": "node scripts/dev.mjs",
     "build": "electron-vite build",
     "package": "electron-builder",
-    "release:mac": "npm run build && electron-builder --config electron-builder.release.yml --mac --arm64 --publish never",
+    "release:mac": "npm run build && electron-builder --config electron-builder.release.yml --mac --publish never",
     "check": "tsc -b && eslint . && node scripts/vitest-electron.mjs run && electron-vite build",
     "test": "node scripts/vitest-electron.mjs run",
     "test:e2e": "playwright test",

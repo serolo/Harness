@@ -110,12 +110,19 @@ jobs:
         run: |
           app="dist/${{ matrix.app_dir }}/Harness.app"
           test -d "$app"
-          file "$app/Contents/MacOS/Harness" | grep -q '${{ matrix.binary_arch }}'
-          find "$app" -path '*/better-sqlite3/build/Release/better_sqlite3.node' -print -quit | grep -q .
-          find "$app" -path '*/node-pty/build/Release/pty.node' -print -quit | grep -q .
-          while IFS= read -r native_module; do
-            file "$native_module" | grep -q '${{ matrix.binary_arch }}'
-          done < <(find "$app" -name '*.node')
+          sqlite_module="$(find "$app" -path '*/better-sqlite3/build/Release/better_sqlite3.node' -print -quit)"
+          pty_module="$(find "$app" -path '*/node-pty/build/Release/pty.node' -print -quit)"
+          test -n "$sqlite_module"
+          test -n "$pty_module"
+
+          verify_architecture() {
+            local binary="$1"
+            echo "$binary: $(lipo -archs "$binary")"
+            lipo "$binary" -verify_arch '${{ matrix.binary_arch }}'
+          }
+          verify_architecture "$app/Contents/MacOS/Harness"
+          verify_architecture "$sqlite_module"
+          verify_architecture "$pty_module"
           codesign --verify --deep --strict --verbose=2 "$app"
           spctl --assess --type execute --verbose=4 "$app"
           dmg="$(find dist -maxdepth 1 -name '*.dmg' -print -quit)"

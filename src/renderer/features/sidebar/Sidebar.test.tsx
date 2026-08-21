@@ -32,6 +32,13 @@ function installApi(
         ),
       );
     }
+    if (channel === 'workspace:suggestNames') {
+      return Promise.resolve({
+        workspaceName: 'paris',
+        worktreeName: 'paris',
+        branchName: 'paris',
+      });
+    }
     if (channel === 'app:ping') return Promise.resolve('ok');
     return Promise.resolve(undefined);
   });

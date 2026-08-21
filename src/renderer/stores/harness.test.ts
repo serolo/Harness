@@ -13,6 +13,10 @@ import type { Workspace } from '@shared/models';
 import { useHarnessStore } from './harness';
 import { useWorkspacesStore } from './workspaces';
 import { Composer } from '@renderer/features/chat/Composer';
+import {
+  DEFAULT_MODEL_PREFERENCES,
+  writeModelPreferences,
+} from '@renderer/features/settings/modelPreferences';
 
 /** All three Phase-7 harnesses with distinct plan-mode support. */
 const HARNESS_LIST: HarnessInfo[] = [
@@ -172,6 +176,17 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     api: ApiStub = installApi(),
   ): Promise<HTMLElement> {
     void api;
+    const defaultModel: Record<HarnessId, string> = {
+      claude_code: 'claude-opus-5',
+      codex: 'codex-gpt-5-6-sol',
+      // Cursor is discovered dynamically rather than represented in the static
+      // model catalogue, so an unmatched preference falls back to the workspace.
+      cursor: 'cursor-default',
+    };
+    writeModelPreferences({
+      ...DEFAULT_MODEL_PREFERENCES,
+      defaultModel: defaultModel[harness],
+    });
     useWorkspacesStore.setState({
       projects: [
         {

@@ -1,7 +1,9 @@
 name: App Bundle
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -14,11 +16,21 @@ concurrency:
 
 jobs:
   build-macos:
+    # Automatic bundles are privileged because they use signing credentials. Only
+    # continue after CI succeeds for a push (never for a pull-request workflow run).
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.event == 'push') }}
     # v1 packaging is macOS-only, and native modules need to be rebuilt on the
     # same platform used to produce the distributable app bundle.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run's github.sha is the tip of the default branch, which may
+          # have advanced. Package the exact commit that the triggering CI run tested.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -30,9 +42,6 @@ jobs:
 
       - name: Rebuild native modules for Electron ABI
         run: npx @electron/rebuild -f -w better-sqlite3,node-pty
-
-      - name: Run repository gate
-        run: npm run check
 
       - name: Materialize signing and notarization credentials
         env:
@@ -108,7 +117,7 @@ jobs:
       - name: Upload signed app bundle artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Harness-signed-notarized-macOS-${{ github.sha }}
+          name: Harness-signed-notarized-macOS-${{ github.event.workflow_run.head_sha || github.sha }}
           path: |
             dist/mac-arm64/*.app
             dist/*.dmg

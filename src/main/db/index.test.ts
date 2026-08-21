@@ -78,16 +78,16 @@ const UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe('migration runner (fresh temp DB)', () => {
-  it('applies all migrations: user_version becomes 17 and additive columns exist', () => {
+  it('applies all migrations: user_version becomes 19 and additive columns exist', () => {
     db = openDb(dbFile);
     expect(existsSync(dbFile)).toBe(true);
 
     // Inspect the raw file with a fresh handle (asserts persisted state, not the Kysely cache).
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      // A fresh database applies every registered migration through 0017.
+      // A fresh database applies every registered migration through 0019.
       const version = raw.pragma('user_version', { simple: true });
-      expect(version).toBe(17);
+      expect(version).toBe(19);
 
       const tables = raw
         .prepare(
@@ -156,7 +156,7 @@ describe('migration runner (fresh temp DB)', () => {
 
     const raw = new BetterSqlite3(dbFile, { readonly: true });
     try {
-      expect(raw.pragma('user_version', { simple: true })).toBe(17);
+      expect(raw.pragma('user_version', { simple: true })).toBe(19);
       // Exactly one projects table — a double-apply would have thrown "table already exists".
       const count = raw
         .prepare(

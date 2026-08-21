@@ -8,9 +8,8 @@
 //   - interrupt(): SIGINT the child; a terminal event is ALWAYS emitted (synthesized
 //     on exit if the CLI didn't emit one) so no turn is left hanging.
 //
-// ASSUMED CODEX STREAM FORMAT (drift risk — plan §9). The real `codex` CLI is NOT
-// available in this environment, so this adapter is written against a hand-authored,
-// ASSUMED newline-delimited JSON shape (fixtures under ./fixtures/codex). It is
+// ASSUMED CODEX STREAM FORMAT (drift risk — plan §9). The adapter is written against
+// a hand-authored newline-delimited JSON shape (fixtures under ./fixtures/codex). It is
 // conceptually similar to Claude Code's stream-json but uses Codex's OWN field names.
 // The contract tests here prove adapter↔assumed-fixture only; they MUST be re-pinned
 // against the real CLI later. Assumed against a `codex` CLI ~v0.x. Assumed events:
@@ -33,11 +32,13 @@
 // every terminal path (no zombie `codex` processes).
 
 import { spawn } from 'node:child_process';
-import { readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 
+import { AppError } from '@shared/errors';
 import type {
   AgentEvent,
   Attachment,
@@ -169,7 +170,14 @@ export class CodexHarness implements Harness {
     opts: StartTurnOpts,
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
-    const args = buildArgs(opts);
+    const preparedMcp = prepareCodexMcpConfig(opts.mcpConfig);
+    let args: string[];
+    try {
+      args = buildArgs(opts, preparedMcp.override);
+    } catch (error) {
+      preparedMcp.cleanup();
+      throw error;
+    }
     const command = resolveHarnessExecutable('codex');
     let child: ReturnType<typeof spawn>;
     try {
@@ -184,6 +192,7 @@ export class CodexHarness implements Harness {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
+      preparedMcp.cleanup();
       throw new Error(
         formatSpawnFailure(command, args, opts.workspaceDir, err),
       );
@@ -220,6 +229,7 @@ export class CodexHarness implements Harness {
       function endStream(): void {
         if (ended) return;
         ended = true;
+        preparedMcp.cleanup();
         sink.end();
       }
 
@@ -302,11 +312,19 @@ export class CodexHarness implements Harness {
     opts: StartTurnOpts,
     sink: StreamSink<AgentEvent>,
   ): Promise<TurnHandle> {
-    const args = buildArgs(opts);
     const command = resolveHarnessExecutable('codex');
     const captureDir = mkdtempSync(join(tmpdir(), 'harness-codex-stream-'));
     const stdoutPath = join(captureDir, 'stdout');
     const stderrPath = join(captureDir, 'stderr');
+    let preparedMcp: ReturnType<typeof prepareCodexMcpConfig>;
+    let args: string[];
+    try {
+      preparedMcp = prepareCodexMcpConfig(opts.mcpConfig);
+      args = buildArgs(opts, preparedMcp.override);
+    } catch (error) {
+      rmSync(captureDir, { recursive: true, force: true });
+      throw error;
+    }
     let handle: RawPtyHandle;
     try {
       handle = await this.rawPtySpawner!.spawn({
@@ -328,6 +346,7 @@ export class CodexHarness implements Harness {
       });
     } catch (err) {
       rmSync(captureDir, { recursive: true, force: true });
+      preparedMcp.cleanup();
       throw new Error(
         formatSpawnFailure(command, args, opts.workspaceDir, err),
       );
@@ -370,6 +389,7 @@ export class CodexHarness implements Harness {
         }
         sink.end();
         rmSync(captureDir, { recursive: true, force: true });
+        preparedMcp.cleanup();
       }
 
       function consume(objects: unknown[]): void {
@@ -833,11 +853,17 @@ function normalizeError(obj: Record<string, unknown>): CodexNormalizeResult[] {
  * single positional argument passed after a `--` end-of-flags separator, so no amount
  * of workspace-derived content can inject shell OR be mistaken for a flag.
  *
- * Exported for testing: it is the point where `mcpConfig` becomes a written `.mcp.json`
- * + a `--mcp-config` flag, so the MCP-passthrough test asserts against it directly
- * rather than spawning a real `codex`.
+ * Exported for testing: it is the point where `mcpConfig` becomes a native Codex
+ * `-c mcp_servers=...` override, so the MCP-passthrough test can assert the provider
+ * contract without starting a model turn.
  */
-export function buildArgs(opts: StartTurnOpts): string[] {
+export function buildArgs(
+  opts: StartTurnOpts,
+  mcpConfigOverride?: string,
+): string[] {
+  if (opts.mcpConfig.length > 0 && mcpConfigOverride === undefined) {
+    throw new AppError('harness', 'Codex MCP configuration was not prepared');
+  }
   const prompt = opts.prompt + serializeAttachments(opts.attachments);
   // `exec` is Codex's non-interactive/headless subcommand; `--json` selects the
   // newline-delimited JSON event stream this adapter parses (ASSUMED — see header).
@@ -850,12 +876,12 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   if (opts.readOnlyMode) {
     // Read-only is a sandbox policy, not Codex plan mode. Deny escalation requests
     // non-interactively so review/investigation roles cannot modify the worktree.
-    args.push('--sandbox', 'read-only', '--ask-for-approval', 'never');
+    args.push('--sandbox', 'read-only', '-c', 'approval_policy="never"');
   } else if (opts.scopedWriteMode || opts.metaRunId) {
     // Meta children may edit only their isolated worktree. The provider sandbox also
     // blocks network and protected git metadata, so push/merge authority cannot be
     // recovered from a prompt injection or a user-level Codex policy.
-    args.push('--sandbox', 'workspace-write', '--ask-for-approval', 'never');
+    args.push('--sandbox', 'workspace-write', '-c', 'approval_policy="never"');
   } else {
     // Writable turns are explicitly isolated in their own worktree. They remain
     // non-interactive so an unattended provider process cannot stall on approval.
@@ -865,9 +891,8 @@ export function buildArgs(opts: StartTurnOpts): string[] {
   // Codex has no distinct plan mode. Callers must use readOnlyMode for roles that
   // inspect without writing; a plan request remains unsupported at the capability gate.
 
-  const mcpConfigPath = writeMcpConfig(opts.mcpConfig);
-  if (mcpConfigPath) {
-    args.push('--mcp-config', mcpConfigPath);
+  if (mcpConfigOverride) {
+    args.push('-c', mcpConfigOverride);
   }
 
   if (opts.effort) {
@@ -884,32 +909,55 @@ export function buildArgs(opts: StartTurnOpts): string[] {
 }
 
 /**
- * Write the MCP servers to a temp `.mcp.json` and return its path (or undefined when
- * there are none). Written OUTSIDE the workspace (a fresh tmp dir) so it never dirties
- * the user's worktree/diff. Format mirrors the Claude Code adapter's `--mcp-config`
- * file schema (ASSUMED to be shared across CLIs — a re-pin point per plan §9).
+ * Prepare private MCP launch files plus Codex's documented `-c key=value` override.
+ * Codex sees only the app launcher and private file paths; server args and environment
+ * values stay out of process argv. The caller must run cleanup after the provider exits.
  */
-function writeMcpConfig(servers: McpServerConfig[]): string | undefined {
-  if (!servers || servers.length === 0) {
-    return undefined;
-  }
-  const mcpServers: Record<string, unknown> = {};
-  for (const s of servers) {
-    mcpServers[s.name] = {
-      command: s.command,
-      ...(s.args ? { args: s.args } : {}),
-      ...(s.env ? { env: s.env } : {}),
+export function prepareCodexMcpConfig(servers: McpServerConfig[]): {
+  override?: string;
+  cleanup: () => void;
+} {
+  if (!servers || servers.length === 0) return { cleanup: () => undefined };
+
+  // Preserve the previous last-definition-wins behavior for duplicate names.
+  const byName = new Map(servers.map((server) => [server.name, server]));
+  const cleanupDir = mkdtempSync(join(tmpdir(), 'harness-codex-mcp-'));
+  const launcher = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'mcp-launcher.js',
+  );
+  try {
+    const entries = [...byName.values()].map((server, index) => {
+      const configPath = join(cleanupDir, `server-${index}.json`);
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          command: server.command,
+          args: server.args ?? [],
+          env: server.env ?? {},
+        }),
+        { encoding: 'utf8', mode: 0o600 },
+      );
+      return `${tomlString(server.name)} = { command = ${tomlString(process.execPath)}, args = [${tomlString(launcher)}], env = { "ELECTRON_RUN_AS_NODE" = "1", "HARNESS_MCP_LAUNCH_CONFIG" = ${tomlString(configPath)} } }`;
+    });
+    let cleaned = false;
+    return {
+      override: `mcp_servers={ ${entries.join(', ')} }`,
+      cleanup: () => {
+        if (cleaned) return;
+        cleaned = true;
+        rmSync(cleanupDir, { recursive: true, force: true });
+      },
     };
+  } catch (error) {
+    rmSync(cleanupDir, { recursive: true, force: true });
+    throw error;
   }
-  // mkdtemp gives a 0700 dir; write the file 0600 since MCP `env` may carry secrets
-  // and the parent tmp dir is world-readable.
-  const dir = mkdtempSync(join(tmpdir(), 'harness-mcp-'));
-  const file = join(dir, 'mcp.json');
-  writeFileSync(file, JSON.stringify({ mcpServers }, null, 2), {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
-  return file;
+}
+
+/** JSON basic strings are also valid TOML basic strings for our string-only values. */
+function tomlString(value: string): string {
+  return JSON.stringify(value);
 }
 
 // ---------------------------------------------------------------------------

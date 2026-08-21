@@ -15,6 +15,7 @@ export default defineConfig({
           index: resolve(__dirname, 'src/main/index.ts'),
           'mcp-stdio': resolve(__dirname, 'src/main/meta-harness/mcp-stdio.ts'),
           'knowledge-mcp': resolve(__dirname, 'src/main/knowledge-mcp.ts'),
+          'mcp-launcher': resolve(__dirname, 'src/main/mcp-launcher.ts'),
         },
       },
     },

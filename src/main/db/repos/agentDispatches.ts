@@ -4,10 +4,15 @@ import type {
   AgentDispatchPurpose,
   AgentDispatchStatus,
   AgentDispatchSummary,
+  MetaSkillUsageReport,
 } from '@shared/agents';
 import type { HarnessId } from '@shared/harness';
 import type { AppDatabase } from '../index';
 import type { AgentDispatchesTable } from '../schema';
+import {
+  parseStoredSkillUsage,
+  serializeSkillUsage,
+} from '../../meta-harness/skillEvidence';
 
 function rowToSummary(row: AgentDispatchesTable): AgentDispatchSummary {
   let changedFiles: string[] = [];
@@ -43,6 +48,7 @@ function rowToSummary(row: AgentDispatchesTable): AgentDispatchSummary {
     endedAt: row.ended_at,
     ...(row.debate_stage ? { debateStage: row.debate_stage } : {}),
     ...(row.debate_round !== null ? { debateRound: row.debate_round } : {}),
+    skillUsage: parseStoredSkillUsage(row.skill_usage_json),
   };
 }
 
@@ -82,6 +88,7 @@ export class AgentDispatchesRepo {
       ended_at: null,
       debate_stage: input.debateStage ?? null,
       debate_round: input.debateRound ?? null,
+      skill_usage_json: serializeSkillUsage({ reported: false, skills: [] }),
     };
     await this.db.insertInto('agent_dispatches').values(row).execute();
     return rowToSummary(row);
@@ -110,6 +117,7 @@ export class AgentDispatchesRepo {
       turn_id: turn.id ?? null,
       session_id: turn.sessionId ?? null,
       started_at: Date.now(),
+      skill_usage_json: serializeSkillUsage({ reported: false, skills: [] }),
     });
   }
   async resume(
@@ -170,6 +178,7 @@ export class AgentDispatchesRepo {
       changedFiles?: string[];
       diffStat?: string;
       error?: string;
+      skillUsage?: MetaSkillUsageReport;
     } = {},
   ): Promise<AgentDispatchSummary> {
     return this.update(id, ['pending', 'running'], status, {
@@ -179,6 +188,9 @@ export class AgentDispatchesRepo {
       ),
       diff_stat: result.diffStat ?? null,
       error: result.error ?? null,
+      skill_usage_json: serializeSkillUsage(
+        result.skillUsage ?? { reported: false, skills: [] },
+      ),
       ended_at: Date.now(),
     });
   }

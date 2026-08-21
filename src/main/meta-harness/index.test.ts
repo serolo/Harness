@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 import type {
   AgentDispatchSummary,
@@ -58,6 +59,9 @@ const snapshot: NormalizedAgentSnapshot = {
     critiqueRounds: 0,
   },
 };
+const workflowDigest = createHash('sha256')
+  .update('Use bounded delegation.')
+  .digest('hex');
 
 function workspace(id: string, branch: string): Workspace {
   return {
@@ -158,7 +162,11 @@ beforeEach(() => {
       async (
         id: string,
         status: MetaRunStatus,
-        extra: { summary?: string; error?: string } = {},
+        extra: {
+          summary?: string;
+          error?: string;
+          skillUsage?: MetaRunSummary['coordinatorSkillUsage'];
+        } = {},
       ) => {
         const current = runs.get(id)!;
         if (
@@ -176,6 +184,8 @@ beforeEach(() => {
           status,
           finalSummary: extra.summary ?? current.finalSummary,
           error: extra.error ?? current.error,
+          coordinatorSkillUsage:
+            extra.skillUsage ?? current.coordinatorSkillUsage,
           endedAt: 2,
         };
         runs.set(id, next);
@@ -279,6 +289,7 @@ beforeEach(() => {
           error?: string;
           changedFiles?: string[];
           diffStat?: string;
+          skillUsage?: AgentDispatchSummary['skillUsage'];
         } = {},
       ) => {
         const current = dispatches.get(id)!;
@@ -295,6 +306,7 @@ beforeEach(() => {
           error: result.error ?? null,
           changedFiles: result.changedFiles ?? [],
           diffStat: result.diffStat ?? null,
+          skillUsage: result.skillUsage,
         };
         dispatches.set(id, next);
         return next;
@@ -422,7 +434,14 @@ beforeEach(() => {
       shutdown: vi.fn(async () => undefined),
     } as unknown as MetaHarnessServiceDeps['broker'],
     emit: vi.fn(),
-    settings: () => ({ permissionPolicy: {} }),
+    turnPreparation: {
+      prepareTurn: vi.fn(async (_workspace, opts) => ({
+        ...opts,
+        mcpConfig: opts.mcpConfig ?? [],
+        permissionPolicy: opts.permissionPolicy ?? {},
+      })),
+      discard: vi.fn(),
+    },
     publisher: {
       pushBranch: vi.fn(async () => undefined),
       openPr: vi.fn(async () => ({})),
@@ -471,6 +490,21 @@ describe('MetaHarnessService lifecycle', () => {
       ],
     });
     expect(JSON.stringify(opts)).not.toContain('/tmp/c.sock');
+    expect(opts.metaSkills).toEqual([
+      expect.objectContaining({
+        slug: 'workflow',
+        digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    ]);
+    expect(opts.prompt).toContain('Skills consulted:');
+    expect(deps.turnPreparation.prepareTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'coordinator' }),
+      expect.objectContaining({
+        mcpConfig: [expect.objectContaining({ name: 'harness-meta-control' })],
+      }),
+      'meta-coordinator',
+      'claude_code',
+    );
   });
 
   it('persists explicit publish consent and uses only the reviewed publisher after success', async () => {
@@ -780,6 +814,12 @@ describe('MetaHarnessService lifecycle', () => {
       harness: 'codex',
     });
     expect(service.isWorkspaceClaimed('child-1')).toBe(true);
+    expect(deps.turnPreparation.prepareTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'child-1' }),
+      expect.objectContaining({ mcpConfig: [] }),
+      'meta-child',
+      'codex',
+    );
     turnSinks[1]?.push({ kind: 'text', delta: 'first generation' });
     turnSinks[1]?.push({ kind: 'turn_end' });
     await vi.waitFor(() =>
@@ -1005,19 +1045,33 @@ describe('MetaHarnessService lifecycle', () => {
       purpose: 'implement',
       prompt: 'Code',
     });
-    turnSinks[1]?.push({ kind: 'text', delta: 'child result' });
+    turnSinks[1]?.push({
+      kind: 'text',
+      delta: `child result\nSkills consulted: workflow@${workflowDigest}`,
+    });
     turnSinks[1]?.push({ kind: 'turn_end' });
     turnSinks[1]?.push({ kind: 'turn_end' });
     await vi.waitFor(() =>
       expect(deps.dispatches.finish).toHaveBeenCalledTimes(1),
     );
-    turnSinks[0]?.push({ kind: 'text', delta: 'final synthesis' });
+    turnSinks[0]?.push({
+      kind: 'text',
+      delta: `final synthesis\nSkills consulted: workflow@${workflowDigest}`,
+    });
     turnSinks[0]?.push({ kind: 'turn_end' });
     turnSinks[0]?.push({ kind: 'turn_end' });
     await vi.waitFor(() => expect(deps.broker.revoke).toHaveBeenCalledTimes(1));
-    expect((await service.get('project-1', run.id)).finalSummary).toBe(
-      'final synthesis',
-    );
+    const detail = await service.get('project-1', run.id);
+    expect(detail.finalSummary).toBe('final synthesis');
+    expect(detail.coordinatorSkillUsage).toEqual({
+      reported: true,
+      skills: [{ slug: 'workflow', digest: workflowDigest }],
+    });
+    expect(detail.dispatches[0]?.summary).toBe('child result');
+    expect(detail.dispatches[0]?.skillUsage).toEqual({
+      reported: true,
+      skills: [{ slug: 'workflow', digest: workflowDigest }],
+    });
     expect(service.isWorkspaceClaimed('coordinator')).toBe(false);
     expect(workspaces.has('child-1')).toBe(true);
   });

@@ -80,7 +80,7 @@ describe('migration 0014 task effort', () => {
 
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(17);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
     expect(
       db
         .prepare('SELECT prompt, effort FROM scheduled_tasks WHERE id = ?')

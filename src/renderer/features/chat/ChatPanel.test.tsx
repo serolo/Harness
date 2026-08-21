@@ -22,7 +22,12 @@ import {
   DEFAULT_MODEL_PREFERENCES,
   writeModelPreferences,
 } from '../settings/modelPreferences';
-import type { ChatHistory, HarnessInfo, TurnStreamChunk } from '@shared/ipc';
+import type {
+  ChatHistory,
+  HarnessInfo,
+  TurnStreamChunk,
+  WorkspaceDirectoryEntry,
+} from '@shared/ipc';
 import type { SlashCommand } from '@shared/slash';
 import type { FileDiff } from '@shared/review';
 import type { ScheduledTask } from '@shared/tasks';
@@ -66,7 +71,7 @@ function installApi(opts: {
    */
   history?: ChatHistory | ((req: { workspaceId: string }) => ChatHistory);
   stream?: ApiStub['stream'];
-  slashCommands?: SlashCommand[];
+  slashCommands?: SlashCommand[] | (() => SlashCommand[]);
   files?: Record<string, string>;
   plans?: Record<string, string>;
   fileDiffs?: Record<string, FileDiff>;
@@ -74,6 +79,7 @@ function installApi(opts: {
   revealError?: Error;
   imagePreviews?: Record<string, string>;
   pickedFile?: string;
+  directories?: Record<string, WorkspaceDirectoryEntry[]>;
 }): ApiStub {
   // Fake `chat_contexts` persistence, keyed by workspace — mirrors main's
   // `ChatContextsRepo`: `list` bootstraps a single 'Untitled' tab the first time a
@@ -191,6 +197,10 @@ function installApi(opts: {
     if (channel === 'workspace:pickFile') {
       return Promise.resolve(opts.pickedFile ?? '/tmp/ws/src/app.ts');
     }
+    if (channel === 'workspace:listDirectory') {
+      const path = (req as { path?: string } | undefined)?.path ?? '';
+      return Promise.resolve(opts.directories?.[path] ?? []);
+    }
     if (channel === 'file:revealInFinder') {
       return opts.revealError
         ? Promise.reject(opts.revealError)
@@ -208,7 +218,9 @@ function installApi(opts: {
     }
     if (channel === 'slash:list')
       return Promise.resolve(
-        opts.slashCommands ?? [
+        (typeof opts.slashCommands === 'function'
+          ? opts.slashCommands()
+          : opts.slashCommands) ?? [
           {
             name: 'review',
             template: 'Review the current changes.',
@@ -255,6 +267,27 @@ afterEach(() => {
 });
 
 describe('ChatPanel reconstruction', () => {
+  it('shows a GitHub PR refresh error in chat and offers an explicit retry', async () => {
+    installApi({});
+    const retry = vi.fn();
+
+    render(
+      <ChatPanel
+        workspaceId="ws1"
+        workspacePrError={new Error('Connect Timeout Error')}
+        onRetryWorkspacePr={retry}
+      />,
+    );
+
+    const alert = await screen.findByTestId('github-pr-error');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent(
+      'Could not refresh the GitHub pull request: Connect Timeout Error',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
   it('opens and selects a dedicated tab when a scheduled task starts', async () => {
     const api = installApi({});
     render(<ChatPanel workspaceId="ws1" />);
@@ -1845,6 +1878,66 @@ describe('ChatPanel reconstruction', () => {
     expect(document.querySelectorAll('li')).toHaveLength(2);
   });
 
+  it('lets Markdown previews grow to the full file-viewer width', async () => {
+    installApi({ files: { 'reports/review.md': '# Review\n\nWide content' } });
+
+    render(
+      <ChatPanel
+        workspaceId="ws1"
+        inspectFileRequest={{
+          id: 4,
+          workspaceId: 'ws1',
+          path: 'reports/review.md',
+          mode: 'edit',
+        }}
+      />,
+    );
+
+    const viewer = await screen.findByTestId('chat-file-viewer');
+    const document = screen.getByTestId('chat-markdown-viewer');
+    const content = screen.getByTestId('chat-markdown-content');
+
+    expect(viewer).toHaveClass('min-w-0');
+    expect(document).toHaveClass('min-w-0');
+    expect(content).toHaveClass('w-full', 'min-w-0');
+    expect(content).not.toHaveClass('max-w-3xl');
+  });
+
+  it('restores the selected chat context after closing a file preview', async () => {
+    installApi({ files: { 'src/context.ts': 'export const context = true;' } });
+    const { rerender } = render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(await screen.findByTestId('chat-new'));
+    const selectedContext = await screen.findByTestId('chat-context-tab');
+    expect(selectedContext).toHaveAttribute('aria-selected', 'true');
+
+    rerender(
+      <ChatPanel
+        workspaceId="ws1"
+        inspectFileRequest={{
+          id: 5,
+          workspaceId: 'ws1',
+          path: 'src/context.ts',
+          mode: 'edit',
+        }}
+      />,
+    );
+    await screen.findByTestId('chat-file-viewer');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close src/context.ts' }),
+    );
+
+    expect(screen.getByTestId('chat-context-tab')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('chat-tab')).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+  });
+
   it('does not reopen a closed file when returning to its workspace', async () => {
     const api = installApi({
       files: { 'src/closed.ts': 'closed workspace file' },
@@ -2260,6 +2353,10 @@ describe('ChatPanel manual tab persistence (regression)', () => {
     const tab1 = await screen.findByTestId('chat-tab');
     const tab2 = await screen.findByTestId('chat-context-tab');
 
+    // Returning to a workspace restores the last selected context, not the first tab.
+    expect(tab2).toHaveAttribute('aria-selected', 'true');
+    expect(tab1).toHaveAttribute('aria-selected', 'false');
+
     // Tab 1's history is intact and NOT merged with tab 2's.
     fireEvent.click(within(tab1).getByRole('button', { name: 'Untitled' }));
     expect(
@@ -2589,6 +2686,245 @@ describe('ChatPanel streaming', () => {
     fireEvent.click(await screen.findByTestId('slash-command-review'));
 
     expect(input).toHaveValue('/review ');
+  });
+
+  it('opens workspace files for @ and filters the active mention query', async () => {
+    const api = installApi({
+      directories: {
+        '': [
+          { name: 'src', path: 'src', kind: 'directory' },
+          { name: 'package.json', path: 'package.json', kind: 'file' },
+          { name: 'README.md', path: 'README.md', kind: 'file' },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'Look at @' } });
+
+    expect(await screen.findByTestId('file-mention-menu')).toBeInTheDocument();
+    expect(api.invoke).toHaveBeenCalledWith('workspace:listDirectory', {
+      workspaceId: 'ws1',
+      path: '',
+    });
+    expect(screen.getByTestId('file-mention-option-src')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('file-mention-option-package.json'),
+    ).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'Look at @pack' } });
+
+    expect(
+      await screen.findByTestId('file-mention-option-package.json'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('file-mention-option-src'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('file-mention-option-README.md'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('uses arrow keys to choose a file and inserts its relative path', async () => {
+    installApi({
+      directories: {
+        '': [
+          { name: 'alpha.ts', path: 'alpha.ts', kind: 'file' },
+          { name: 'beta.ts', path: 'beta.ts', kind: 'file' },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '@' } });
+    await screen.findByTestId('file-mention-option-alpha.ts');
+
+    fireEvent.keyDown(input, { key: 'ArrowDown', code: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(input).toHaveValue('@beta.ts ');
+    expect(screen.queryByTestId('file-mention-menu')).not.toBeInTheDocument();
+  });
+
+  it('continues browsing after selecting a directory and inserts a nested file', async () => {
+    const api = installApi({
+      directories: {
+        '': [{ name: 'src', path: 'src', kind: 'directory' }],
+        src: [
+          { name: 'components', path: 'src/components', kind: 'directory' },
+          { name: 'index.ts', path: 'src/index.ts', kind: 'file' },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'Review @' } });
+    fireEvent.click(await screen.findByTestId('file-mention-option-src'));
+
+    expect(input).toHaveValue('Review @src/');
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('workspace:listDirectory', {
+        workspaceId: 'ws1',
+        path: 'src',
+      }),
+    );
+    fireEvent.click(
+      await screen.findByTestId('file-mention-option-src/index.ts'),
+    );
+
+    expect(input).toHaveValue('Review @src/index.ts ');
+    expect(screen.queryByTestId('file-mention-menu')).not.toBeInTheDocument();
+  });
+
+  it('dismisses @ suggestions with Escape without clearing the draft', async () => {
+    installApi({
+      directories: {
+        '': [{ name: 'src', path: 'src', kind: 'directory' }],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'Keep this draft @' } });
+    await screen.findByTestId('file-mention-menu');
+
+    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' });
+
+    expect(input).toHaveValue('Keep this draft @');
+    await waitFor(() =>
+      expect(screen.queryByTestId('file-mention-menu')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('submits normally with Enter when the @ query has no matching file', async () => {
+    const api = installApi({
+      directories: {
+        '': [{ name: 'available.ts', path: 'available.ts', kind: 'file' }],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'Ship @missing' } });
+    expect(await screen.findByText('No matching files')).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() =>
+      expect(api.stream).toHaveBeenCalledWith(
+        'turn:start',
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          prompt: 'Ship @missing',
+        }),
+        expect.any(Function),
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('does not select stale root entries while a nested directory is loading', async () => {
+    let resolveNested: (entries: WorkspaceDirectoryEntry[]) => void = () =>
+      undefined;
+    const nestedDirectory = new Promise<WorkspaceDirectoryEntry[]>(
+      (resolve) => {
+        resolveNested = resolve;
+      },
+    );
+    const api = installApi({
+      directories: {
+        '': [
+          { name: 'src', path: 'src', kind: 'directory' },
+          { name: 'root.ts', path: 'root.ts', kind: 'file' },
+        ],
+      },
+    });
+    const invoke = api.invoke.getMockImplementation();
+    if (!invoke)
+      throw new Error('installApi must provide an invoke implementation');
+    api.invoke.mockImplementation((channel: string, req?: unknown) => {
+      if (
+        channel === 'workspace:listDirectory' &&
+        (req as { path?: string } | undefined)?.path === 'src'
+      ) {
+        return nestedDirectory;
+      }
+      return invoke(channel, req);
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '@' } });
+    fireEvent.click(await screen.findByTestId('file-mention-option-src'));
+    expect(input).toHaveValue('@src/');
+    expect(await screen.findByText('Loading files...')).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'ArrowDown', code: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(input).toHaveValue('@src/');
+    expect(api.stream).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveNested([{ name: 'index.ts', path: 'src/index.ts', kind: 'file' }]);
+    });
+    expect(
+      await screen.findByTestId('file-mention-option-src/index.ts'),
+    ).toBeInTheDocument();
+  });
+
+  it('browses and inserts directory and file names containing spaces', async () => {
+    const api = installApi({
+      directories: {
+        '': [{ name: 'my folder', path: 'my folder', kind: 'directory' }],
+        'my folder': [
+          {
+            name: 'notes file.md',
+            path: 'my folder/notes file.md',
+            kind: 'file',
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '@' } });
+    fireEvent.click(await screen.findByTestId('file-mention-option-my folder'));
+
+    expect(input).toHaveValue('@my\\ folder/');
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('workspace:listDirectory', {
+        workspaceId: 'ws1',
+        path: 'my folder',
+      }),
+    );
+    fireEvent.click(
+      await screen.findByTestId('file-mention-option-my folder/notes file.md'),
+    );
+
+    expect(input).toHaveValue('@my\\ folder/notes\\ file.md ');
+  });
+
+  it('does not treat an embedded email address as a file mention', async () => {
+    const api = installApi({
+      directories: {
+        '': [{ name: 'example.com', path: 'example.com', kind: 'file' }],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'Email dev@example.com' } });
+
+    expect(screen.queryByTestId('file-mention-menu')).not.toBeInTheDocument();
+    expect(api.invoke).not.toHaveBeenCalledWith(
+      'workspace:listDirectory',
+      expect.anything(),
+    );
   });
 
   it('clears chat from /clear without starting a model turn', async () => {
@@ -2969,8 +3305,12 @@ describe('ChatPanel streaming', () => {
       slashCommands: [
         {
           name: 'harness-plan',
-          template: '/harness-plan $ARGS',
+          template: '$harness-plan $ARGS',
           description: 'Create an implementation plan',
+          source: 'native_skill',
+          provider: 'codex',
+          provenance: 'workspace',
+          invocation: 'dollar',
         },
       ],
     });
@@ -2990,9 +3330,106 @@ describe('ChatPanel streaming', () => {
     await waitFor(() => expect(stream).toHaveBeenCalled());
     expect(stream.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
-        prompt: '/harness-plan W2BT-1234',
+        prompt: '$harness-plan W2BT-1234',
         displayPrompt: '/harness-plan W2BT-1234',
       }),
     );
+  });
+
+  it('shows colliding prompt and skill provenance and preserves the selected Codex skill', async () => {
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        _onChunk: (c: TurnStreamChunk) => void,
+      ) => Promise.resolve(),
+    );
+    const api = installApi({
+      stream,
+      slashCommands: [
+        {
+          name: 'deploy',
+          template: 'Run configured deployment.\n\n$ARGS',
+          description: 'Deploy from settings',
+          source: 'configured_prompt',
+          provenance: 'app',
+          invocation: 'slash',
+        },
+        {
+          name: 'deploy',
+          template: '$deploy $ARGS',
+          description: 'Provider deployment workflow',
+          source: 'native_skill',
+          provider: 'codex',
+          provenance: 'workspace',
+          invocation: 'dollar',
+        },
+      ],
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '/deploy' } });
+
+    const choices = await screen.findAllByTestId('slash-command-deploy');
+    expect(choices).toHaveLength(2);
+    expect(choices[0]).toHaveTextContent('configured prompt');
+    expect(choices[1]).toHaveTextContent('Codex · skill · workspace');
+    expect(choices[1]).toHaveTextContent('$deploy');
+    fireEvent.click(choices[1]);
+    expect(input).toHaveValue('$deploy ');
+
+    fireEvent.change(input, { target: { value: '$deploy staging' } });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() => expect(stream).toHaveBeenCalled());
+    expect(stream.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        prompt: '$deploy staging',
+        displayPrompt: '$deploy staging',
+      }),
+    );
+    expect(
+      api.invoke.mock.calls.filter(([channel]) => channel === 'slash:list')
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('refreshes the native command catalogue whenever autocomplete reopens', async () => {
+    let commands: SlashCommand[] = [
+      {
+        name: 'review',
+        template: 'Review.',
+        source: 'builtin',
+        provenance: 'app',
+      },
+    ];
+    installApi({ slashCommands: () => commands });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '/' } });
+    expect(
+      await screen.findByTestId('slash-command-review'),
+    ).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'draft' } });
+    commands = [
+      ...commands,
+      {
+        name: 'new-skill',
+        template: '$new-skill $ARGS',
+        description: 'Added while the composer remained mounted',
+        source: 'native_skill',
+        provider: 'codex',
+        provenance: 'workspace',
+        invocation: 'dollar',
+      },
+    ];
+    fireEvent.change(input, { target: { value: '/new' } });
+
+    expect(
+      await screen.findByTestId('slash-command-new-skill'),
+    ).toHaveTextContent('Added while the composer remained mounted');
   });
 });

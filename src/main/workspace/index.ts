@@ -194,8 +194,8 @@ export class WorkspaceManager {
     }
 
     const all = await this.deps.repos.workspaces.listByProject(req.projectId);
-    // Port allocation and project-checkout exclusivity only consider live siblings.
-    // Names consider archived rows too because the DB uniqueness constraint does.
+    // Archive preserves the row/history but releases its display name. Physical branch
+    // and worktree ownership checks below still consider every row.
     const live = all.filter((w) => w.status !== 'archived');
     const location = req.location ?? 'worktree';
     if (location !== 'worktree' && location !== 'project') {
@@ -229,7 +229,7 @@ export class WorkspaceManager {
     }
     if (
       requestedName !== undefined &&
-      all.some((w) => w.name === requestedName)
+      live.some((w) => w.name === requestedName)
     ) {
       throw new AppError(
         'conflict',
@@ -237,7 +237,7 @@ export class WorkspaceManager {
       );
     }
 
-    const existingNames = all.map((w) => w.name);
+    const existingNames = live.map((w) => w.name);
     const name =
       requestedName ??
       (location === 'project' && !existingNames.includes('current')
@@ -295,6 +295,18 @@ export class WorkspaceManager {
         sameFilesystemPath(entry.path, worktreePath),
       );
       if (atTargetPath) {
+        const pathOwner = all.find(
+          (workspace) =>
+            workspace.worktreePath !== null &&
+            sameFilesystemPath(workspace.worktreePath, atTargetPath.path),
+        );
+        if (pathOwner) {
+          throw new AppError(
+            'conflict',
+            `worktree path is already owned by ${pathOwner.status === 'archived' ? 'archived ' : ''}workspace "${pathOwner.name}". Restore it or choose a different worktree name.`,
+            { workspaceId: pathOwner.id, worktreePath: atTargetPath.path },
+          );
+        }
         if (atTargetPath.branch !== branch) {
           throw new AppError(
             'conflict',
@@ -302,9 +314,8 @@ export class WorkspaceManager {
             { worktreePath, branch: atTargetPath.branch },
           );
         }
-        // A prior create can finish `git worktree add` and then fail while inserting
-        // the DB row (for example during a schema mismatch). Reuse that exact orphan
-        // instead of asking Git to add its already-checked-out branch a second time.
+        // A prior create can finish `git worktree add` and then fail before inserting
+        // a DB row. Reuse only that unowned orphan; archived rows retain ownership.
         reuseManagedWorktree = true;
       } else {
         if (worktreeDestinationIsOccupied(worktreePath)) {
@@ -506,8 +517,12 @@ export class WorkspaceManager {
         current.projectId,
       );
       if (
+        current.status !== 'archived' &&
         siblings.some(
-          (workspace) => workspace.id !== id && workspace.name === name,
+          (workspace) =>
+            workspace.id !== id &&
+            workspace.status !== 'archived' &&
+            workspace.name === name,
         )
       ) {
         throw new AppError(
@@ -737,6 +752,20 @@ export class WorkspaceManager {
       throw new AppError('not_found', `project not found: ${ws.projectId}`);
     }
 
+    // Restoring makes the archived row live again. Reject a reused display name before
+    // clearing archive metadata or touching a retained/recreated worktree.
+    const liveSiblings = (
+      await this.deps.repos.workspaces.listByProject(ws.projectId)
+    ).filter(
+      (workspace) => workspace.id !== id && workspace.status !== 'archived',
+    );
+    if (liveSiblings.some((workspace) => workspace.name === ws.name)) {
+      throw new AppError(
+        'conflict',
+        `workspace name is already in use: ${ws.name}`,
+      );
+    }
+
     // When archive deletion is disabled, the checkout remains registered with Git.
     // Restoring only needs to reactivate the persisted workspace row.
     if (ws.worktreePath !== null) {
@@ -746,12 +775,7 @@ export class WorkspaceManager {
     }
 
     if ((ws.location ?? 'worktree') === 'project') {
-      const live = (
-        await this.deps.repos.workspaces.listByProject(ws.projectId)
-      ).filter(
-        (workspace) => workspace.status !== 'archived' && workspace.id !== id,
-      );
-      if (live.some((workspace) => workspace.location === 'project')) {
+      if (liveSiblings.some((workspace) => workspace.location === 'project')) {
         throw new AppError(
           'conflict',
           'the project checkout is already used by another workspace',

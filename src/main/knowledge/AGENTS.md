@@ -17,6 +17,13 @@
 - Canonical knowledge is a local, app-managed Git repository. `storage = "github"` is
   explicitly unsupported until a remote-storage implementation exists; never silently
   reinterpret it as local storage.
+- Enabled local knowledge initializes automatically before an eligible turn receives retrieval.
+  Initialization is single-flight per project and must repair an interrupted empty Git repository
+  with no `HEAD`. Retrieval remains optional: initialization failure skips knowledge for that turn
+  and is retried later without blocking the agent or logging private filesystem paths.
+- `knowledge.search.enabled = false` is an enforcement boundary, not a UI preference. Do not attach
+  the knowledge MCP server when disabled, and keep the flag in the private gateway configuration so
+  a stale or directly constructed gateway rejects search before touching QMD or the filesystem.
 - `index.md` is the deterministic navigation/fallback catalog (path-sorted) and may project
   `description`, `applies_when`, `globs`, `source`, and `links` metadata. Search and page loading
   are bounded enrichments; retrieval failure must not block an agent turn.
@@ -25,6 +32,14 @@
   excludes reserved files, enforces canonical status/path confinement, and cumulatively budgets
   actual serialized search/read responses. Non-MCP turns may preselect at most two pages within
   1,000 estimated tokens and never fall back to `index.md`.
+- Knowledge availability and use are distinct persisted facts. Every prepared turn must resolve to
+  one sanitized `knowledge_status` outcome (`searched`, `read`, `no_results`, `unused`, `fallback`,
+  or `failed`); never infer use merely because a wiki or MCP server was available.
+- Private MCP traces are consumed and removed on every supervisor exit path, including terminal
+  events, stream error/end, rejected starts, and spawn failures. Gateway failures may persist only
+  fixed provider/status metadata—never exception messages, prompts, page content, or absolute paths.
+  Successful search events may persist only the whitespace-normalized, 240-character-bounded query
+  phrase needed to distinguish attempts in the user-visible transcript.
 - Post-turn extraction runs through `PostTurnKnowledgeCurator`, a bounded seam. It currently
   preserves the legacy hidden proposal-block protocol. An autonomous provider turn is deferred
   until Harness has a non-recursive ephemeral-turn abstraction; do not run curation through the

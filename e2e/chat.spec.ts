@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,8 @@ function initRepo(dir: string): void {
   git(['config', 'user.email', 'e2e@example.com']);
   git(['config', 'user.name', 'E2E']);
   writeFileSync(join(dir, 'README.md'), '# demo\n', 'utf8');
+  mkdirSync(join(dir, 'src'));
+  writeFileSync(join(dir, 'src', 'nested.ts'), 'export const nested = true;\n');
   git(['add', '.']);
   git(['commit', '-m', 'initial']);
 }
@@ -41,6 +43,10 @@ test.beforeAll(async () => {
   userDataDir = mkdtempSync(join(tmpdir(), 'harness-e2e-chat-'));
   repoDir = mkdtempSync(join(tmpdir(), 'harness-e2e-repo-'));
   initRepo(repoDir);
+  writeFileSync(
+    join(userDataDir, 'onboarding.json'),
+    JSON.stringify({ version: 3, acknowledged: true }),
+  );
 
   app = await electron.launch({
     args: [
@@ -142,4 +148,53 @@ test('send a prompt → tokens stream → turn ends → history reconstructs', a
   expect(result.turnCount).toBe(1);
   expect(result.lastStatus).toBe('completed');
   expect(result.historyHasText).toBe(true);
+});
+
+test('inserts a nested workspace file from the @ mention browser', async () => {
+  const workspaceId = await page.evaluate(async (localPath: string) => {
+    interface Api {
+      invoke(ch: string, req?: unknown): Promise<unknown>;
+      stream(
+        ch: string,
+        arg: unknown,
+        onChunk: (c: unknown) => void,
+        opts: { id: string },
+      ): Promise<void>;
+    }
+    const api = (window as unknown as { api: Api }).api;
+    const project = (await api.invoke('project:add', { localPath })) as {
+      id: string;
+    };
+    let createdWorkspaceId = '';
+    await api.stream(
+      'workspace:create',
+      { projectId: project.id, name: 'mention-e2e' },
+      (chunk) => {
+        const frame = chunk as { kind: string; workspace?: { id: string } };
+        if (frame.kind === 'created') {
+          createdWorkspaceId = frame.workspace?.id ?? '';
+        }
+      },
+      { id: crypto.randomUUID() },
+    );
+    return createdWorkspaceId;
+  }, repoDir);
+
+  expect(workspaceId).not.toBe('');
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+
+  const workspace = page.locator(
+    `[data-testid="workspace-item"][data-workspace-id="${workspaceId}"]`,
+  );
+  await expect(workspace).toBeVisible();
+  await workspace.click();
+
+  const composer = page.getByTestId('composer-input');
+  await expect(composer).toBeVisible();
+  await composer.fill('@');
+  await page.getByTestId('file-mention-option-src').click();
+  await expect(composer).toHaveValue('@src/');
+  await page.getByTestId('file-mention-option-src/nested.ts').click();
+  await expect(composer).toHaveValue('@src/nested.ts ');
 });

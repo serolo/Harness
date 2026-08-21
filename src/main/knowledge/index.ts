@@ -477,6 +477,10 @@ function initialFiles(
 
 export class WikiService {
   private readonly accepting = new Set<string>();
+  private readonly initializing = new Map<
+    string,
+    Promise<{ commit: string }>
+  >();
   private readonly agentMemory = new AgentMemoryImporter();
   private readonly curator = new PostTurnKnowledgeCurator(logger);
 
@@ -546,13 +550,42 @@ export class WikiService {
   }
 
   async initializeProject(projectId: string): Promise<{ commit: string }> {
+    const active = this.initializing.get(projectId);
+    if (active !== undefined) return active;
+    const initialization = this.initializeProjectOnce(projectId);
+    this.initializing.set(projectId, initialization);
+    try {
+      return await initialization;
+    } finally {
+      if (this.initializing.get(projectId) === initialization) {
+        this.initializing.delete(projectId);
+      }
+    }
+  }
+
+  private async initializeProjectOnce(
+    projectId: string,
+  ): Promise<{ commit: string }> {
     await this.assertEnabled(projectId);
     const project = await new ProjectsRepo(this.db).getById(projectId);
     if (project === null) throw new AppError('not_found', 'project not found');
     const root = await this.root(projectId);
     const git = await this.git(projectId);
-    if (!(await git.checkIsRepo())) {
+    const isRepo = await git.checkIsRepo();
+    if (!isRepo) {
       await git.init();
+    }
+    let hasHead = false;
+    if (isRepo) {
+      try {
+        await git.revparse(['--verify', 'HEAD']);
+        hasHead = true;
+      } catch {
+        // A prior initialization can be interrupted after `git init` but before
+        // the first commit. Rebuild the deterministic initial bundle below.
+      }
+    }
+    if (!hasHead) {
       await git.addConfig('user.name', 'Harness Knowledge');
       await git.addConfig('user.email', 'knowledge@harness.local');
       const now = new Date().toISOString();

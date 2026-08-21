@@ -206,6 +206,10 @@ describe('AgentRunsRepo', () => {
 
     const completed = await repo.transition(run.id, 'completed', {
       summary: 'done',
+      skillUsage: {
+        reported: true,
+        skills: [{ slug: 'guide', digest: 'a'.repeat(64) }],
+      },
     });
     const unchanged = await repo.transition(run.id, 'failed', {
       error: 'late failure',
@@ -213,6 +217,10 @@ describe('AgentRunsRepo', () => {
     expect(completed).toMatchObject({
       status: 'completed',
       finalSummary: 'done',
+      coordinatorSkillUsage: {
+        reported: true,
+        skills: [{ slug: 'guide', digest: 'a'.repeat(64) }],
+      },
     });
     expect(unchanged).toMatchObject({
       status: 'completed',

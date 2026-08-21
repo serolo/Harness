@@ -78,7 +78,7 @@ describe('migration 0013 task attachments', () => {
 
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(17);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
     expect(
       db
         .prepare(

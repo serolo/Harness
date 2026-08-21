@@ -28,6 +28,8 @@ import { migration0015MetaAgents } from './0015_meta_agents';
 import { migration0015KnowledgeContextBudget } from './0015_knowledge_context_budget';
 import { migration0016ChatContexts } from './0016_chat_contexts';
 import { migration0017ProjectDirectoryName } from './0017_project_directory_name';
+import { migration0018LiveWorkspaceNames } from './0018_live_workspace_names';
+import { migration0019MetaSkillUsage } from './0019_meta_skill_usage';
 
 /**
  * One numbered migration. `up` receives the raw better-sqlite3 handle and runs
@@ -65,6 +67,8 @@ const migrations: readonly Migration[] = [
   migration0015KnowledgeContextBudget,
   migration0016ChatContexts,
   migration0017ProjectDirectoryName,
+  migration0018LiveWorkspaceNames,
+  migration0019MetaSkillUsage,
 ];
 
 /** Read the current schema version from `PRAGMA user_version`. */

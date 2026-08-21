@@ -23,6 +23,7 @@ import type {
   DetectResult,
   Harness,
   HarnessId,
+  KnowledgeTurnStatusEvent,
   StartTurnOpts,
   Todo,
   TurnHandle,
@@ -36,6 +37,52 @@ import type { TurnRecorder } from './turns';
 import type { NotificationService } from './notifications';
 import { sanitizeErrorMessage } from '../security/sanitize-error';
 import { consumeKnowledgeTrace } from '../knowledge/retrieval';
+
+function resolveKnowledgeStatus(
+  seed: KnowledgeTurnStatusEvent | undefined,
+  traceEvents: AgentEvent[],
+): KnowledgeTurnStatusEvent | undefined {
+  if (seed === undefined) return undefined;
+  if (seed.status !== 'prepared') return seed;
+
+  const statusEvents = traceEvents.filter(
+    (event): event is KnowledgeTurnStatusEvent =>
+      event.kind === 'knowledge_status',
+  );
+  const retrievalEvents = traceEvents.filter(
+    (event) => event.kind === 'knowledge_retrieval',
+  );
+  const failed = statusEvents.find((event) => event.status === 'failed');
+  if (failed) return failed;
+  const fallback = statusEvents.find((event) => event.status === 'fallback');
+  if (fallback) return fallback;
+  const lastRead = [...retrievalEvents]
+    .reverse()
+    .find((event) => event.operation === 'read');
+  if (lastRead) {
+    return {
+      kind: 'knowledge_status',
+      status: 'read',
+      provider: lastRead.provider,
+    };
+  }
+  const lastSearch = [...retrievalEvents]
+    .reverse()
+    .find((event) => event.operation === 'search');
+  if (lastSearch) {
+    return {
+      kind: 'knowledge_status',
+      status: (lastSearch.resultCount ?? 0) > 0 ? 'searched' : 'no_results',
+      provider: lastSearch.provider,
+    };
+  }
+  return {
+    kind: 'knowledge_status',
+    status: 'unused',
+    provider: seed.provider,
+    reason: 'unused',
+  };
+}
 
 /** One in-flight turn. Cleared from the registry the instant a terminal event lands. */
 interface LiveTurn {
@@ -134,7 +181,11 @@ export class HarnessSupervisor {
     sink: StreamSink<AgentEvent>,
     harnessOverride?: HarnessId,
   ): Promise<TurnHandle> {
+    const discardKnowledge = (): void => {
+      consumeKnowledgeTrace(opts.knowledgeTrace);
+    };
     if (this.registry.has(workspaceId) || this.starting.has(workspaceId)) {
+      discardKnowledge();
       throw new AppError(
         'conflict',
         'a turn is already active for this workspace',
@@ -143,7 +194,12 @@ export class HarnessSupervisor {
     }
     // Guard and reservation are synchronous: no ordinary IPC/scheduler turn can slip
     // through between a claim check and the first awaited persistence operation.
-    this.workspaceClaimGuard?.(workspaceId, opts.metaRunId);
+    try {
+      this.workspaceClaimGuard?.(workspaceId, opts.metaRunId);
+    } catch (error) {
+      discardKnowledge();
+      throw error;
+    }
     this.starting.add(workspaceId);
 
     let workspace: Workspace | null;
@@ -151,16 +207,19 @@ export class HarnessSupervisor {
       workspace = await this.deps.getWorkspace(workspaceId);
     } catch (error) {
       this.starting.delete(workspaceId);
+      discardKnowledge();
       throw error;
     }
     if (!workspace) {
       this.starting.delete(workspaceId);
+      discardKnowledge();
       throw new AppError('not_found', 'workspace not found', { workspaceId });
     }
     const harnessId = harnessOverride ?? workspace.harness;
     const adapter = this.adapters.get(harnessId);
     if (!adapter) {
       this.starting.delete(workspaceId);
+      discardKnowledge();
       throw new AppError(
         'harness',
         `no harness registered for id "${harnessId}"`,
@@ -181,6 +240,7 @@ export class HarnessSupervisor {
       });
     } catch (error) {
       this.starting.delete(workspaceId);
+      discardKnowledge();
       throw error;
     }
 
@@ -199,6 +259,7 @@ export class HarnessSupervisor {
       await this.deps.setStatus(workspaceId, 'working');
     } catch (error) {
       this.registry.delete(workspaceId);
+      discardKnowledge();
       await this.safeEndTurn(turnId, 'error');
       throw error;
     }
@@ -210,12 +271,30 @@ export class HarnessSupervisor {
       }
     }
 
+    let knowledgeClosed = false;
+    let knowledgeStatusEmitted = false;
+    const closeKnowledge = (): AgentEvent[] => {
+      if (knowledgeClosed) return [];
+      knowledgeClosed = true;
+      const traceEvents = consumeKnowledgeTrace(opts.knowledgeTrace);
+      const retrievalEvents = traceEvents.filter(
+        (event) => event.kind === 'knowledge_retrieval',
+      );
+      const status = knowledgeStatusEmitted
+        ? undefined
+        : resolveKnowledgeStatus(opts.knowledgeStatus, traceEvents);
+      if (status !== undefined) knowledgeStatusEmitted = true;
+      return status === undefined
+        ? retrievalEvents
+        : [...retrievalEvents, status];
+    };
+
     // The sink the adapter pushes into: forward to the renderer, then enqueue the
     // persistence/finalize step on the per-turn write chain (order-preserving).
     const wrapped: StreamSink<AgentEvent> = {
       push: (event) => {
         if (event.kind === 'turn_end' || event.kind === 'error') {
-          for (const traceEvent of consumeKnowledgeTrace(opts.knowledgeTrace)) {
+          for (const traceEvent of closeKnowledge()) {
             wrapped.push(traceEvent);
           }
         }
@@ -252,10 +331,16 @@ export class HarnessSupervisor {
             .catch((err) => this.logRecordError(turnId, err));
         }
       },
-      end: () => sink.end(),
+      end: () => {
+        for (const traceEvent of closeKnowledge()) wrapped.push(traceEvent);
+        sink.end();
+      },
       error: (e) => {
         // Adapter-level stream failure: ensure the turn is finalized as an error.
         const safeMessage = sanitizeErrorMessage(e);
+        for (const traceEvent of closeKnowledge()) {
+          wrapped.push(traceEvent);
+        }
         const current = this.registry.get(workspaceId);
         if (current === live) {
           this.registry.delete(workspaceId);
@@ -287,6 +372,16 @@ export class HarnessSupervisor {
           attachments: opts.attachments,
         });
       }
+      if (opts.metaSkills?.length) {
+        wrapped.push({ kind: 'meta_skill_access', skills: opts.metaSkills });
+      }
+      if (
+        opts.knowledgeStatus !== undefined &&
+        opts.knowledgeStatus.status !== 'prepared'
+      ) {
+        wrapped.push(opts.knowledgeStatus);
+        knowledgeStatusEmitted = true;
+      }
       if (opts.knowledgeSources?.length) {
         wrapped.push({
           kind: 'knowledge_context',
@@ -298,7 +393,12 @@ export class HarnessSupervisor {
       }
       handle = await adapter.startTurn(opts, wrapped);
     } catch (err) {
-      consumeKnowledgeTrace(opts.knowledgeTrace);
+      for (const traceEvent of closeKnowledge()) {
+        live.writeChain = live.writeChain.then(() =>
+          this.deps.recorder.record(turnId, traceEvent),
+        );
+      }
+      await live.writeChain;
       // Spawn/start failure before any event: finalize as an error and clear.
       this.registry.delete(workspaceId);
       await this.safeEndTurn(turnId, 'error');

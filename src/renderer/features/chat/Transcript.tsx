@@ -33,6 +33,7 @@ import { Markdown } from './markdown';
 import { invoke } from '@renderer/ipc';
 import { KnowledgeProposalCard } from './KnowledgeProposalCard';
 import { KnowledgeContextCard } from './KnowledgeContextCard';
+import { KnowledgeStatusCard } from './KnowledgeStatusCard';
 
 function visibleUserText(text: string): string {
   const marker = text.indexOf('\n\n<project_knowledge>');
@@ -71,6 +72,22 @@ function toolFilePath(input: unknown): string | undefined {
     if (typeof value === 'string' && value.trim() !== '') return value;
   }
   return undefined;
+}
+
+function knowledgeSearchQuery(event: AgentEvent): string | undefined {
+  if (
+    event.kind !== 'tool_use' ||
+    !event.name.endsWith('search_project_knowledge') ||
+    typeof event.input !== 'object' ||
+    event.input === null ||
+    Array.isArray(event.input)
+  ) {
+    return undefined;
+  }
+  const query = (event.input as Record<string, unknown>)['query'];
+  if (typeof query !== 'string') return undefined;
+  const normalized = query.replace(/\s+/g, ' ').trim().slice(0, 240);
+  return normalized === '' ? undefined : normalized;
 }
 
 /**
@@ -253,6 +270,8 @@ function renderEvent(
   onOpenFile?: (path: string) => void,
   onAnswerQuestion?: (answer: string) => void,
   questionDisabled?: boolean,
+  knowledgeSearchPosition?: { index: number; total: number },
+  historicalKnowledgeSearchQuery?: string,
 ): React.JSX.Element | null {
   switch (event.kind) {
     case 'user_message':
@@ -380,12 +399,27 @@ function renderEvent(
             <>
               <span className="font-medium text-fg-1">
                 Project knowledge search
+                {knowledgeSearchPosition
+                  ? ` ${knowledgeSearchPosition.index} of ${knowledgeSearchPosition.total}`
+                  : ''}
               </span>
               {' · local search is free · '}
               {event.resultCount ?? 0} results returned
               {event.contextTokens > 0
                 ? ` · ~${event.contextTokens.toLocaleString()} context tokens in ranked snippets`
                 : ''}
+              {(event.query ?? historicalKnowledgeSearchQuery) ? (
+                <div
+                  className="mt-1 truncate text-fg-3"
+                  title={event.query ?? historicalKnowledgeSearchQuery}
+                  data-testid="knowledge-search-query"
+                >
+                  Looking for:{' '}
+                  <span className="text-fg-2">
+                    {event.query ?? historicalKnowledgeSearchQuery}
+                  </span>
+                </div>
+              ) : null}
             </>
           ) : (
             <>
@@ -397,6 +431,33 @@ function renderEvent(
               {event.truncated ? ' · truncated to the turn budget' : ''}
             </>
           )}
+        </div>
+      );
+    case 'knowledge_status':
+      return (
+        <KnowledgeStatusCard
+          key={key}
+          status={event.status}
+          provider={event.provider}
+        />
+      );
+    case 'meta_skill_access':
+      return (
+        <div
+          key={key}
+          className="mx-2 rounded-2 border border-border-1 bg-surface-card px-3 py-2 text-xs text-fg-2"
+          data-testid="meta-skill-access-event"
+        >
+          <div className="font-medium text-fg-1">
+            Meta skills available to this turn
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-2xs">
+            {event.skills.map((skill) => (
+              <span key={`${skill.slug}:${skill.digest}`}>
+                {skill.slug}@{skill.digest.slice(0, 12)}
+              </span>
+            ))}
+          </div>
         </div>
       );
     case 'error':
@@ -707,6 +768,29 @@ function renderEvents(
 ): React.JSX.Element[] {
   const rendered: React.JSX.Element[] = [];
   const toolResults = pairToolResults(events);
+  const knowledgeSearchIndexes = events.flatMap((event, index) =>
+    event.kind === 'knowledge_retrieval' && event.operation === 'search'
+      ? [index]
+      : [],
+  );
+  const knowledgeSearchPositions = new Map(
+    knowledgeSearchIndexes.length > 1
+      ? knowledgeSearchIndexes.map((eventIndex, index) => [
+          eventIndex,
+          { index: index + 1, total: knowledgeSearchIndexes.length },
+        ])
+      : [],
+  );
+  const historicalKnowledgeSearchQueries = events.flatMap((event) => {
+    const query = knowledgeSearchQuery(event);
+    return query ? [query] : [];
+  });
+  const historicalKnowledgeSearchQueryByIndex = new Map(
+    knowledgeSearchIndexes.flatMap((eventIndex, index) => {
+      const query = historicalKnowledgeSearchQueries[index];
+      return query ? [[eventIndex, query] as const] : [];
+    }),
+  );
   let segmentStart = 0;
 
   function renderActivitySegment(start: number, end: number): void {
@@ -728,6 +812,8 @@ function renderEvents(
           onOpenFile,
           onAnswerQuestion,
           questionDisabled,
+          knowledgeSearchPositions.get(absoluteIndex),
+          historicalKnowledgeSearchQueryByIndex.get(absoluteIndex),
         );
         if (item) rendered.push(item);
       });
@@ -761,6 +847,8 @@ function renderEvents(
         onOpenFile,
         onAnswerQuestion,
         questionDisabled,
+        knowledgeSearchPositions.get(absoluteIndex),
+        historicalKnowledgeSearchQueryByIndex.get(absoluteIndex),
       );
       return item ? [item] : [];
     });
@@ -787,6 +875,8 @@ function renderEvents(
       onOpenFile,
       onAnswerQuestion,
       questionDisabled,
+      knowledgeSearchPositions.get(absoluteIndex),
+      historicalKnowledgeSearchQueryByIndex.get(absoluteIndex),
     );
     if (item) rendered.push(item);
   }
@@ -803,6 +893,8 @@ function renderEvents(
       onOpenFile,
       onAnswerQuestion,
       questionDisabled,
+      knowledgeSearchPositions.get(index),
+      historicalKnowledgeSearchQueryByIndex.get(index),
     );
     if (item) rendered.push(item);
     segmentStart = index + 1;

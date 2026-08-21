@@ -3,12 +3,11 @@
 // the always-visible file list.
 
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { Eye, GitPullRequest } from 'lucide-react';
-import type { PrSummary } from '@shared/github';
 import type { DiffQuery } from '@shared/review';
 import { Button, PanelTab, PanelTabBar } from '@renderer/components/ui';
 import { invoke } from '@renderer/ipc';
+import { useWorkspacePr } from '@renderer/features/github/useWorkspacePr';
 import { FileTree } from './FileTree';
 import { DiffView } from './DiffView';
 import { CommentRail } from './CommentRail';
@@ -33,23 +32,10 @@ export function DiffPanel({
   onInspectFile,
 }: DiffPanelProps): React.JSX.Element {
   const [view, setView] = useState<'all' | 'changes'>('changes');
-  const { data: pullRequest } = useQuery<PrSummary | null>({
-    queryKey: ['workspace-pr', workspaceId, workspaceBranch, workspacePrNumber],
-    queryFn: async () => {
-      if (!workspaceId) return null;
-      return (await invoke('github:getWorkspacePr', { workspaceId })) ?? null;
-    },
-    enabled: workspaceId !== null,
-    retry: false,
-    staleTime: 15_000,
-    // DiffPanel is the selected workspace's persistent observer. Keep live PR and
-    // merge-queue state fresh even when the collapsible sidebar is unmounted.
-    refetchInterval: (query) => {
-      const state = query.state.data?.state?.toLowerCase();
-      if (state === 'closed' || state === 'merged') return false;
-      return 60_000;
-    },
-    refetchOnWindowFocus: true,
+  const { data: pullRequest } = useWorkspacePr({
+    workspaceId,
+    branch: workspaceBranch,
+    prNumber: workspacePrNumber,
   });
   const {
     diffSet,

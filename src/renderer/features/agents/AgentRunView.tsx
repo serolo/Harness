@@ -65,6 +65,24 @@ export function AgentRunView({
             Open coordinator workspace
           </Button>
         ) : null}
+        {run.skillSnapshot?.length ? (
+          <div className="mt-3" data-testid="meta-skill-snapshot">
+            <div className="text-2xs font-semibold uppercase tracking-wide text-fg-3">
+              Immutable skill snapshot
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-2xs text-fg-2">
+              {run.skillSnapshot.map((skill) => (
+                <span key={`${skill.slug}:${skill.digest}`}>
+                  {skill.slug}@{skill.digest.slice(0, 12)}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <SkillUsage
+          label="Coordinator agent-reported usage"
+          usage={run.coordinatorSkillUsage}
+        />
       </div>
       {debby ? (
         <div className="space-y-4" data-testid="debby-comparison">
@@ -178,6 +196,7 @@ function DispatchCard({
           {dispatch.summary}
         </pre>
       ) : null}
+      <SkillUsage label="Agent-reported usage" usage={dispatch.skillUsage} />
       {dispatch.error ? (
         <div className="mt-2 text-xs text-danger">{dispatch.error}</div>
       ) : null}
@@ -190,5 +209,25 @@ function DispatchCard({
         <div className="mt-1 text-2xs text-fg-3">{dispatch.diffStat}</div>
       ) : null}
     </article>
+  );
+}
+
+function SkillUsage({
+  label,
+  usage,
+}: {
+  label: string;
+  usage: AgentDispatchSummary['skillUsage'];
+}): React.JSX.Element | null {
+  if (!usage?.reported) return null;
+  return (
+    <div className="mt-2 text-2xs text-fg-3" data-testid="meta-skill-usage">
+      <span className="font-semibold">{label}:</span>{' '}
+      {usage.skills.length
+        ? usage.skills
+            .map((skill) => `${skill.slug}@${skill.digest.slice(0, 12)}`)
+            .join(', ')
+        : 'none'}
+    </div>
   );
 }

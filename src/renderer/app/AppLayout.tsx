@@ -26,6 +26,7 @@ import { Sidebar } from '@renderer/features/sidebar/Sidebar';
 import { ChatPanel } from '@renderer/features/chat/ChatPanel';
 import { TerminalPanel } from '@renderer/features/terminal/TerminalPanel';
 import { DiffPanel } from '@renderer/features/diff/DiffPanel';
+import { useWorkspacePr } from '@renderer/features/github/useWorkspacePr';
 import { TasksPanel } from '@renderer/features/tasks/TasksPanel';
 import { useSchedulerTurnEvents } from '@renderer/features/tasks/useSchedulerTurnEvents';
 import { SettingsPanel } from '@renderer/features/settings/SettingsPanel';
@@ -301,6 +302,11 @@ export function AppLayout(): React.JSX.Element {
   );
   const selectedProjectId = useWorkspacesStore((s) => s.selectedProjectId);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
+  const selectedWorkspacePr = useWorkspacePr({
+    workspaceId: selectedWorkspaceId,
+    branch: selectedWorkspace?.branch ?? null,
+    prNumber: selectedWorkspace?.prNumber ?? null,
+  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
   const [terminalCollapsed, setTerminalCollapsed] = useState(false);
@@ -626,6 +632,9 @@ export function AppLayout(): React.JSX.Element {
           <div className="min-h-0 flex-1">
             <ChatPanel
               workspaceId={selectedWorkspaceId}
+              workspacePrError={selectedWorkspacePr.error}
+              workspacePrRefreshing={selectedWorkspacePr.isFetching}
+              onRetryWorkspacePr={() => void selectedWorkspacePr.refetch()}
               inspectFileRequest={inspectFileRequest}
             />
           </div>

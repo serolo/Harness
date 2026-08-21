@@ -95,12 +95,6 @@ import {
 } from '../paths';
 import { EffectiveSettingsSchema } from '../settings/schema';
 import { SettingsService } from '../settings';
-import { KNOWLEDGE_RECONCILIATION_INSTRUCTION } from '../knowledge';
-import {
-  consumeKnowledgeTrace,
-  prepareMcpTurnKnowledge,
-  usesKnowledgeMcp,
-} from '../knowledge/retrieval';
 import {
   loadStoredProjectSettings,
   saveStoredProjectSetting,
@@ -195,7 +189,12 @@ const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
     template: 'Clear the current chat transcript and context.',
     description: 'Clear chat history and context',
   },
-];
+].map((command) => ({
+  ...command,
+  source: 'builtin',
+  provenance: 'app',
+  invocation: 'slash',
+}));
 
 /**
  * Workspace ids whose merge-readiness checks the renderer has fetched (via `checks:get`).
@@ -1062,8 +1061,8 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
   // event; failures route to `sink.error(...)`.
   'turn:start': (arg, ctx, sink) => {
     void (async () => {
-      let preparedKnowledgeTrace:
-        ReturnType<typeof prepareMcpTurnKnowledge>['trace'] | undefined;
+      let preparedOpts: StartTurnOpts | undefined;
+      let turnAccepted = false;
       try {
         // Validate + narrow the untrusted payload before acting.
         if (typeof arg.workspaceId !== 'string' || arg.workspaceId === '') {
@@ -1113,39 +1112,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           });
         }
 
-        const settings = await settingsForProject(ctx, workspace.projectId);
-        const turnProject = await new ProjectsRepo(ctx.db).getById(
-          workspace.projectId,
-        );
-        if (turnProject === null) {
-          throw new AppError('not_found', 'project not found');
-        }
         const selectedHarness = harnessOverride ?? workspace.harness;
-        const knowledgeConfig =
-          settings.knowledge.enabled && settings.knowledge.inject_context
-            ? await ctx.knowledge.getConfig(workspace.projectId)
-            : undefined;
-        const mcpKnowledge =
-          knowledgeConfig !== undefined && usesKnowledgeMcp(selectedHarness)
-            ? prepareMcpTurnKnowledge(
-                workspace.projectId,
-                turnProject.directoryName,
-                knowledgeConfig,
-                settings.knowledge.search.max_context_tokens,
-              )
-            : undefined;
-        preparedKnowledgeTrace = mcpKnowledge?.trace;
-        const knowledgeSelection =
-          settings.knowledge.enabled &&
-          settings.knowledge.inject_context &&
-          !usesKnowledgeMcp(selectedHarness)
-            ? await ctx.knowledge.contextSelectionForPrompt(
-                workspace.projectId,
-                arg.prompt,
-                Math.min(1_000, settings.knowledge.search.max_context_tokens),
-                { maxResults: 2, catalogFallback: false },
-              )
-            : { context: '', sources: [], retrieval: undefined };
         const hasExplicitSession = Object.prototype.hasOwnProperty.call(
           arg,
           'sessionId',
@@ -1173,41 +1140,23 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           }
           contextId = context.id;
         }
-        const turnMode = arg.mode ?? settings.agent.mode;
-        const opts: StartTurnOpts = {
-          workspaceDir: workspace.worktreePath,
-          displayPrompt: arg.displayPrompt ?? arg.prompt,
-          knowledgeSources: knowledgeSelection.sources,
-          ...(knowledgeSelection.retrieval === undefined
-            ? {}
-            : { knowledgeRetrieval: knowledgeSelection.retrieval }),
-          ...(mcpKnowledge === undefined
-            ? {}
-            : { knowledgeTrace: mcpKnowledge.trace }),
-          prompt: [
-            arg.prompt,
-            mcpKnowledge?.instruction ?? '',
-            knowledgeSelection.context,
-            settings.knowledge.enabled &&
-            settings.knowledge.extract_after_turn &&
-            turnMode !== 'plan'
-              ? KNOWLEDGE_RECONCILIATION_INSTRUCTION
-              : '',
-          ]
-            .filter((part) => part !== '')
-            .join('\n\n'),
-          attachments,
-          sessionId,
-          mode: turnMode,
-          mcpConfig:
-            mcpKnowledge === undefined
-              ? settings.mcp
-              : [...settings.mcp, mcpKnowledge.server],
-          permissionPolicy: settings.agent.permissionPolicy,
-          model: arg.model,
-          effort: arg.effort,
-          contextId,
-        };
+        const opts = await ctx.turnPreparation.prepareTurn(
+          workspace,
+          {
+            workspaceDir: workspace.worktreePath,
+            displayPrompt: arg.displayPrompt ?? arg.prompt,
+            prompt: arg.prompt,
+            attachments,
+            sessionId,
+            mode: arg.mode,
+            model: arg.model,
+            effort: arg.effort,
+            contextId,
+          },
+          'manual',
+          selectedHarness,
+        );
+        preparedOpts = opts;
 
         // Buffer events until the `started` frame is sent (started-first guarantee).
         let started = false;
@@ -1227,6 +1176,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           agentSink,
           harnessOverride,
         );
+        turnAccepted = true;
         const turnId = ctx.harness.getActiveTurnId(arg.workspaceId) ?? '';
         sink.push({
           kind: 'started',
@@ -1239,7 +1189,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           sink.push({ kind: 'event', event });
         }
       } catch (e) {
-        consumeKnowledgeTrace(preparedKnowledgeTrace);
+        if (!turnAccepted) ctx.turnPreparation.discard(preparedOpts);
         sink.error(toAppError(e));
       }
     })();
@@ -1863,7 +1813,9 @@ export function registerIpc(ctx: AppContext): void {
       req.projectId,
     );
     const workspaceName = allocateWorkspaceName(
-      existing.map((row) => row.name),
+      existing
+        .filter((row) => row.status !== 'archived')
+        .map((row) => row.name),
     );
     return {
       workspaceName,
@@ -3078,10 +3030,15 @@ export function registerIpc(ctx: AppContext): void {
   // then the app built-ins.
   handle('slash:list', async (req) => {
     const prompts = ctx.settings.get().agent.prompts;
-    const custom = Object.entries(prompts).map(([name, template]) => ({
-      name,
-      template,
-    }));
+    const custom: SlashCommand[] = Object.entries(prompts).map(
+      ([name, template]) => ({
+        name,
+        template,
+        source: 'configured_prompt',
+        provenance: 'app',
+        invocation: 'slash',
+      }),
+    );
     const workspaceId =
       req !== undefined &&
       typeof req.workspaceId === 'string' &&
@@ -3102,13 +3059,10 @@ export function registerIpc(ctx: AppContext): void {
       workspaceDir: workspace?.worktreePath ?? null,
     });
 
-    const commands = [...custom, ...native, ...DEFAULT_SLASH_COMMANDS];
-    const seen = new Set<string>();
-    return commands.filter((command) => {
-      if (seen.has(command.name)) return false;
-      seen.add(command.name);
-      return true;
-    });
+    // Preserve collisions so the renderer can show their source/provider explicitly.
+    // Ordering retains the typed `/name` default while provider-native entries remain
+    // selectable instead of being silently hidden by a configured prompt.
+    return [...custom, ...native, ...DEFAULT_SLASH_COMMANDS];
   });
 
   // deepLink:resolve — parse an `harness://…` URL into a nav target (null if

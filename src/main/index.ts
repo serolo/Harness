@@ -42,11 +42,13 @@ import { EventsRepo } from './db/repos/events';
 import { NotificationService } from './harness/notifications';
 import { ClaudeCodeHarness } from './harness/claude-code';
 import { CodexHarness } from './harness/codex';
+import { TurnPreparationService } from './harness/turnPreparation';
 import { CursorHarness } from './harness/cursor';
 import type { RawPtySpawner } from './harness/raw-terminal';
 import { MockHarness } from './harness/mock';
 import { E2EMetaHarness } from './harness/e2e-meta';
 import type { Harness } from '@shared/harness';
+import type { Project } from '@shared/models';
 import { PtyService } from './pty';
 import { ProcessRegistry, ProcessRunner } from './process';
 import { DiffService } from './diff';
@@ -299,6 +301,14 @@ async function createAppContext(): Promise<AppContext> {
   const projectsRepo = new ProjectsRepo(db);
   const workspacesRepo = new WorkspacesRepo(db);
   const git = storageGit;
+  const settingsForStoredProject = async (project: Project) => {
+    const stored = await loadStoredProjectSettings(db, project);
+    const scoped = new SettingsService();
+    return scoped.loadResult({
+      projectDir: project.repoPath,
+      projectSettings: stored.value,
+    }).settings;
+  };
 
   // One-time compatibility import: preserve every valid legacy project settings
   // file in SQLite before removing the file from the repository checkout.
@@ -350,14 +360,7 @@ async function createAppContext(): Promise<AppContext> {
     naming,
     ports,
     settings,
-    settingsForProject: async (project) => {
-      const stored = await loadStoredProjectSettings(db, project);
-      const scoped = new SettingsService();
-      return scoped.loadResult({
-        projectDir: project.repoPath,
-        projectSettings: stored.value,
-      }).settings;
-    },
+    settingsForProject: settingsForStoredProject,
     runSetup,
     stopWorkspaceProcesses,
     emit,
@@ -388,6 +391,12 @@ async function createAppContext(): Promise<AppContext> {
   });
   const todos = new TodosRepo(db);
   const knowledge = new WikiService(db);
+  const turnPreparation = new TurnPreparationService({
+    getProject: (projectId) => projectsRepo.getById(projectId),
+    settingsForProject: settingsForStoredProject,
+    knowledge,
+    warn: (message) => logger.warn(message),
+  });
 
   // Native turn notifications; clicks route the workspace deep link (log-only nav).
   const notifications = new NotificationService({
@@ -616,7 +625,7 @@ async function createAppContext(): Promise<AppContext> {
     repo: tasks,
     harness,
     getWorkspace: (id) => workspaces.get(id),
-    settings: { get: () => settings.get() },
+    turnPreparation,
     emit,
   });
 
@@ -684,9 +693,7 @@ async function createAppContext(): Promise<AppContext> {
       workspaces,
       harness,
       emit,
-      settings: () => ({
-        permissionPolicy: settings.get().agent.permissionPolicy,
-      }),
+      turnPreparation,
       diff,
       publisher: prWorkflow,
     });
@@ -772,6 +779,7 @@ async function createAppContext(): Promise<AppContext> {
     agentDispatches,
     controlBroker,
     metaHarness,
+    turnPreparation,
   };
 
   return ctx;

@@ -37,6 +37,7 @@ import type { AgentRunsRepo } from './db/repos/agentRuns';
 import type { AgentDispatchesRepo } from './db/repos/agentDispatches';
 import type { ControlBroker } from './meta-harness/control-broker';
 import type { MetaHarnessService } from './meta-harness';
+import type { TurnPreparationService } from './harness/turnPreparation';
 
 /**
  * Service singletons + the typed DB handle, shared across the main process.
@@ -96,4 +97,6 @@ export interface AppContext {
   agentDispatches: AgentDispatchesRepo;
   controlBroker: ControlBroker;
   metaHarness: MetaHarnessService;
+  /** Project-aware knowledge/settings preparation shared by every turn producer. */
+  turnPreparation: TurnPreparationService;
 }

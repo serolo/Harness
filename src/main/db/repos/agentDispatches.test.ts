@@ -181,8 +181,16 @@ describe('AgentDispatchesRepo', () => {
       summary: 'done',
       changedFiles,
       diffStat: '500 files changed',
+      skillUsage: {
+        reported: true,
+        skills: [{ slug: 'guide', digest: 'b'.repeat(64) }],
+      },
     });
     expect(completed.changedFiles).toHaveLength(500);
+    expect(completed.skillUsage).toEqual({
+      reported: true,
+      skills: [{ slug: 'guide', digest: 'b'.repeat(64) }],
+    });
     const unchanged = await repo.finish(dispatch.id, 'failed', {
       error: 'late',
     });

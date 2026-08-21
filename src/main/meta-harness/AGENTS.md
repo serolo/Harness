@@ -7,6 +7,9 @@
 - Cleanup is idempotent and revokes the socket/token before interrupting provider processes.
 - Coordinator execution is always read-only and requires an adapter that can preserve MCP control
   without disabling that boundary. Child `readOnlyMode` is independent of provider plan mode.
+- Every coordinator and child turn goes through `TurnPreparationService`. Coordinator knowledge is
+  intentionally disabled so `harness-meta-control` remains its exclusive MCP authority; eligible
+  children receive project knowledge under the same provider-aware policy as ordinary turns.
 - Writable children require provider-enforced workspace-scoped execution. Never use a generic
   permission/sandbox bypass for a meta child; reject adapters that cannot prove this capability.
 - Supervisor admission is the definitive workspace-claim boundary; prechecks in IPC/scheduler are
@@ -20,3 +23,8 @@
   child branches through `PrWorkflow`; publishing is outside broker authority and merge is absent.
   Every publish receives the run-owned abort signal. Deadline, cancel, takeover, and shutdown abort
   Git subprocesses, GitHub requests, and rate-limit waits before waiting for the per-run lock.
+- Skill evidence has two distinct meanings. `meta_skill_access` is deterministic access proof: it
+  records the exact slug/content digest injected from the immutable run snapshot. A validated final
+  `Skills consulted:` footer is only agent-reported usage, must match an offered full SHA-256, and
+  must never be described as proof that the model cognitively followed the skill. Keep the footer in
+  the transcript for auditability, but strip it from human-facing run summaries after validation.

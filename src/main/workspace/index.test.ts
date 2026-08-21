@@ -314,6 +314,79 @@ describe('WorkspaceManager.create', () => {
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
 
+  it('reuses a workspace display name after the previous workspace is archived', async () => {
+    const manager = buildManager('echo ok');
+    const archived = await manager.create({
+      projectId,
+      name: 'PR 7544',
+      worktreeName: 'pr-7544',
+      branch: 'pr-7544',
+    });
+    await manager.archive(archived.id);
+
+    const replacement = await manager.create({
+      projectId,
+      name: 'PR 7544',
+      worktreeName: 'pr-7544',
+      branch: 'pr-7544',
+    });
+
+    expect(replacement).toMatchObject({
+      projectId,
+      name: 'PR 7544',
+      status: 'idle',
+    });
+    expect(replacement.id).not.toBe(archived.id);
+    await expect(manager.get(archived.id)).resolves.toMatchObject({
+      name: 'PR 7544',
+      status: 'archived',
+    });
+  });
+
+  it('does not adopt a retained worktree owned by an archived workspace', async () => {
+    const manager = buildManager('echo ok', false);
+    const archived = await manager.create({
+      projectId,
+      name: 'PR 7544',
+      worktreeName: 'pr-7544',
+      branch: 'pr-7544',
+    });
+    const retainedPath = archived.worktreePath!;
+    await manager.archive(archived.id);
+
+    await expect(
+      manager.create({
+        projectId,
+        name: 'PR 7544',
+        worktreeName: 'pr-7544',
+        branch: 'pr-7544',
+      }),
+    ).rejects.toMatchObject({
+      code: 'conflict',
+      message: expect.stringContaining(
+        'worktree path is already owned by archived workspace "PR 7544"',
+      ),
+    });
+
+    expect(existsSync(retainedPath)).toBe(true);
+    await expect(manager.get(archived.id)).resolves.toMatchObject({
+      status: 'archived',
+      worktreePath: retainedPath,
+    });
+  });
+
+  it('still rejects a duplicate name while the existing workspace is live', async () => {
+    const manager = buildManager('echo ok');
+    await manager.create({ projectId, name: 'PR 7544' });
+
+    await expect(
+      manager.create({ projectId, name: 'PR 7544' }),
+    ).rejects.toMatchObject({
+      code: 'conflict',
+      message: 'workspace name is already in use: PR 7544',
+    });
+  });
+
   it('uses an explicit branch name and rejects invalid Git branch names', async () => {
     const manager = buildManager('echo ok');
     const ws = await manager.create({
@@ -613,6 +686,43 @@ describe('WorkspaceManager.restore', () => {
     );
     expect(idleCall).toBeDefined();
     expect(idleCall?.[1]).toMatchObject({ workspaceId: ws.id, status: 'idle' });
+  });
+
+  it('rejects restoring an archived duplicate name before touching git or the filesystem', async () => {
+    const manager = buildManager('echo ok');
+    const archived = await manager.create({
+      projectId,
+      name: 'PR 7544',
+      worktreeName: 'pr-7544',
+      branch: 'pr-7544',
+    });
+    await manager.archive(archived.id);
+    const replacement = await manager.create({
+      projectId,
+      name: 'PR 7544',
+      worktreeName: 'pr-7544',
+      branch: 'pr-7544',
+    });
+    const replacementPath = replacement.worktreePath!;
+    const branchExists = vi.spyOn(GitService.prototype, 'branchExists');
+    const addWorktree = vi.spyOn(GitService.prototype, 'addWorktree');
+
+    await expect(manager.restore(archived.id)).rejects.toMatchObject({
+      code: 'conflict',
+      message: 'workspace name is already in use: PR 7544',
+    });
+
+    expect(branchExists).not.toHaveBeenCalled();
+    expect(addWorktree).not.toHaveBeenCalled();
+    expect(existsSync(replacementPath)).toBe(true);
+    await expect(manager.get(archived.id)).resolves.toMatchObject({
+      status: 'archived',
+      worktreePath: null,
+    });
+    await expect(manager.get(replacement.id)).resolves.toMatchObject({
+      status: 'idle',
+      worktreePath: replacementPath,
+    });
   });
 
   it('degrades gracefully with an AppError when the branch is gone (Phase-4 checkpoint absent)', async () => {

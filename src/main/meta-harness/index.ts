@@ -15,6 +15,7 @@ import type {
   AdapterCoordinatorCapability,
   MetaRunDetail,
   MetaRunSummary,
+  MetaSkillUsageReport,
   NormalizedAgentSnapshot,
   StartMetaRunRequest,
 } from '@shared/agents';
@@ -25,6 +26,7 @@ import type { AgentDispatchesRepo } from '../db/repos/agentDispatches';
 import type { HarnessSupervisor } from '../harness/supervisor';
 import type { WorkspaceManager } from '../workspace';
 import type { DiffService } from '../diff';
+import type { TurnPreparationService } from '../harness/turnPreparation';
 import {
   sanitizeErrorMessage,
   sanitizeSensitiveText,
@@ -34,6 +36,11 @@ import {
   type BrokerSessionPolicy,
   type ControlBrokerHandler,
 } from './control-broker';
+import {
+  parseSkillUsage,
+  skillSnapshot,
+  skillUsageInstruction,
+} from './skillEvidence';
 
 type Supervisor = Pick<
   HarnessSupervisor,
@@ -48,7 +55,7 @@ export interface MetaHarnessServiceDeps {
   harness: Supervisor;
   broker: ControlBroker;
   emit: <K extends EventChannel>(event: K, payload: EventPayload<K>) => void;
-  settings: () => { permissionPolicy: StartTurnOpts['permissionPolicy'] };
+  turnPreparation: Pick<TurnPreparationService, 'prepareTurn' | 'discard'>;
   diff?: Pick<DiffService, 'getDiff'>;
   proxyEntry?: string;
   /** Reviewed branch-only publish/PR workflow, used only with persisted run consent. */
@@ -208,6 +215,8 @@ export class MetaHarnessService implements ControlBrokerHandler {
     this.armDeadline(`run:${run.id}`, policy.runTimeoutMs, () =>
       this.expireRun(run.id),
     );
+    let coordinatorOpts: StartTurnOpts | undefined;
+    let coordinatorAccepted = false;
     try {
       this.claim(source.id, run.id, 'source');
       const workspace = await this.deps.workspaces.create(
@@ -243,17 +252,23 @@ export class MetaHarnessService implements ControlBrokerHandler {
         policy,
       });
       const mcp = this.controlMcp(control.authFile);
-      const opts: StartTurnOpts = {
-        workspaceDir: workspace.worktreePath!,
-        prompt: this.coordinatorPrompt(snapshot, request.goal.trim()),
-        attachments: [],
-        mode: snapshot.coordinator.mode,
-        mcpConfig: [mcp],
-        permissionPolicy: this.deps.settings().permissionPolicy,
-        model: snapshot.coordinator.model,
-        readOnlyMode: true,
-        metaRunId: run.id,
-      };
+      const opts = await this.deps.turnPreparation.prepareTurn(
+        workspace,
+        {
+          workspaceDir: workspace.worktreePath!,
+          prompt: this.coordinatorPrompt(snapshot, request.goal.trim()),
+          attachments: [],
+          mode: snapshot.coordinator.mode,
+          mcpConfig: [mcp],
+          model: snapshot.coordinator.model,
+          readOnlyMode: true,
+          metaRunId: run.id,
+          metaSkills: skillSnapshot(snapshot),
+        },
+        'meta-coordinator',
+        snapshot.coordinator.harness,
+      );
+      coordinatorOpts = opts;
       this.assertRunActive(await this.deps.runs.get(run.id));
       this.armDeadline(`coordinator:${run.id}`, policy.turnTimeoutMs, () =>
         this.expireCoordinator(run.id, workspace.id),
@@ -264,6 +279,7 @@ export class MetaHarnessService implements ControlBrokerHandler {
         this.coordinatorSink(run),
         snapshot.coordinator.harness,
       );
+      coordinatorAccepted = true;
       this.assertRunActive(await this.deps.runs.get(run.id));
       const turnId = this.deps.harness.getActiveTurnId(workspace.id);
       if (turnId)
@@ -279,6 +295,8 @@ export class MetaHarnessService implements ControlBrokerHandler {
       this.finishRunStartup(run.id);
       return detail;
     } catch (error) {
+      if (!coordinatorAccepted)
+        this.deps.turnPreparation.discard(coordinatorOpts);
       const safeMessage = sanitizeErrorMessage(error, 'failed to start run');
       try {
         await this.serializeRun(run.id, () =>
@@ -303,7 +321,12 @@ export class MetaHarnessService implements ControlBrokerHandler {
     const run = await this.deps.runs.get(runId);
     if (run.projectId !== projectId)
       throw new AppError('not_found', 'meta run not found');
-    return { ...run, dispatches: await this.deps.dispatches.list(runId) };
+    const snapshot = await this.deps.runs.snapshot(runId);
+    return {
+      ...run,
+      dispatches: await this.deps.dispatches.list(runId),
+      skillSnapshot: skillSnapshot(snapshot),
+    };
   }
 
   async cancel(projectId: string, runId: string): Promise<MetaRunDetail> {
@@ -485,6 +508,8 @@ export class MetaHarnessService implements ControlBrokerHandler {
       ...debate,
     });
     let workspace: Workspace | undefined;
+    let preparedChildOpts: StartTurnOpts | undefined;
+    let childAccepted = false;
     try {
       workspace = await this.deps.workspaces.create(
         {
@@ -506,12 +531,21 @@ export class MetaHarnessService implements ControlBrokerHandler {
       this.armDeadline(deadlineKey, session.policy.turnTimeoutMs, () =>
         this.expireDispatch(run.id, dispatch.id, workspace!.id),
       );
+      const opts = await this.childOpts(
+        workspace,
+        role,
+        params.prompt,
+        snapshot,
+        run.id,
+      );
+      preparedChildOpts = opts;
       const handle = await this.deps.harness.startTurn(
         workspace.id,
-        this.childOpts(workspace, role, params.prompt, snapshot, run.id),
+        opts,
         this.dispatchSink(run, dispatch.id, deadlineKey),
         provider,
       );
+      childAccepted = true;
       const [currentRun, currentDispatch] = await Promise.all([
         this.deps.runs.get(run.id),
         this.deps.dispatches.get(dispatch.id),
@@ -542,6 +576,7 @@ export class MetaHarnessService implements ControlBrokerHandler {
       this.emitRun(run);
       return claimed;
     } catch (error) {
+      if (!childAccepted) this.deps.turnPreparation.discard(preparedChildOpts);
       this.clearDeadline(`dispatch:${dispatch.id}`);
       await this.deps.dispatches.finish(dispatch.id, 'failed', {
         error: sanitizeErrorMessage(error, 'failed to start dispatch'),
@@ -614,16 +649,27 @@ export class MetaHarnessService implements ControlBrokerHandler {
     this.armDeadline(deadlineKey, session.policy.turnTimeoutMs, () =>
       this.expireDispatch(run.id, dispatch.id, workspace.id),
     );
+    let preparedChildOpts: StartTurnOpts | undefined;
+    let childAccepted = false;
     try {
+      const opts = await this.childOpts(
+        workspace,
+        role,
+        params.prompt,
+        snapshot,
+        run.id,
+      );
+      preparedChildOpts = opts;
       const handle = await this.deps.harness.startTurn(
         workspace.id,
         {
-          ...this.childOpts(workspace, role, params.prompt, snapshot, run.id),
+          ...opts,
           sessionId: dispatch.sessionId,
         },
         this.dispatchSink(run, dispatch.id, deadlineKey),
         dispatch.harness,
       );
+      childAccepted = true;
       const current = await this.deps.dispatches.get(dispatch.id);
       if (!ACTIVE_DISPATCH.has(current.status)) {
         await this.interruptWorkspaceOnce(workspace.id);
@@ -648,6 +694,7 @@ export class MetaHarnessService implements ControlBrokerHandler {
       this.emitRun(run);
       return next;
     } catch (error) {
+      if (!childAccepted) this.deps.turnPreparation.discard(preparedChildOpts);
       this.clearDeadline(deadlineKey);
       await this.deps.dispatches.finish(dispatch.id, 'failed', {
         error: sanitizeErrorMessage(error, 'failed to continue dispatch'),
@@ -926,40 +973,47 @@ export class MetaHarnessService implements ControlBrokerHandler {
       skills,
       `Goal:\n${goal}`,
       'Use only the bounded harness-meta-control tools. You cannot merge branches.',
+      skillUsageInstruction(snapshot),
     ]
       .filter((part): part is string => Boolean(part))
       .join('\n\n');
   }
-  private childOpts(
+  private async childOpts(
     workspace: Workspace,
     role: AgentRoleSnapshot,
     prompt: string,
     snapshot: NormalizedAgentSnapshot,
     runId: string,
-  ): StartTurnOpts {
+  ): Promise<StartTurnOpts> {
     const skills = snapshot.skills
       .map((skill) => `## Skill: ${skill.slug}\n${skill.content}`)
       .join('\n\n');
-    return {
-      workspaceDir: workspace.worktreePath!,
-      prompt: [
-        snapshot.instructions,
-        role.prompt,
-        role.instructions,
-        skills,
-        `Assigned work:\n${prompt}`,
-      ]
-        .filter((part): part is string => Boolean(part))
-        .join('\n\n'),
-      attachments: [],
-      mode: role.executor.mode,
-      mcpConfig: [],
-      permissionPolicy: this.deps.settings().permissionPolicy,
-      model: role.executor.model,
-      readOnlyMode: role.executor.readOnlyMode,
-      metaRunId: runId,
-      scopedWriteMode: !role.executor.readOnlyMode,
-    };
+    return this.deps.turnPreparation.prepareTurn(
+      workspace,
+      {
+        workspaceDir: workspace.worktreePath!,
+        prompt: [
+          snapshot.instructions,
+          role.prompt,
+          role.instructions,
+          skills,
+          `Assigned work:\n${prompt}`,
+          skillUsageInstruction(snapshot),
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join('\n\n'),
+        attachments: [],
+        mode: role.executor.mode,
+        mcpConfig: [],
+        model: role.executor.model,
+        readOnlyMode: role.executor.readOnlyMode,
+        metaRunId: runId,
+        scopedWriteMode: !role.executor.readOnlyMode,
+        metaSkills: skillSnapshot(snapshot),
+      },
+      'meta-child',
+      role.executor.harness,
+    );
   }
   private assertDebbyConfiguration(
     snapshot: NormalizedAgentSnapshot,
@@ -1172,6 +1226,8 @@ export class MetaHarnessService implements ControlBrokerHandler {
     await this.serializeRun(run.id, async () => {
       const current = await this.deps.dispatches.get(dispatchId);
       if (!ACTIVE_DISPATCH.has(current.status)) return;
+      const snapshot = await this.snapshot(run.id);
+      const evidence = parseSkillUsage(summary, snapshot);
       let changedFiles: string[] | undefined;
       let diffStat: string | undefined;
       if (current.workspaceId && this.deps.diff) {
@@ -1192,7 +1248,8 @@ export class MetaHarnessService implements ControlBrokerHandler {
         }
       }
       await this.deps.dispatches.finish(dispatchId, status, {
-        summary,
+        summary: evidence.summary,
+        skillUsage: evidence.usage,
         error,
         changedFiles,
         diffStat,
@@ -1229,6 +1286,7 @@ export class MetaHarnessService implements ControlBrokerHandler {
     if (TERMINAL_RUN.has(run.status)) return;
     const dispatches = await this.deps.dispatches.list(runId);
     const snapshot = await this.snapshot(runId);
+    const evidence = parseSkillUsage(terminal.summary ?? '', snapshot);
     if (
       snapshot.protocol === 'debby' &&
       !this.debbyProtocolComplete(snapshot, dispatches, snapshot.policy)
@@ -1239,7 +1297,7 @@ export class MetaHarnessService implements ControlBrokerHandler {
     }
     if (terminal.status === 'completed' && (run.allowPush || run.allowOpenPr)) {
       try {
-        await this.publishConsentedOutputs(run, dispatches, terminal.summary);
+        await this.publishConsentedOutputs(run, dispatches, evidence.summary);
       } catch (error) {
         if (this.runAbortControllers.get(run.id)?.signal.aborted) return;
         terminal.status = 'failed';
@@ -1260,8 +1318,9 @@ export class MetaHarnessService implements ControlBrokerHandler {
       });
     }
     await this.terminalizeRunLocked(run, terminal.status, {
-      summary: terminal.summary,
+      summary: evidence.summary,
       error: terminal.error,
+      skillUsage: evidence.usage,
     });
   }
   private async publishConsentedOutputs(
@@ -1303,7 +1362,11 @@ export class MetaHarnessService implements ControlBrokerHandler {
   private async terminalizeRunLocked(
     run: MetaRunSummary,
     status: 'completed' | 'failed' | 'cancelled' | 'taken_over' | 'interrupted',
-    extra: { summary?: string; error?: string } = {},
+    extra: {
+      summary?: string;
+      error?: string;
+      skillUsage?: MetaSkillUsageReport;
+    } = {},
     dispatchStatus: 'cancelled' | 'timed_out' = 'cancelled',
   ): Promise<void> {
     if (this.terminalizingRunIds.has(run.id)) return;

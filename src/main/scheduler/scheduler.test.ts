@@ -175,7 +175,16 @@ function makeScheduler(overrides?: Partial<TaskSchedulerDeps>): TaskScheduler {
             harness: 'claude_code',
           } as unknown as Workspace)
         : null,
-    settings: { get: () => SETTINGS },
+    turnPreparation: {
+      prepareTurn: vi.fn(async (_workspace, opts) => ({
+        ...opts,
+        mode: opts.mode ?? SETTINGS.agent.mode,
+        mcpConfig: opts.mcpConfig ?? SETTINGS.mcp,
+        permissionPolicy:
+          opts.permissionPolicy ?? SETTINGS.agent.permissionPolicy,
+      })),
+      discard: vi.fn(),
+    },
     emit: (event, payload) => emitted.push({ event, payload }),
     now: () => NOW,
     tickIntervalMs: 10_000,
@@ -267,6 +276,9 @@ describe('TaskScheduler.runNow — fire path', () => {
 
     const after = await scheduler.runNow(task.id);
     expect(after.state).toBe('queued');
+    expect(scheduler['deps'].turnPreparation.discard).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: 'go' }),
+    );
   });
 
   it('marks the task error (with the message) on an error terminal', async () => {
@@ -306,6 +318,12 @@ describe('TaskScheduler — opts assembly', () => {
     expect(opts.effort).toBe('high');
     expect(opts.workspaceDir).toBe(worktreePath);
     expect(harness.harnessOverrides).toEqual(['codex']);
+    expect(scheduler['deps'].turnPreparation.prepareTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ id: workspaceId, projectId }),
+      expect.objectContaining({ prompt: 'go', sessionId: undefined }),
+      'scheduled',
+      'codex',
+    );
   });
 
   it('starts due tasks fresh even when the workspace has a latest session', async () => {

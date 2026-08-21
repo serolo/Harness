@@ -4,13 +4,13 @@
 // command-injection / MCP-passthrough surface). No real `codex` process is spawned.
 //
 // IMPORTANT — CLI-drift tripwire: the fixtures under ./fixtures/codex are HAND-AUTHORED
-// samples of an ASSUMED `codex` JSON event stream (~v0.x), since no real `codex` CLI is
-// available in this environment (plan §9). They MUST be re-recorded against a real CLI
-// to become a true drift detector; until then they only prove the mapping logic, not
-// fidelity to the current CLI output.
+// samples of an ASSUMED `codex` JSON event stream (~v0.x). They MUST be re-recorded
+// against a real CLI to become a true drift detector; until then they only prove the
+// mapping logic, not fidelity to the current CLI output.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parse as parseToml } from 'smol-toml';
 import { describe, it, expect } from 'vitest';
 
 import type {
@@ -22,6 +22,7 @@ import { createJsonLineSplitter } from './parser';
 import {
   buildArgs,
   normalizeCodex,
+  prepareCodexMcpConfig,
   parseCodexCliMetadata,
   parseCodexAuthMethod,
   resolveCodexAuthMethod,
@@ -311,10 +312,11 @@ function opts(overrides: Partial<StartTurnOpts> = {}): StartTurnOpts {
   };
 }
 
-/** Read the `--mcp-config <path>` value out of an argv, or undefined if absent. */
-function mcpConfigPath(args: string[]): string | undefined {
-  const i = args.indexOf('--mcp-config');
-  return i >= 0 ? args[i + 1] : undefined;
+/** Collect the values supplied through Codex's native `-c key=value` overrides. */
+function configOverrides(args: string[]): string[] {
+  return args.flatMap((arg, index) =>
+    arg === '-c' && args[index + 1] !== undefined ? [args[index + 1]!] : [],
+  );
 }
 
 describe('Codex adapter — buildArgs', () => {
@@ -360,8 +362,8 @@ describe('Codex adapter — buildArgs', () => {
 
     expect(args).toContain('--sandbox');
     expect(args).toContain('read-only');
-    expect(args).toContain('--ask-for-approval');
-    expect(args).toContain('never');
+    expect(args).not.toContain('--ask-for-approval');
+    expect(configOverrides(args)).toContain('approval_policy="never"');
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(args.slice(-2)).toEqual(['--', '--inspect-only']);
   });
@@ -373,8 +375,8 @@ describe('Codex adapter — buildArgs', () => {
 
     expect(args).toContain('--sandbox');
     expect(args).toContain('workspace-write');
-    expect(args).toContain('--ask-for-approval');
-    expect(args).toContain('never');
+    expect(args).not.toContain('--ask-for-approval');
+    expect(configOverrides(args)).toContain('approval_policy="never"');
     expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
@@ -387,7 +389,7 @@ describe('Codex adapter — buildArgs', () => {
     ]);
   });
 
-  it('writes configured MCP servers to .mcp.json and passes --mcp-config', () => {
+  it('passes MCP servers through Codex-native config overrides', () => {
     const servers: McpServerConfig[] = [
       {
         name: 'my-server',
@@ -396,25 +398,78 @@ describe('Codex adapter — buildArgs', () => {
         env: { TOKEN: 'secret' },
       },
     ];
-    const args = buildArgs(opts({ mcpConfig: servers }));
+    const prepared = prepareCodexMcpConfig(servers);
+    try {
+      expect(() => buildArgs(opts({ mcpConfig: servers }))).toThrow(
+        'Codex MCP configuration was not prepared',
+      );
+      const args = buildArgs(opts({ mcpConfig: servers }), prepared.override);
+      const override = configOverrides(args).find((value) =>
+        value.startsWith('mcp_servers='),
+      );
+      expect(args).not.toContain('--mcp-config');
+      expect(override).toBeDefined();
+      expect(override).not.toContain('my-cmd');
+      expect(override).not.toContain('secret');
 
-    const path = mcpConfigPath(args);
-    expect(path).toBeDefined();
-    const written = JSON.parse(readFileSync(path!, 'utf8')) as {
-      mcpServers: Record<
-        string,
-        { command: string; args?: string[]; env?: Record<string, string> }
-      >;
-    };
-    expect(written.mcpServers['my-server']).toEqual({
-      command: 'my-cmd',
-      args: ['--flag'],
-      env: { TOKEN: 'secret' },
-    });
+      const parsed = parseToml(override!) as {
+        mcp_servers: Record<
+          string,
+          { command: string; args: string[]; env: Record<string, string> }
+        >;
+      };
+      const proxy = parsed.mcp_servers['my-server'];
+      expect(proxy?.command).toBe(process.execPath);
+      expect(proxy?.args[0]).toMatch(/mcp-launcher\.js$/);
+      expect(proxy?.env.ELECTRON_RUN_AS_NODE).toBe('1');
+      const configPath = proxy!.env.HARNESS_MCP_LAUNCH_CONFIG!;
+      expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
+        command: 'my-cmd',
+        args: ['--flag'],
+        env: { TOKEN: 'secret' },
+      });
+      prepared.cleanup();
+      expect(existsSync(configPath)).toBe(false);
+    } finally {
+      prepared.cleanup();
+    }
   });
 
-  it('omits --mcp-config entirely when there are no MCP servers', () => {
-    expect(buildArgs(opts())).not.toContain('--mcp-config');
+  it('quotes provider configuration so names and values remain inert TOML data', () => {
+    const servers: McpServerConfig[] = [
+      {
+        name: 'server.with spaces',
+        command: 'node',
+        args: ['$(touch /tmp/nope)', 'line\nbreak'],
+        env: { 'TOKEN.NAME': 'a"b\\c' },
+      },
+    ];
+    const prepared = prepareCodexMcpConfig(servers);
+    try {
+      const args = buildArgs(opts({ mcpConfig: servers }), prepared.override);
+      const override = configOverrides(args).find((value) =>
+        value.startsWith('mcp_servers='),
+      );
+      expect(override).toBeDefined();
+      expect(override).not.toContain('$(touch /tmp/nope)');
+      expect(override).not.toContain('a\\"b');
+      expect(parseToml(override!)).toHaveProperty([
+        'mcp_servers',
+        'server.with spaces',
+      ]);
+    } finally {
+      prepared.cleanup();
+    }
+  });
+
+  it('omits MCP configuration when there are no MCP servers', () => {
+    const prepared = prepareCodexMcpConfig([]);
+    const args = buildArgs(opts(), prepared.override);
+    expect(args).not.toContain('--mcp-config');
+    expect(
+      configOverrides(args).some((value) => value.startsWith('mcp_servers=')),
+    ).toBe(false);
   });
 });
 

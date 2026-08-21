@@ -88,7 +88,7 @@ describe('migration 0015 meta agents', () => {
   it('creates the run/dispatch tables, task snapshot columns, and expected indexes', () => {
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(15);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
     expect(columns('agent_runs')).toContain('snapshot_digest');
     expect(columns('agent_runs')).not.toEqual(
       expect.arrayContaining(['debate_stage', 'debate_round']),
@@ -212,7 +212,7 @@ describe('migration 0015 meta agents', () => {
 
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(15);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
     expect(columns('scheduled_tasks')).toContain('agent_snapshot_digest');
     expect(
       db

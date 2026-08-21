@@ -66,7 +66,7 @@ describe('migration 0015 knowledge context budget', () => {
     db.pragma('user_version = 14');
     runMigrations(db);
 
-    expect(db.pragma('user_version', { simple: true })).toBe(17);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
     expect(settingsFor('legacy-default')).toEqual({
       agent: { mode: 'plan' },
       knowledge: {

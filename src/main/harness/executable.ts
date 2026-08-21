@@ -12,8 +12,11 @@ export function resolveHarnessExecutable(
   const system = resolveExecutable(command);
   if (system !== command) return system;
 
-  const managed = command === 'claude' ? claudeCliPath() : codexCliPath();
   try {
+    // Resolving the managed location ultimately consults Electron's app paths.
+    // That API is unavailable in headless/ELECTRON_RUN_AS_NODE processes, so keep
+    // the same command fallback used when the managed executable is simply absent.
+    const managed = command === 'claude' ? claudeCliPath() : codexCliPath();
     accessSync(managed, constants.X_OK);
     return managed;
   } catch {

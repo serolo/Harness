@@ -4,11 +4,22 @@
 // Electron runtime.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { AgentEvent, Harness, TurnHandle } from '@shared/harness';
+import type {
+  AgentEvent,
+  Harness,
+  StartTurnOpts,
+  TurnHandle,
+} from '@shared/harness';
 import type { StreamSink } from '@shared/ipc';
 import type { Workspace, WorkspaceStatus } from '@shared/models';
 import { AppError } from '@shared/errors';
@@ -160,6 +171,145 @@ const baseOpts = {
 };
 
 describe('HarnessSupervisor turn lifecycle', () => {
+  it('persists the exact meta-skill revisions made available to the turn', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const h = await makeHarness(db, new MockHarness({ defaultDelayMs: 0 }));
+    const collected = collectSink();
+    const skills = [{ slug: 'migration-guide', digest: 'a'.repeat(64) }];
+
+    await h.supervisor.startTurn(
+      h.workspace.id,
+      { ...baseOpts, metaSkills: skills },
+      collected.sink,
+    );
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(collected.events).toContainEqual({
+      kind: 'meta_skill_access',
+      skills,
+    });
+    const history = await h.recorder.history(h.workspace.id);
+    expect(history[0].events).toContainEqual(
+      expect.objectContaining({
+        event: { kind: 'meta_skill_access', skills },
+      }),
+    );
+  });
+
+  it('records when prepared knowledge was available but never consulted', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const h = await makeHarness(db, new MockHarness({ defaultDelayMs: 0 }));
+    const collected = collectSink();
+    const cleanupDir = join(tmpDir, 'unused-knowledge-trace');
+    mkdirSync(cleanupDir);
+    const opts: StartTurnOpts = {
+      ...baseOpts,
+      knowledgeTrace: {
+        filePath: join(cleanupDir, 'trace.jsonl'),
+        cleanupDir,
+      },
+      knowledgeStatus: {
+        kind: 'knowledge_status',
+        status: 'prepared',
+        provider: 'basic',
+      },
+    };
+
+    await h.supervisor.startTurn(h.workspace.id, opts, collected.sink);
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(collected.events).toContainEqual({
+      kind: 'knowledge_status',
+      status: 'unused',
+      provider: 'basic',
+      reason: 'unused',
+    });
+    expect(existsSync(cleanupDir)).toBe(false);
+    const history = await h.recorder.history(h.workspace.id);
+    expect(history[0].events).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          kind: 'knowledge_status',
+          status: 'unused',
+        }),
+      }),
+    );
+  });
+
+  it('consumes and persists a sanitized gateway failure on adapter stream error', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (_opts, sink) => {
+        setTimeout(
+          () => sink.error(new AppError('harness', 'provider stopped')),
+          0,
+        );
+        return { sessionId: 'failed-session', interrupt: vi.fn() };
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const collected = collectSink();
+    const cleanupDir = join(tmpDir, 'failed-knowledge-trace');
+    const traceFile = join(cleanupDir, 'trace.jsonl');
+    mkdirSync(cleanupDir);
+    writeFileSync(
+      traceFile,
+      `${JSON.stringify({
+        kind: 'knowledge_status',
+        status: 'failed',
+        provider: 'qmd',
+        reason: 'gateway',
+        message: 'must not cross the boundary',
+      })}\n`,
+    );
+    const opts: StartTurnOpts = {
+      ...baseOpts,
+      knowledgeTrace: { filePath: traceFile, cleanupDir },
+      knowledgeStatus: {
+        kind: 'knowledge_status',
+        status: 'prepared',
+        provider: 'qmd',
+      },
+    };
+
+    await h.supervisor.startTurn(h.workspace.id, opts, collected.sink);
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(collected.events).toContainEqual({
+      kind: 'knowledge_status',
+      status: 'failed',
+      provider: 'qmd',
+      reason: 'gateway',
+    });
+    expect(JSON.stringify(collected.events)).not.toContain(
+      'must not cross the boundary',
+    );
+    expect(existsSync(cleanupDir)).toBe(false);
+    const history = await h.recorder.history(h.workspace.id);
+    expect(JSON.stringify(history)).not.toContain(
+      'must not cross the boundary',
+    );
+    expect(history[0].events).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          kind: 'knowledge_status',
+          status: 'failed',
+        }),
+      }),
+    );
+  });
+
   it('runs a turn: idle→working→needs_attention, records completed, clears registry', async () => {
     db = openDb(join(tmpDir, 'test.db'));
     const h = await makeHarness(db, new MockHarness({ defaultDelayMs: 0 }));

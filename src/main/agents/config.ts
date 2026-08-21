@@ -575,7 +575,11 @@ export async function loadAgentBundle(
           `missing referenced skill: ${file}`,
         );
       referencedFiles.add(file);
-      return { slug: skillSlug, content };
+      return {
+        slug: skillSlug,
+        content,
+        digest: createHash('sha256').update(content).digest('hex'),
+      };
     });
     const unexpected = files.find((file) => !referencedFiles.has(file));
     if (unexpected)

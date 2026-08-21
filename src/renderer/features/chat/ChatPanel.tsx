@@ -20,6 +20,9 @@ import { useWorkspacesStore } from '@renderer/stores/workspaces';
 
 export interface ChatPanelProps {
   workspaceId: string | null;
+  workspacePrError?: Error | null;
+  workspacePrRefreshing?: boolean;
+  onRetryWorkspacePr?: () => void;
   inspectFileRequest?: {
     id: number;
     workspaceId: string;
@@ -238,7 +241,7 @@ function FileViewer({
 
   return (
     <div
-      className="min-h-0 flex-1 overflow-hidden"
+      className="min-h-0 min-w-0 flex-1 overflow-hidden"
       data-testid="chat-file-viewer"
     >
       <div className="flex h-full min-h-0 flex-col bg-surface-app">
@@ -326,10 +329,10 @@ function FileViewer({
           </div>
         ) : isMarkdown ? (
           <article
-            className="min-h-0 flex-1 overflow-auto bg-surface-app px-6 py-6 sm:px-10"
+            className="min-h-0 min-w-0 flex-1 overflow-auto bg-surface-app px-6 py-6 sm:px-10"
             data-testid="chat-markdown-viewer"
           >
-            <div className="mx-auto w-full max-w-3xl">
+            <div className="w-full min-w-0" data-testid="chat-markdown-content">
               <Markdown text={file.content ?? ''} />
             </div>
           </article>
@@ -357,6 +360,9 @@ function FileViewer({
 
 export function ChatPanel({
   workspaceId,
+  workspacePrError = null,
+  workspacePrRefreshing = false,
+  onRetryWorkspacePr,
   inspectFileRequest,
 }: ChatPanelProps): React.JSX.Element {
   const { turns, isBusy, sendTurn, interrupt, clear } = useChat(workspaceId);
@@ -371,6 +377,17 @@ export function ChatPanel({
   const [activeTab, setActiveTab] = useState<ActiveTab | null>(null);
   const [editingContextId, setEditingContextId] = useState<string | null>(null);
   const [contextNameDraft, setContextNameDraft] = useState('');
+  // File tabs are transient, but the chat context beneath them is workspace-local.
+  // Remember it independently so closing a preview or returning to a workspace restores
+  // the context the user was actually working in instead of jumping to the first tab.
+  const lastActiveChatTabByWorkspace = useRef(new Map<string, string>());
+  const selectChatTab = useCallback(
+    (id: string): void => {
+      if (workspaceId) lastActiveChatTabByWorkspace.current.set(workspaceId, id);
+      setActiveTab(id);
+    },
+    [workspaceId],
+  );
   // Mirrors `chatContexts` for reads across an `await` (e.g. in `closeChatContext`):
   // a plain closure captured before an `await` can miss a task tab that lands (via
   // `task:turnStarted`) while an IPC round trip is in flight, silently wiping it back
@@ -398,13 +415,23 @@ export function ChatPanel({
       .then((records) => {
         if (!active) return;
         const manual = records.map(toChatContext);
+        const remembered = lastActiveChatTabByWorkspace.current.get(workspaceId);
+        const restored = manual.some((context) => context.id === remembered)
+          ? remembered!
+          : (manual[0]?.id ?? null);
         // The task-list hydration effect races this one; keep whatever it already added.
         setChatContexts((current) => [
           ...manual,
           ...current.filter((context) => context.id.startsWith('task:')),
         ]);
         // Likewise, don't clobber a task tab `task:turnStarted` may have just selected.
-        setActiveTab((current) => current ?? manual[0]?.id ?? null);
+        setActiveTab((current) => {
+          if (current !== null) return current;
+          if (restored) {
+            lastActiveChatTabByWorkspace.current.set(workspaceId, restored);
+          }
+          return restored;
+        });
       })
       .catch(() => {
         /* Leaves an empty tab bar; the next workspace switch retries. */
@@ -476,13 +503,13 @@ export function ChatPanel({
         prompt: task.prompt,
         turnId: task.turnId,
       });
-      setActiveTab(`task:${task.taskId}`);
+      selectChatTab(`task:${task.taskId}`);
     });
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [registerTaskTurn, upsertTaskContext, workspaceId]);
+  }, [registerTaskTurn, selectChatTab, upsertTaskContext, workspaceId]);
 
   // NOTE: there is deliberately no effect assigning "unowned" turns to the active tab.
   // That was the bug: on remount every turn got dumped into whichever tab was active,
@@ -659,11 +686,17 @@ export function ChatPanel({
 
   const closeFileTab = (id: string): void => {
     setFileTabs((tabs) => tabs.filter((tab) => tab.id !== id));
-    // Fall back to the first chat tab — tab ids are persisted context ids now, so there
-    // is no synthetic `'chat'` id to fall back to.
-    setActiveTab((current) =>
-      current === id ? (chatContexts[0]?.id ?? null) : current,
-    );
+    const remembered = workspaceId
+      ? lastActiveChatTabByWorkspace.current.get(workspaceId)
+      : undefined;
+    const fallback =
+      chatContexts.find((context) => context.id === remembered)?.id ??
+      chatContexts[0]?.id ??
+      null;
+    if (workspaceId && fallback) {
+      lastActiveChatTabByWorkspace.current.set(workspaceId, fallback);
+    }
+    setActiveTab((current) => (current === id ? fallback : current));
   };
 
   const setFileMode = (file: FileTab, mode: FileTab['mode']): void => {
@@ -710,6 +743,7 @@ export function ChatPanel({
       return null;
     }
     setChatContexts((contexts) => [...contexts, created]);
+    lastActiveChatTabByWorkspace.current.set(workspace, created.id);
     setActiveTab(created.id);
     return created;
   };
@@ -759,6 +793,13 @@ export function ChatPanel({
     const fallbackId =
       remaining[Math.min(closingIndex, remaining.length - 1)]?.id ?? null;
     setChatContexts(remaining);
+    if (workspaceId && lastActiveChatTabByWorkspace.current.get(workspaceId) === id) {
+      if (fallbackId) {
+        lastActiveChatTabByWorkspace.current.set(workspaceId, fallbackId);
+      } else {
+        lastActiveChatTabByWorkspace.current.delete(workspaceId);
+      }
+    }
     if (remaining.length === 0) {
       // Closing the last tab: let main mint the replacement so the fresh tab is a real
       // persisted context rather than a local synthetic one.
@@ -818,7 +859,6 @@ export function ChatPanel({
     activeContext !== undefined && !activeContext.id.startsWith('task:')
       ? activeContext.id
       : undefined;
-
   if (!workspaceId) {
     return (
       <div
@@ -868,7 +908,7 @@ export function ChatPanel({
                   type="button"
                   className="h-full max-w-32 truncate"
                   title={`${context.label} — double-click to rename`}
-                  onClick={() => setActiveTab(context.id)}
+                  onClick={() => selectChatTab(context.id)}
                   onDoubleClick={() => beginRenameContext(context)}
                 >
                   {context.label}
@@ -943,6 +983,28 @@ export function ChatPanel({
           <History className="h-4 w-4" aria-hidden />
         </button>
       </div>
+      {workspacePrError ? (
+        <div
+          className="flex shrink-0 items-start justify-between gap-3 border-b border-danger bg-danger-muted px-4 py-2 text-sm text-danger"
+          data-testid="github-pr-error"
+          role="alert"
+        >
+          <span className="min-w-0 whitespace-pre-wrap">
+            Could not refresh the GitHub pull request:{' '}
+            {workspacePrError.message}
+          </span>
+          {onRetryWorkspacePr ? (
+            <button
+              type="button"
+              className="shrink-0 rounded-2 border border-danger px-2 py-1 font-medium hover:bg-surface-panel disabled:cursor-wait disabled:opacity-60"
+              disabled={workspacePrRefreshing}
+              onClick={onRetryWorkspacePr}
+            >
+              {workspacePrRefreshing ? 'Retrying…' : 'Retry'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {activeFile ? (
         <FileViewer
           key={activeFile.id}

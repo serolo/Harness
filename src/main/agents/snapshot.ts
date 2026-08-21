@@ -195,10 +195,18 @@ export function parseStoredAgentSnapshot(
   if (new Set(roles.map((entry) => entry.slug)).size !== roles.length) fail();
   const skills = item.skills.map((value) => {
     const skill = record(value);
-    exactKeys(skill, ['slug', 'content']);
+    exactKeys(skill, ['slug', 'content'], ['digest']);
     const skillSlug = string(skill.slug);
     if (!SLUG.test(skillSlug)) fail();
-    return { slug: skillSlug, content: string(skill.content, true) };
+    const content = string(skill.content, true);
+    const digest =
+      skill.digest === undefined ? undefined : string(skill.digest);
+    if (digest !== undefined && !/^[a-f0-9]{64}$/.test(digest)) fail();
+    return {
+      slug: skillSlug,
+      content,
+      ...(digest ? { digest } : {}),
+    };
   });
   if (!Array.isArray(item.capabilities)) fail();
   const capabilities = item.capabilities.map((value) => {

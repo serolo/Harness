@@ -20,7 +20,6 @@ import type { AgentEvent, StartTurnOpts } from '@shared/harness';
 import { createHash } from 'node:crypto';
 import type { MetaRunSummary } from '@shared/agents';
 import type { EventChannel, EventPayload, StreamSink } from '@shared/ipc';
-import type { EffectiveSettings } from '@shared/settings';
 import type { ScheduledTask } from '@shared/tasks';
 import type { Workspace } from '@shared/models';
 import { AppError } from '@shared/errors';
@@ -30,6 +29,7 @@ import type { ScheduledTasksRepo } from '../db/repos/tasks';
 import type { MetaHarnessService } from '../meta-harness';
 import { parseStoredAgentSnapshot } from '../agents/snapshot';
 import { sanitizeErrorMessage } from '../security/sanitize-error';
+import type { TurnPreparationService } from '../harness/turnPreparation';
 
 /** Default tick cadence — timestamp-compared so a task due during sleep fires on wake. */
 const DEFAULT_TICK_INTERVAL_MS = 30_000;
@@ -43,8 +43,8 @@ export interface TaskSchedulerDeps {
   >;
   /** Resolve a workspace (to pick its worktree + harness). */
   getWorkspace: (id: string) => Promise<Workspace | null>;
-  /** Read-only settings snapshot (mode/mcp/permissionPolicy defaults). */
-  settings: { get: () => EffectiveSettings };
+  /** Shared project-aware settings and knowledge preparation. */
+  turnPreparation: Pick<TurnPreparationService, 'prepareTurn' | 'discard'>;
   /** Broadcast a typed event to the renderer(s). */
   emit: <K extends EventChannel>(event: K, payload: EventPayload<K>) => void;
   /** Injectable clock for tests. Defaults to `Date.now`. */
@@ -228,18 +228,29 @@ export class TaskScheduler {
 
     // 3) Build task-specific opts. Scheduler executions are isolated work items, so they
     // never inherit the workspace's latest provider session.
-    const settings = this.deps.settings.get();
-    const opts: StartTurnOpts = {
-      workspaceDir: workspace.worktreePath,
-      prompt: task.prompt,
-      attachments: task.attachments ?? [],
-      sessionId: undefined,
-      mode: task.mode ?? settings.agent.mode,
-      mcpConfig: settings.mcp,
-      permissionPolicy: settings.agent.permissionPolicy,
-      model: task.model ?? undefined,
-      effort: task.effort ?? undefined,
-    };
+    let opts: StartTurnOpts;
+    try {
+      opts = await this.deps.turnPreparation.prepareTurn(
+        workspace,
+        {
+          workspaceDir: workspace.worktreePath,
+          prompt: task.prompt,
+          attachments: task.attachments ?? [],
+          sessionId: undefined,
+          mode: task.mode ?? undefined,
+          model: task.model ?? undefined,
+          effort: task.effort ?? undefined,
+        },
+        'scheduled',
+        task.harnessOverride ?? workspace.harness,
+      );
+    } catch (error) {
+      await repo.setState(task.id, 'error', {
+        errorMessage: sanitizeErrorMessage(error, 'failed to prepare turn'),
+      });
+      emit('task:changed', { workspaceId });
+      return;
+    }
 
     // 4) sink: buffer events until the turnId is known, then mirror each as `turn:event`.
     let turnId: string | undefined;
@@ -312,6 +323,7 @@ export class TaskScheduler {
     };
 
     // 5) start the turn through the supervisor; conflict → re-queue; other throw → error.
+    let turnAccepted = false;
     try {
       const handle = await harness.startTurn(
         workspaceId,
@@ -319,6 +331,7 @@ export class TaskScheduler {
         sink,
         task.harnessOverride ?? undefined,
       );
+      turnAccepted = true;
       turnId = harness.getActiveTurnId(workspaceId) ?? undefined;
       if (turnId !== undefined && !terminalHandled) {
         // Record the turn id so boot reconcile can join it; state stays `running`.
@@ -338,6 +351,7 @@ export class TaskScheduler {
         await applyTerminal(pendingTerminal);
       }
     } catch (err) {
+      if (!turnAccepted) this.deps.turnPreparation.discard(opts);
       if (err instanceof AppError && err.code === 'conflict') {
         await repo.setState(task.id, 'queued');
       } else {

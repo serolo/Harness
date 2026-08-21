@@ -4,9 +4,14 @@ import { AppError } from '@shared/errors';
 import {
   type MetaRunStatus,
   type MetaRunSummary,
+  type MetaSkillUsageReport,
   type NormalizedAgentSnapshot,
 } from '@shared/agents';
 import { parseStoredAgentSnapshot } from '../../agents/snapshot';
+import {
+  parseStoredSkillUsage,
+  serializeSkillUsage,
+} from '../../meta-harness/skillEvidence';
 import type { AppDatabase } from '../index';
 import type { AgentRunsTable } from '../schema';
 
@@ -51,6 +56,9 @@ function rowToSummary(row: AgentRunsTable): MetaRunSummary {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     ...(agentProtocol ? { agentProtocol } : {}),
+    coordinatorSkillUsage: parseStoredSkillUsage(
+      row.coordinator_skill_usage_json,
+    ),
   };
 }
 
@@ -91,6 +99,10 @@ export class AgentRunsRepo {
       created_at: now,
       started_at: null,
       ended_at: null,
+      coordinator_skill_usage_json: serializeSkillUsage({
+        reported: false,
+        skills: [],
+      }),
     };
     await this.db.insertInto('agent_runs').values(row).execute();
     return rowToSummary(row);
@@ -131,12 +143,21 @@ export class AgentRunsRepo {
   async transition(
     id: string,
     status: MetaRunStatus,
-    extra: { summary?: string; error?: string } = {},
+    extra: {
+      summary?: string;
+      error?: string;
+      skillUsage?: MetaSkillUsageReport;
+    } = {},
   ): Promise<MetaRunSummary> {
     const set: Partial<AgentRunsTable> = {
       status,
       ...(extra.summary !== undefined ? { final_summary: extra.summary } : {}),
       ...(extra.error !== undefined ? { error: extra.error } : {}),
+      ...(extra.skillUsage !== undefined
+        ? {
+            coordinator_skill_usage_json: serializeSkillUsage(extra.skillUsage),
+          }
+        : {}),
       ...(TERMINAL.has(status) ? { ended_at: Date.now() } : {}),
     };
     await this.db

@@ -82,7 +82,11 @@ export interface NormalizedAgentSnapshot {
   instructions?: string;
   coordinator: AgentExecutorSnapshot;
   roles: AgentRoleSnapshot[];
-  skills: { slug: string; content: string }[];
+  skills: {
+    slug: string;
+    content: string;
+    /** APPEND-ONLY. */ digest?: string;
+  }[];
   capabilities: MetaAgentCapability[];
   requiredProviders: HarnessId[];
   policy: AgentRunPolicy;
@@ -137,6 +141,20 @@ export interface AgentDispatchSummary {
   debateStage?: 'partner' | 'critique';
   /** One-based critique round; partner responses use round 0. APPEND-ONLY. */
   debateRound?: number;
+  /** Structured, agent-reported skill usage; this is not proof of cognition. APPEND-ONLY. */
+  skillUsage?: MetaSkillUsageReport;
+}
+
+export interface MetaSkillEvidence {
+  slug: string;
+  /** SHA-256 of the exact skill content in the immutable run snapshot. */
+  digest: string;
+}
+
+export interface MetaSkillUsageReport {
+  /** True only when a syntactically valid footer matched the immutable snapshot. */
+  reported: boolean;
+  skills: MetaSkillEvidence[];
 }
 
 export interface MetaRunSummary {
@@ -158,10 +176,14 @@ export interface MetaRunSummary {
   endedAt: number | null;
   /** Protocol copied from the immutable stored snapshot. APPEND-ONLY. */
   agentProtocol?: MetaAgentProtocol;
+  /** Structured, agent-reported coordinator skill usage. APPEND-ONLY. */
+  coordinatorSkillUsage?: MetaSkillUsageReport;
 }
 
 export interface MetaRunDetail extends MetaRunSummary {
   dispatches: AgentDispatchSummary[];
+  /** Exact skill revisions made available to this run. APPEND-ONLY. */
+  skillSnapshot?: MetaSkillEvidence[];
 }
 
 export interface StartMetaRunRequest {

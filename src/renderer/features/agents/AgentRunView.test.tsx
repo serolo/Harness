@@ -59,6 +59,40 @@ function run(overrides: Partial<MetaRunDetail> = {}): MetaRunDetail {
 afterEach(() => vi.restoreAllMocks());
 
 describe('AgentRunView', () => {
+  it('shows immutable access evidence separately from agent-reported usage', () => {
+    const digest = 'a'.repeat(64);
+    render(
+      <AgentRunView
+        run={run({
+          skillSnapshot: [{ slug: 'migration-guide', digest }],
+          coordinatorSkillUsage: {
+            reported: true,
+            skills: [{ slug: 'migration-guide', digest }],
+          },
+          dispatches: [
+            {
+              ...dispatch('one', 'coder', 'Done', 'implement'),
+              skillUsage: { reported: true, skills: [] },
+            },
+          ],
+        })}
+        onClose={vi.fn()}
+        onCancel={vi.fn()}
+        onTakeOver={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('meta-skill-snapshot')).toHaveTextContent(
+      'migration-guide@aaaaaaaaaaaa',
+    );
+    expect(screen.getAllByTestId('meta-skill-usage')[0]).toHaveTextContent(
+      'Coordinator agent-reported usage: migration-guide@aaaaaaaaaaaa',
+    );
+    expect(screen.getAllByTestId('meta-skill-usage')[1]).toHaveTextContent(
+      'Agent-reported usage: none',
+    );
+  });
+
   it('shows retained workspace identity, status, results, failures, and active actions', () => {
     const onCancel = vi.fn();
     const onTakeOver = vi.fn();

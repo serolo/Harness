@@ -90,6 +90,78 @@ describe('OKF project knowledge', () => {
     expect(await service.history(projectId)).toHaveLength(2);
   });
 
+  it('coalesces concurrent initialization into one repository creation', async () => {
+    const { projectId } = await fixture();
+    let repositoryExists = false;
+    const git = {
+      checkIsRepo: vi.fn(async () => repositoryExists),
+      init: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        repositoryExists = true;
+      }),
+      addConfig: vi.fn(async () => undefined),
+      add: vi.fn(async () => undefined),
+      commit: vi.fn(async () => undefined),
+      revparse: vi.fn(async () => 'a'.repeat(40)),
+    } as unknown as SimpleGit;
+    const service = new WikiService(db!, undefined, () => git);
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => service.initializeProject(projectId)),
+    );
+
+    expect(results.map((result) => result.commit)).toEqual(
+      Array.from({ length: 4 }, () => 'a'.repeat(40)),
+    );
+    expect(git.init).toHaveBeenCalledTimes(1);
+    expect(git.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('repairs an interrupted initialization that has Git metadata but no HEAD', async () => {
+    const { service, projectId } = await fixture();
+    const project = await new ProjectsRepo(db!).getById(projectId);
+    const root = knowledgeDir(project!.directoryName);
+    await mkdir(root, { recursive: true });
+    await simpleGit({ baseDir: root }).init();
+
+    const initialized = await service.initializeProject(projectId);
+
+    expect(initialized.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(await readFile(join(root, 'overview.md'), 'utf8')).toContain(
+      'Project Overview',
+    );
+    expect((await simpleGit({ baseDir: root }).status()).isClean()).toBe(true);
+  });
+
+  it('clears a failed single-flight initialization so a later turn can retry', async () => {
+    const { projectId } = await fixture();
+    let repositoryExists = false;
+    const git = {
+      checkIsRepo: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('temporary failure'))
+        .mockImplementation(async () => repositoryExists),
+      init: vi.fn(async () => {
+        repositoryExists = true;
+      }),
+      addConfig: vi.fn(async () => undefined),
+      add: vi.fn(async () => undefined),
+      commit: vi.fn(async () => undefined),
+      revparse: vi.fn(async () => 'b'.repeat(40)),
+    } as unknown as SimpleGit;
+    const service = new WikiService(db!, undefined, () => git);
+
+    await expect(service.initializeProject(projectId)).rejects.toThrow(
+      'temporary failure',
+    );
+    await expect(service.initializeProject(projectId)).resolves.toEqual({
+      commit: 'b'.repeat(40),
+    });
+
+    expect(git.checkIsRepo).toHaveBeenCalledTimes(2);
+    expect(git.init).toHaveBeenCalledTimes(1);
+  });
+
   it('consolidates an approved create into an existing knowledge page', async () => {
     const { service, projectId } = await fixture();
     await service.initializeProject(projectId);
@@ -596,6 +668,7 @@ describe('OKF project knowledge', () => {
     const knowledgeGateway = new ProjectKnowledgeGateway({
       projectId,
       root: knowledgeDir('atlas'),
+      searchEnabled: true,
       provider: 'basic',
       maxResults: 10,
       maxContextTokens: 4_000,

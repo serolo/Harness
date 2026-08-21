@@ -12,7 +12,7 @@
 // Archived rows render dimmed. The selected row is highlighted.
 
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Archive,
   CircleQuestionMark,
@@ -32,6 +32,7 @@ import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
 import { useWorkspaceArchiveStore } from '@renderer/stores/workspaceArchive';
 import { Button, Checkbox, Dialog, Input } from '@renderer/components/ui';
+import { useWorkspacePr } from '@renderer/features/github/useWorkspacePr';
 import {
   archiveWorkspaceWithConfirmation,
   workspaceDeepLink,
@@ -157,30 +158,11 @@ export function WorkspaceItem({
       state.current.status === 'running',
   );
   const isArchived = workspace.status === 'archived';
-  const { data: pullRequest } = useQuery({
-    // Shared with the Git view so the sidebar and toolbar deduplicate the same live PR
-    // lookup. Branch/number revisions prevent a renamed branch from reusing stale data.
-    queryKey: [
-      'workspace-pr',
-      workspace.id,
-      workspace.branch,
-      workspace.prNumber,
-    ],
-    queryFn: async () =>
-      (await invoke('github:getWorkspacePr', {
-        workspaceId: workspace.id,
-      })) ?? null,
-    enabled: !isArchived,
-    retry: false,
-    // GitHub changes PR lifecycle and merge-queue state outside the app. Poll only the
-    // selected, non-terminal row; all rows refresh when the desktop window focuses.
-    staleTime: 15_000,
-    refetchInterval: (query) => {
-      const state = query.state.data?.state?.toLowerCase();
-      if (state === 'closed' || state === 'merged') return false;
-      return isSelected ? 60_000 : false;
-    },
-    refetchOnWindowFocus: true,
+  const { data: pullRequest } = useWorkspacePr({
+    workspaceId: isArchived ? null : workspace.id,
+    branch: workspace.branch,
+    prNumber: workspace.prNumber,
+    poll: isSelected,
   });
   const [contextPoint, setContextPoint] = useState<{
     x: number;

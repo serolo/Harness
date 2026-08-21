@@ -3,7 +3,9 @@
 
 import {
   type DragEvent,
+  useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -15,6 +17,8 @@ import {
   BookOpenText,
   Check,
   DollarSign,
+  FileText,
+  Folder,
   Gauge,
   Info,
   Map,
@@ -32,6 +36,7 @@ import type {
   Usage,
 } from '@shared/harness';
 import type { SlashCommand } from '@shared/slash';
+import type { WorkspaceDirectoryEntry } from '@shared/ipc';
 import {
   expandSlashTemplate,
   matchSlashCommands,
@@ -109,11 +114,95 @@ function slashQuery(input: string): string | null {
   return match?.[1] ?? null;
 }
 
+interface ActiveFileMention {
+  start: number;
+  end: number;
+  directory: string;
+  filter: string;
+}
+
+/** Resolve only the @ token touching the caret; completed mentions remain plain text. */
+function activeFileMention(
+  input: string,
+  caret: number,
+): ActiveFileMention | null {
+  const prefix = input.slice(0, caret);
+  const match = /(?:^|\s)@((?:\\.|[^\s@])*)$/.exec(prefix);
+  if (!match) return null;
+  const query = (match[1] ?? '').replace(/\\(.)/g, '$1');
+  if (
+    query.startsWith('/') ||
+    query.split('/').some((segment) => segment === '.' || segment === '..')
+  ) {
+    return null;
+  }
+  const slash = query.lastIndexOf('/');
+  let end = caret;
+  while (end < input.length) {
+    if (input[end] === '\\' && end + 1 < input.length) {
+      end += 2;
+      continue;
+    }
+    if (/\s/.test(input[end] ?? '')) break;
+    end += 1;
+  }
+  return {
+    start: match.index + (match[0].startsWith('@') ? 0 : 1),
+    end,
+    directory: slash < 0 ? '' : query.slice(0, slash),
+    filter: slash < 0 ? query : query.slice(slash + 1),
+  };
+}
+
+function encodeMentionPath(path: string): string {
+  return path.replace(/([\\\s@])/g, '\\$1');
+}
+
 function commandDescription(command: SlashCommand): string {
   if (command.description !== undefined && command.description.trim() !== '') {
     return command.description;
   }
   return command.template.split('\n').find((line) => line.trim() !== '') ?? '';
+}
+
+function commandOrigin(command: SlashCommand): string {
+  const provider =
+    command.provider === 'codex'
+      ? 'Codex'
+      : command.provider === 'claude_code'
+        ? 'Claude'
+        : undefined;
+  const source =
+    command.source === 'native_skill'
+      ? 'skill'
+      : command.source === 'native_command'
+        ? 'command'
+        : command.source === 'configured_prompt'
+          ? 'configured prompt'
+          : command.source === 'builtin'
+            ? 'Harness built-in'
+            : undefined;
+  const scope =
+    command.provenance === 'workspace'
+      ? 'workspace'
+      : command.provenance === 'repository'
+        ? 'repository'
+        : command.provenance === 'user'
+          ? 'user'
+          : command.provenance === 'admin'
+            ? 'admin'
+            : undefined;
+  return [provider, source, scope].filter(Boolean).join(' · ');
+}
+
+function commandPrefix(command: SlashCommand): '/' | '$' {
+  return command.invocation === 'dollar' ? '$' : '/';
+}
+
+function commandMatchesText(command: SlashCommand, input: string): boolean {
+  const invocation = `${commandPrefix(command)}${command.name}`;
+  const trimmed = input.trim();
+  return trimmed === invocation || trimmed.startsWith(`${invocation} `);
 }
 
 function modelContextCapacity(label: string): number {
@@ -530,6 +619,15 @@ export function Composer({
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const [slashLoading, setSlashLoading] = useState(false);
   const [slashActive, setSlashActive] = useState(0);
+  const [caret, setCaret] = useState(0);
+  const [mentionEntries, setMentionEntries] = useState<
+    WorkspaceDirectoryEntry[]
+  >([]);
+  const [mentionLoading, setMentionLoading] = useState(false);
+  const [mentionError, setMentionError] = useState<string | null>(null);
+  const [mentionLoadedKey, setMentionLoadedKey] = useState<string | null>(null);
+  const [mentionActive, setMentionActive] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSwitchNotice, setModelSwitchNotice] = useState(false);
   const [effortOpen, setEffortOpen] = useState(false);
@@ -550,10 +648,14 @@ export function Composer({
   const effortPickerRef = useRef<HTMLDivElement>(null);
   const plusPickerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const mentionListboxId = useId();
   const dragDepthRef = useRef(0);
   const sentTextHistoryRef = useRef<string[]>([]);
   const sentTextHistoryIndexRef = useRef(-1);
   const preHistoryDraftRef = useRef('');
+  const selectedSlashCommandRef = useRef<SlashCommand | null>(null);
+  const slashRequestRef = useRef(0);
+  const slashWasOpenRef = useRef(false);
   const modelSelectionInitializedRef = useRef(false);
   const activeDraftWorkspaceRef = useRef<string | null>(null);
   const activeModeContextRef = useRef<string | null>(null);
@@ -635,6 +737,13 @@ export function Composer({
     setSlashCommands([]);
     setSlashLoading(false);
     setSlashActive(0);
+    setCaret(0);
+    setMentionEntries([]);
+    setMentionLoading(false);
+    setMentionError(null);
+    setMentionLoadedKey(null);
+    setMentionActive(0);
+    setMentionDismissed(false);
     setModelOpen(false);
     setEffortOpen(false);
     setPlusOpen(false);
@@ -722,26 +831,38 @@ export function Composer({
   const effortOptions =
     selectedModel === 'codex' ? CODEX_EFFORT_OPTIONS : CLAUDE_EFFORT_OPTIONS;
 
-  useEffect(() => {
-    let alive = true;
+  const refreshSlashCommands = useCallback(async (): Promise<void> => {
+    const request = ++slashRequestRef.current;
     setSlashLoading(true);
-    void invoke('slash:list', {
-      workspaceId: selectedWorkspaceId ?? undefined,
-      harness: selectedModel,
-    })
-      .then((commands) => {
-        if (alive) setSlashCommands(Array.isArray(commands) ? commands : []);
-      })
-      .catch(() => {
-        if (alive) setSlashCommands([]);
-      })
-      .finally(() => {
-        if (alive) setSlashLoading(false);
+    try {
+      const commands = await invoke('slash:list', {
+        workspaceId: selectedWorkspaceId ?? undefined,
+        harness: selectedModel,
       });
-    return () => {
-      alive = false;
-    };
+      if (request === slashRequestRef.current) {
+        setSlashCommands(Array.isArray(commands) ? commands : []);
+      }
+    } catch {
+      if (request === slashRequestRef.current) setSlashCommands([]);
+    } finally {
+      if (request === slashRequestRef.current) setSlashLoading(false);
+    }
   }, [selectedWorkspaceId, selectedModel]);
+
+  useEffect(() => {
+    void refreshSlashCommands();
+    return () => {
+      slashRequestRef.current += 1;
+    };
+  }, [refreshSlashCommands]);
+
+  const slashInputOpen = slashQuery(text) !== null;
+  useEffect(() => {
+    if (slashInputOpen && !slashWasOpenRef.current) {
+      void refreshSlashCommands();
+    }
+    slashWasOpenRef.current = slashInputOpen;
+  }, [refreshSlashCommands, slashInputOpen]);
 
   const harnessOptions = useMemo(() => {
     const loaded = Object.values(harnessInfoById);
@@ -826,10 +947,71 @@ export function Composer({
     [activeSlashQuery, slashCommands],
   );
   const slashOpen = activeSlashQuery !== null;
+  const mention = activeFileMention(text, caret);
+  const mentionOpen =
+    !mentionDismissed &&
+    mention !== null &&
+    selectedWorkspaceId !== null &&
+    activeDraftWorkspaceRef.current === selectedWorkspaceId;
+  const mentionDirectoryKey =
+    mention === null || selectedWorkspaceId === null
+      ? null
+      : `${selectedWorkspaceId}\u0000${mention.directory}`;
+  const mentionResultsReady =
+    mentionDirectoryKey !== null && mentionLoadedKey === mentionDirectoryKey;
+  const mentionMatches = useMemo(() => {
+    if (!mentionOpen || mention === null || !mentionResultsReady) return [];
+    const query = mention.filter.toLocaleLowerCase();
+    return mentionEntries.filter(
+      (entry) =>
+        entry.kind !== 'symlink' &&
+        entry.name.toLocaleLowerCase().includes(query),
+    );
+  }, [mention, mentionEntries, mentionOpen, mentionResultsReady]);
 
   useEffect(() => {
     setSlashActive(0);
   }, [activeSlashQuery]);
+
+  useEffect(() => {
+    setMentionActive(0);
+  }, [mention?.directory, mention?.filter]);
+
+  useEffect(() => {
+    if (!mentionOpen || mention === null || selectedWorkspaceId === null) {
+      setMentionLoading(false);
+      return;
+    }
+    let alive = true;
+    const loadedKey = `${selectedWorkspaceId}\u0000${mention.directory}`;
+    setMentionLoading(true);
+    setMentionError(null);
+    setMentionLoadedKey(null);
+    void invoke('workspace:listDirectory', {
+      workspaceId: selectedWorkspaceId,
+      path: mention.directory,
+    })
+      .then((entries) => {
+        if (alive) {
+          setMentionEntries(entries);
+          setMentionLoadedKey(loadedKey);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!alive) return;
+        setMentionEntries([]);
+        setMentionLoadedKey(loadedKey);
+        setMentionError(
+          error instanceof Error ? error.message : 'Unable to list files',
+        );
+      })
+      .finally(() => {
+        if (alive) setMentionLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [mention?.directory, mentionOpen, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!effortOptions.some((option) => option.id === effort.id)) {
@@ -901,12 +1083,19 @@ export function Composer({
       setAttachments([]);
       return;
     }
+    const selectedCommand = selectedSlashCommandRef.current;
     const command =
-      parsedSlash === null
-        ? undefined
-        : slashCommands.find((cmd) => cmd.name === parsedSlash.name);
-    const prompt =
-      parsedSlash !== null && command !== undefined
+      selectedCommand !== null && commandMatchesText(selectedCommand, text)
+        ? selectedCommand
+        : parsedSlash === null
+          ? undefined
+          : slashCommands.find((cmd) => cmd.name === parsedSlash.name);
+    const directNativeSkill = command?.source === 'native_skill';
+    const prompt = directNativeSkill
+      ? parsedSlash === null
+        ? text.trim()
+        : expandSlashTemplate(command.template, parsedSlash.args)
+      : parsedSlash !== null && command !== undefined
         ? expandSlashTemplate(command.template, parsedSlash.args)
         : text;
     // Keep expanded provider instructions out of the transcript. The original slash
@@ -927,6 +1116,7 @@ export function Composer({
       displayPrompt,
     );
     setText('');
+    selectedSlashCommandRef.current = null;
     setAttachments([]);
   }
 
@@ -941,7 +1131,24 @@ export function Composer({
   }
 
   function chooseSlash(command: SlashCommand): void {
-    setText(`/${command.name} `);
+    selectedSlashCommandRef.current = command;
+    setText(`${commandPrefix(command)}${command.name} `);
+  }
+
+  function chooseMention(entry: WorkspaceDirectoryEntry): void {
+    if (mention === null) return;
+    const suffix = entry.kind === 'directory' ? '/' : ' ';
+    const inserted = `@${encodeMentionPath(entry.path)}${suffix}`;
+    const nextText = `${text.slice(0, mention.start)}${inserted}${text.slice(mention.end)}`;
+    const nextCaret = mention.start + inserted.length;
+    setText(nextText);
+    setCaret(nextCaret);
+    setMentionDismissed(entry.kind !== 'directory');
+    window.requestAnimationFrame(() => {
+      const input = composerRef.current?.querySelector('textarea');
+      input?.focus();
+      input?.setSelectionRange(nextCaret, nextCaret);
+    });
   }
 
   function appendDraft(fragment: string): void {
@@ -1143,7 +1350,61 @@ export function Composer({
             </button>
           </div>
         ) : null}
-        {slashOpen ? (
+        {mentionOpen ? (
+          <div
+            className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-[360px] overflow-y-auto rounded-4 border border-border-1 bg-surface-panel shadow-4"
+            data-testid="file-mention-menu"
+            role="listbox"
+            id={mentionListboxId}
+            aria-label="Workspace files"
+          >
+            {mentionLoading || !mentionResultsReady ? (
+              <div className="px-4 py-3 text-sm text-fg-3" role="status">
+                Loading files...
+              </div>
+            ) : mentionError !== null ? (
+              <div className="px-4 py-3 text-sm text-danger" role="alert">
+                {mentionError}
+              </div>
+            ) : mentionMatches.length === 0 ? (
+              <div className="px-4 py-3 text-sm text-fg-3">
+                No matching files
+              </div>
+            ) : (
+              mentionMatches.map((entry, index) => (
+                <button
+                  key={entry.path}
+                  type="button"
+                  className={`flex w-full items-center gap-3 px-4 py-3 text-left text-sm transition-colors duration-fast ease-out ${
+                    index === mentionActive ? 'bg-bg-3' : 'hover:bg-bg-3'
+                  }`}
+                  data-testid={`file-mention-option-${entry.path}`}
+                  role="option"
+                  id={`${mentionListboxId}-option-${index}`}
+                  aria-selected={index === mentionActive}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setMentionActive(index)}
+                  onClick={() => chooseMention(entry)}
+                >
+                  {entry.kind === 'directory' ? (
+                    <Folder
+                      className="h-4 w-4 shrink-0 text-fg-3"
+                      aria-hidden
+                    />
+                  ) : (
+                    <FileText
+                      className="h-4 w-4 shrink-0 text-fg-3"
+                      aria-hidden
+                    />
+                  )}
+                  <span className="min-w-0 truncate text-fg-1">
+                    {entry.path}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        ) : slashOpen ? (
           <div
             className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-[360px] overflow-y-auto rounded-4 border border-border-1 bg-surface-panel shadow-4"
             data-testid="slash-menu"
@@ -1159,21 +1420,28 @@ export function Composer({
             ) : (
               slashMatches.map((command, index) => (
                 <button
-                  key={command.name}
+                  key={`${command.name}:${command.source ?? 'unknown'}:${command.provider ?? 'none'}:${command.provenance ?? 'unknown'}:${index}`}
                   type="button"
                   className={`flex w-full items-baseline px-4 py-3 text-left transition-colors duration-fast ease-out ${
                     index === slashActive ? 'bg-bg-3' : 'hover:bg-bg-3'
                   }`}
                   data-testid={`slash-command-${command.name}`}
+                  data-command-source={command.source}
+                  data-command-provider={command.provider}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => chooseSlash(command)}
                 >
                   <span className="min-w-[120px] text-xs font-semibold text-fg-1">
-                    <span className="font-mono font-normal text-fg-3">/</span>
+                    <span className="font-mono font-normal text-fg-3">
+                      {commandPrefix(command)}
+                    </span>
                     {command.name}
                   </span>
                   <span className="ml-4 truncate text-[11px] text-fg-3">
                     {commandDescription(command)}
+                    {commandOrigin(command)
+                      ? ` · ${commandOrigin(command)}`
+                      : ''}
                   </span>
                 </button>
               ))
@@ -1209,8 +1477,71 @@ export function Composer({
             value={text}
             disabled={disabled}
             data-testid="composer-input"
-            onChange={(e) => setText(e.target.value)}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls={mentionListboxId}
+            aria-expanded={mentionOpen}
+            aria-activedescendant={
+              mentionOpen && mentionMatches[mentionActive] !== undefined
+                ? `${mentionListboxId}-option-${mentionActive}`
+                : undefined
+            }
+            onChange={(e) => {
+              if (
+                selectedSlashCommandRef.current !== null &&
+                !commandMatchesText(
+                  selectedSlashCommandRef.current,
+                  e.target.value,
+                )
+              ) {
+                selectedSlashCommandRef.current = null;
+              }
+              setText(e.target.value);
+              setCaret(e.target.selectionStart ?? e.target.value.length);
+              setMentionDismissed(false);
+            }}
+            onSelect={(e) => {
+              setCaret(e.currentTarget.selectionStart ?? text.length);
+              setMentionDismissed(false);
+            }}
             onKeyDown={(e) => {
+              if (mentionOpen) {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setMentionActive((previous) =>
+                    mentionMatches.length === 0
+                      ? 0
+                      : (previous + 1) % mentionMatches.length,
+                  );
+                  return;
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setMentionActive((previous) =>
+                    mentionMatches.length === 0
+                      ? 0
+                      : (previous - 1 + mentionMatches.length) %
+                        mentionMatches.length,
+                  );
+                  return;
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  if (mentionMatches[mentionActive] !== undefined) {
+                    e.preventDefault();
+                    chooseMention(mentionMatches[mentionActive]);
+                    return;
+                  }
+                  if (mentionLoading || !mentionResultsReady) {
+                    e.preventDefault();
+                    return;
+                  }
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setMentionDismissed(true);
+                  return;
+                }
+              }
               if (slashOpen) {
                 if (e.key === 'ArrowDown') {
                   e.preventDefault();

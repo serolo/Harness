@@ -41,6 +41,9 @@ demand), without ever bypassing the `HarnessSupervisor`. One `TaskScheduler` is 
   output to whichever ordinary chat happened to be active.
 - **Task execution settings are snapshotted.** Model, harness override, attachments, mode, and
   reasoning effort are persisted on the task and copied into `StartTurnOpts` when it fires.
+- **Turn preparation is shared.** Ordinary scheduled turns go through `TurnPreparationService`, so
+  project-scoped settings and knowledge policy match manual turns while the provider session stays
+  fresh. A preparation/start failure must discard private knowledge-MCP trace state.
 
 ## Testing
 `scheduler.test.ts` uses a real `ScheduledTasksRepo` over a temp DB + a fake supervisor (records

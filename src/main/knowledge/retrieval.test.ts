@@ -111,6 +111,7 @@ describe('MCP-capable progressive knowledge setup', () => {
       expect(privateConfig).toMatchObject({
         projectId,
         root: canonicalRoot,
+        searchEnabled: true,
         maxContextTokens: 4_000,
       });
       expect(prepared.server.name).toBe('harness-project-knowledge');
@@ -123,6 +124,71 @@ describe('MCP-capable progressive knowledge setup', () => {
     expect(usesKnowledgeMcp('claude_code')).toBe(true);
     expect(usesKnowledgeMcp('codex')).toBe(true);
     expect(usesKnowledgeMcp('cursor')).toBe(false);
+  });
+
+  it('keeps only fixed gateway failure metadata when consuming a private trace', async () => {
+    const prepared = prepareMcpTurnKnowledge(
+      'project-mcp',
+      'project-mcp',
+      knowledgeConfig,
+      4_000,
+    );
+    await writeFile(
+      prepared.trace.filePath,
+      `${JSON.stringify({
+        kind: 'knowledge_status',
+        status: 'failed',
+        provider: 'qmd',
+        reason: 'gateway',
+        message: '/private/path with a secret',
+      })}\n`,
+      'utf8',
+    );
+
+    const events = consumeKnowledgeTrace(prepared.trace);
+
+    expect(events).toEqual([
+      {
+        kind: 'knowledge_status',
+        status: 'failed',
+        provider: 'qmd',
+        reason: 'gateway',
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain('/private/path');
+  });
+
+  it('keeps a bounded normalized search phrase for transcript visibility', async () => {
+    const prepared = prepareMcpTurnKnowledge(
+      'project-mcp',
+      'project-mcp',
+      knowledgeConfig,
+      4_000,
+    );
+    await writeFile(
+      prepared.trace.filePath,
+      `${JSON.stringify({
+        kind: 'knowledge_retrieval',
+        operation: 'search',
+        provider: 'qmd',
+        contextTokens: 19,
+        resultCount: 0,
+        query: `  ProfileHub\nPower BI   ${'x'.repeat(300)}  `,
+      })}\n`,
+      'utf8',
+    );
+
+    const events = consumeKnowledgeTrace(prepared.trace);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: 'knowledge_retrieval',
+      operation: 'search',
+      query: expect.stringMatching(/^ProfileHub Power BI x+$/),
+    });
+    expect(
+      events[0]?.kind === 'knowledge_retrieval' ? events[0].query?.length : 0,
+    ).toBe(240);
   });
 });
 

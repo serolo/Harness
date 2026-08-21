@@ -14,6 +14,14 @@ export interface SlashCommand {
   template: string;
   /** Optional one-line description for the autocomplete menu. */
   description?: string;
+  /** What this entry invokes; prevents prompts and provider skills from looking identical. APPEND-ONLY. */
+  source?: 'configured_prompt' | 'native_command' | 'native_skill' | 'builtin';
+  /** Provider that owns a native command or skill. APPEND-ONLY. */
+  provider?: 'claude_code' | 'codex';
+  /** Scope where the entry was discovered, without exposing its filesystem path. APPEND-ONLY. */
+  provenance?: 'workspace' | 'repository' | 'user' | 'admin' | 'app';
+  /** Provider-native explicit invocation prefix. APPEND-ONLY. */
+  invocation?: 'slash' | 'dollar';
 }
 
 /** A parsed slash input: the command `name` and any trailing free-text `args`. */

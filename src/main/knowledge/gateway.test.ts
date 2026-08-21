@@ -47,6 +47,7 @@ function gateway(
   return new ProjectKnowledgeGateway({
     projectId: 'project-a',
     root: projectRoot,
+    searchEnabled: true,
     provider: 'basic',
     maxResults: 10,
     maxContextTokens: 4_000,
@@ -56,6 +57,28 @@ function gateway(
 }
 
 describe('ProjectKnowledgeGateway search and confinement', () => {
+  it('rejects search before touching providers or the filesystem when disabled', async () => {
+    const search = vi.fn();
+    const subject = gateway({
+      root: join(tempRoot, 'missing-root'),
+      searchEnabled: false,
+      provider: 'qmd',
+      qmd: { search },
+    });
+    const result = await subject.searchProjectKnowledge('payments');
+
+    expect(result).toEqual({
+      content: [
+        { type: 'text', text: 'Project knowledge search is disabled.' },
+      ],
+      isError: true,
+    });
+    expect(search).not.toHaveBeenCalled();
+    expect(subject.trace()).toEqual([
+      { status: 'failed', provider: 'none', reason: 'gateway' },
+    ]);
+  });
+
   it('returns only relevant canonical pages and excludes reserved catalog/log files', async () => {
     await page(
       projectRoot,
@@ -312,7 +335,9 @@ describe('ProjectKnowledgeGateway bounded reads and fallback', () => {
       expect(result.isError, `${startLine}-${endLine}`).toBe(true);
     }
     expect(
-      subject.trace().filter((entry) => entry.operation === 'read'),
+      subject
+        .trace()
+        .filter((entry) => 'operation' in entry && entry.operation === 'read'),
     ).toEqual([]);
   });
 
@@ -336,7 +361,9 @@ describe('ProjectKnowledgeGateway bounded reads and fallback', () => {
     const second = await subject.readProjectKnowledge('components/beta.md');
     const exhausted = await subject.readProjectKnowledge('components/alpha.md');
     const trace = subject.trace();
-    const reads = trace.filter((entry) => entry.operation === 'read');
+    const reads = trace.filter(
+      (entry) => 'operation' in entry && entry.operation === 'read',
+    );
     const expectedSearchTokens = Math.ceil(
       JSON.stringify(searchResult).length / 4,
     );
@@ -351,7 +378,11 @@ describe('ProjectKnowledgeGateway bounded reads and fallback', () => {
     expect(payload(second).truncated).toBe(true);
     expect(reads).toHaveLength(2);
     expect(
-      trace.reduce((total, entry) => total + entry.contextTokens, 0),
+      trace.reduce(
+        (total, entry) =>
+          total + ('contextTokens' in entry ? entry.contextTokens : 0),
+        0,
+      ),
     ).toBeLessThanOrEqual(4_000);
     expect(reads[1]).toMatchObject({
       path: 'components/beta.md',
@@ -386,13 +417,20 @@ describe('ProjectKnowledgeGateway bounded reads and fallback', () => {
     });
     expect(read.isError).not.toBe(true);
     const trace = subject.trace();
-    expect(trace[0]).toMatchObject({
+    expect(trace[0]).toEqual({
+      status: 'fallback',
+      provider: 'basic',
+      reason: 'gateway',
+    });
+    expect(trace[1]).toMatchObject({
       operation: 'search',
       provider: 'basic',
       resultCount: 1,
     });
-    expect(trace[0]?.contextTokens).toBeGreaterThan(0);
-    expect(trace[1]).toMatchObject({
+    expect(
+      trace[1] && 'contextTokens' in trace[1] ? trace[1].contextTokens : 0,
+    ).toBeGreaterThan(0);
+    expect(trace[2]).toMatchObject({
       operation: 'read',
       provider: 'basic',
       path: 'operations/deploy.md',

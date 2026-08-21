@@ -224,6 +224,7 @@ export interface AgentRunsTable {
   created_at: number;
   started_at: number | null;
   ended_at: number | null;
+  coordinator_skill_usage_json: string; // migration 0019; agent-reported, not verified cognition
 }
 
 /** One direct child delegated by a coordinator (migration 0015). */
@@ -248,6 +249,7 @@ export interface AgentDispatchesTable {
   created_at: number;
   started_at: number | null;
   ended_at: number | null;
+  skill_usage_json: string; // migration 0019; agent-reported, not verified cognition
   debate_stage: 'partner' | 'critique' | null;
   debate_round: number | null;
 }

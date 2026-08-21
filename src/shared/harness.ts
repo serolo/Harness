@@ -61,6 +61,10 @@ export interface StartTurnOpts {
    * row, never passed to a CLI. Omitted leaves the turn unowned. APPEND-ONLY.
    */
   contextId?: string;
+  /** Main-process knowledge outcome seed; converted into a persisted status event. APPEND-ONLY. */
+  knowledgeStatus?: KnowledgeTurnStatusEvent;
+  /** Exact meta-skill revisions injected into this internal turn. APPEND-ONLY. */
+  metaSkills?: { slug: string; digest: string }[];
 }
 
 export interface TurnHandle {
@@ -125,7 +129,33 @@ export type AgentEvent =
       resultCount?: number;
       path?: string;
       truncated?: boolean;
+      /** Bounded search phrase shown in the transcript so separate attempts are distinguishable. APPEND-ONLY. */
+      query?: string;
+    }
+  /** Sanitized turn-level knowledge availability/usage outcome. APPEND-ONLY. */
+  | KnowledgeTurnStatusEvent
+  | {
+      /** Deterministic record of meta-skill revisions made available to a turn. APPEND-ONLY. */
+      kind: 'meta_skill_access';
+      skills: { slug: string; digest: string }[];
     };
+
+export type KnowledgeTurnStatus =
+  | 'not_configured'
+  | 'prepared'
+  | 'searched'
+  | 'read'
+  | 'no_results'
+  | 'unused'
+  | 'fallback'
+  | 'failed';
+
+export interface KnowledgeTurnStatusEvent {
+  kind: 'knowledge_status';
+  status: KnowledgeTurnStatus;
+  provider?: 'qmd' | 'basic' | 'none';
+  reason?: 'disabled' | 'initialization' | 'selection' | 'gateway' | 'unused';
+}
 
 /** Provider-neutral shape used by Claude Code and Codex question prompts. */
 export interface AgentQuestion {

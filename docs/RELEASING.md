@@ -5,8 +5,8 @@ Production releases are signed and notarized macOS arm64 and x64 builds publishe
 promotes the draft only after inspecting and smoke-testing it. Never use the unsigned
 `npm run package` output as a production release.
 
-The `App Bundle` workflow also uses the release signing configuration and fails closed when Apple
-credentials are unavailable. Its downloadable artifact is explicitly named
+The manual-only `App Bundle` workflow also uses the release signing configuration and fails closed
+when Apple credentials are unavailable. Its downloadable artifact is explicitly named
 `Harness-signed-notarized-macOS-<arch>-<sha>`. Do not distribute artifacts from older workflow runs named
 `Harness-macOS-<sha>`; those DMGs were unsigned development packages and Gatekeeper may report them
 as damaged.

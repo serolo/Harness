@@ -6,6 +6,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   render,
+  cleanup,
   screen,
   fireEvent,
   waitFor,
@@ -89,6 +90,9 @@ const READY: OnboardingState = {
 };
 
 afterEach(() => {
+  // Vitest stacks file hooks ahead of the global Testing Library cleanup. Unmount
+  // while the preload stub still exists so passive IPC effects cannot race teardown.
+  cleanup();
   vi.restoreAllMocks();
   delete (window as unknown as { api?: unknown }).api;
 });

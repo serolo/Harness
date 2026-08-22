@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  cleanup,
+  screen,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createQueryClient } from '@renderer/app/providers';
 import { Sidebar } from './Sidebar';
@@ -120,6 +126,8 @@ function resetStore(): void {
 beforeEach(resetStore);
 
 afterEach(() => {
+  // Keep the IPC bridge alive until async dialog/sidebar effects have unmounted.
+  cleanup();
   vi.restoreAllMocks();
   delete (window as unknown as { api?: unknown }).api;
   resetStore();

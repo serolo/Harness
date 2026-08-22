@@ -74,6 +74,7 @@ const TRUSTED_RELEASE_METADATA_KEYS = new Set([
   'provider',
   'owner',
   'repo',
+  'releaseType',
   'updaterCacheDirName',
 ]);
 const SAFE_UPDATER_CACHE_DIR_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -107,10 +108,12 @@ export function isTrustedReleaseMetadata(metadata: string): boolean {
   }
 
   const updaterCacheDirName = values.get('updaterCacheDirName');
+  const releaseType = values.get('releaseType');
   return (
     values.get('provider') === 'github' &&
     values.get('owner') === 'serolo' &&
     values.get('repo') === 'Harness' &&
+    (releaseType === undefined || releaseType === 'draft') &&
     (updaterCacheDirName === undefined ||
       SAFE_UPDATER_CACHE_DIR_NAME.test(updaterCacheDirName))
   );

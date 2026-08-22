@@ -1,13 +1,13 @@
 # Releasing Harness for macOS
 
-Production releases are signed and notarized macOS arm64 builds published to the public
+Production releases are signed and notarized macOS arm64 and x64 builds published to the public
 `serolo/Harness` GitHub repository. The workflow uploads assets to a **draft** release; a human
 promotes the draft only after inspecting and smoke-testing it. Never use the unsigned
 `npm run package` output as a production release.
 
 The `App Bundle` workflow also uses the release signing configuration and fails closed when Apple
 credentials are unavailable. Its downloadable artifact is explicitly named
-`Harness-signed-notarized-macOS-<sha>`. Do not distribute artifacts from older workflow runs named
+`Harness-signed-notarized-macOS-<arch>-<sha>`. Do not distribute artifacts from older workflow runs named
 `Harness-macOS-<sha>`; those DMGs were unsigned development packages and Gatekeeper may report them
 as damaged.
 
@@ -20,8 +20,9 @@ as damaged.
 - `APPLE_API_ISSUER`: App Store Connect issuer UUID
 - `APPLE_TEAM_ID`: Apple Developer team ID
 
-`GITHUB_TOKEN` is supplied by GitHub Actions and is scoped to `contents: write` only for the release
-job. None of these values belongs in source, logs, release notes, packaged resources, renderer
+`GITHUB_TOKEN` is supplied by GitHub Actions and is scoped to `contents: write` only for the final
+release publishing job. The architecture build jobs retain read-only repository access. None of
+these values belongs in source, logs, release notes, packaged resources, renderer
 payloads, or local `.env` files.
 
 Rotate a certificate or API key by creating its replacement first, updating the corresponding
@@ -38,19 +39,21 @@ GitHub draft/upload step.
 3. Commit the version change, then create an annotated tag whose value exactly matches
    `v${package.version}`. Never move or reuse a published tag.
 4. Push the commit and tag. The tag-gated `Release` workflow verifies the tag points at the checked
-   out commit, rebuilds native modules, runs the full gate, and builds/signs/notarizes the arm64
-   candidate with publishing disabled. It verifies signatures, Gatekeeper assessment, stapling,
-   update metadata, native modules, and artifact hashes before a final token-scoped step creates the
-   draft and uploads those exact verified files.
+   out commit, rebuilds native modules, and runs the full gate. It then builds, signs, and notarizes
+   arm64 and x64 candidates on matching native runners with publishing disabled. Each build verifies
+   signatures, Gatekeeper assessment, stapling, update metadata, native-module architecture, and
+   artifact hashes. A final token-scoped job verifies both handoffs, combines their updater metadata,
+   creates the draft, and uploads those exact verified files.
 
 The workflow may also be started manually with an **existing** `v`-prefixed tag. Manual dispatch is
 not an escape hatch: the same tag/version, signing, notarization, metadata, and draft checks apply.
 
 ## Inspect and promote the draft
 
-Before publishing, confirm the draft contains at least the `.dmg`, `.zip`, `.blockmap`, and
-`latest-mac.yml` assets. The zip is required for Squirrel.Mac update metadata. Download the candidate
-to a clean Apple-silicon Mac and confirm:
+Before publishing, confirm the draft contains both architecture-specific `.dmg` and `.zip` files,
+their four `.blockmap` files, and one combined `latest-mac.yml` (nine assets total). The zip files
+are required for Squirrel.Mac update metadata. Download the arm64 candidate to a clean Apple-silicon
+Mac and the x64 candidate to a clean Intel Mac, then confirm on each:
 
 - Gatekeeper accepts the app and the notarization ticket is stapled.
 - Harness launches and both `better-sqlite3` and `node-pty` paths work.

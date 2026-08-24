@@ -6,7 +6,11 @@ import { tmpdir } from 'node:os';
 import {
   builtinAgentsDir,
   allocateProjectDirectoryName,
+  claudeCliPath,
+  codexCliPath,
+  codexTargetTriple,
   defaultRootDirectory,
+  githubCliPath,
   projectDir,
   projectDirectoryBaseName,
   rootDirectory,
@@ -71,5 +75,23 @@ describe('project directory names', () => {
     expect(allocateProjectDirectoryName('x'.repeat(80), ['x'.repeat(63)])).toBe(
       `${'x'.repeat(61)}-2`,
     );
+  });
+});
+
+describe('managed cross-platform executables', () => {
+  it('uses platform-native filenames and Codex vendor triples', () => {
+    const data = mkdtempSync(join(tmpdir(), 'harness-paths-tools-'));
+    setUserDataRoot(data);
+
+    expect(githubCliPath('win32')).toBe(join(data, 'tools', 'bin', 'gh.exe'));
+    expect(claudeCliPath('linux')).toBe(join(data, 'tools', 'bin', 'claude'));
+    expect(codexCliPath('x64', 'linux')).toContain(
+      join('vendor', 'x86_64-unknown-linux-musl', 'bin', 'codex'),
+    );
+    expect(codexCliPath('x64', 'win32')).toContain(
+      join('vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'),
+    );
+    expect(codexTargetTriple('darwin', 'arm64')).toBe('aarch64-apple-darwin');
+    expect(() => codexTargetTriple('linux', 'arm64')).toThrow(/unavailable/);
   });
 });

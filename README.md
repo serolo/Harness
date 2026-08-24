@@ -1,6 +1,6 @@
 # Harness
 
-Harness is a macOS desktop app for running multiple coding agents against one repository. It manages
+Harness is a cross-platform desktop app for running multiple coding agents against one repository. It manages
 git workspaces, agent conversations, terminals, diffs, checkpoints, checks, and integration workflows
 from a single Electron application.
 
@@ -15,10 +15,15 @@ The implementation is TypeScript end to end:
 
 ## Requirements
 
-- macOS
+- macOS 13 or newer (Apple silicon or Intel)
+- Windows 10/11 x64
+- A modern x64 Linux distribution (AppImage or Debian package)
 - Node.js 22 or newer
 - npm
 - system `git`
+
+Claude Code on Windows also requires Git for Windows. If Git Bash is installed outside its default
+location, set `CLAUDE_CODE_GIT_BASH_PATH` to its `bash.exe` path.
 
 Native Electron modules are rebuilt after install through the `postinstall` script.
 
@@ -40,7 +45,10 @@ npm run rebuild
 ```sh
 npm run dev       # Start the Electron/Vite development app
 npm run build     # Build main, preload, and renderer targets
-npm run package   # Create macOS dmg/zip packages with electron-builder
+npm run package   # Package for the current host OS with electron-builder
+npm run release:mac    # Create signed/notarized macOS dmg/zip release assets
+npm run release:win    # Create a signed Windows NSIS installer
+npm run release:linux  # Create Linux AppImage and deb packages
 npm run test      # Run Vitest through the Electron test harness
 npm run test:e2e  # Run Playwright Electron tests
 npm run check     # Type-check, lint, test, and build

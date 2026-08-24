@@ -1648,7 +1648,7 @@ describe('ChatPanel reconstruction', () => {
     );
 
     const reveal = await screen.findByRole('button', {
-      name: `Reveal ${path} in Finder`,
+      name: `Reveal ${path} in file manager`,
     });
     fireEvent.click(reveal);
 
@@ -1732,7 +1732,7 @@ describe('ChatPanel reconstruction', () => {
 
     fireEvent.click(
       await screen.findByRole('button', {
-        name: `Reveal ${path} in Finder`,
+        name: `Reveal ${path} in file manager`,
       }),
     );
 
@@ -1756,7 +1756,7 @@ describe('ChatPanel reconstruction', () => {
 
     fireEvent.click(
       await screen.findByRole('button', {
-        name: `Reveal ${path} in Finder`,
+        name: `Reveal ${path} in file manager`,
       }),
     );
     await waitFor(() =>

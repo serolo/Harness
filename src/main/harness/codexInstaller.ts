@@ -4,7 +4,13 @@ import { dirname, join } from 'node:path';
 import { execa } from 'execa';
 
 import { AppError } from '../error';
-import { codexCliPath, codexInstallDir, toolsDir } from '../paths';
+import {
+  codexCliPath,
+  codexInstallDir,
+  codexTargetTriple,
+  toolsDir,
+} from '../paths';
+import { executableName } from '../process/platform';
 import { downloadVerified } from '../integrations/verifiedDownload';
 
 const CODEX_VERSION = '0.145.0';
@@ -16,18 +22,30 @@ export interface CodexCliAsset {
   targetTriple: string;
 }
 
-const CODEX_ASSETS: Record<'x64' | 'arm64', CodexCliAsset> = {
-  x64: {
+const CODEX_ASSETS: Record<string, CodexCliAsset> = {
+  'darwin-x64': {
     url: `https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-darwin-x64.tgz`,
     sha512:
       'FCYzVKCa9VoLtg9gVyzKpqylonfgZrfcWZN6HsXAZPeuo8CukdMqdgTUOhDn2V6h3MbqS0z6VqQVKUllN/yKhA==',
     targetTriple: 'x86_64-apple-darwin',
   },
-  arm64: {
+  'darwin-arm64': {
     url: `https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-darwin-arm64.tgz`,
     sha512:
       'h6aQ0UxnaP8mIM/9/qPAH9MNkRliJo88toq1T36IxNM2L5JSU0TFamu+MZn7YkFgDsrp0RfiI+97Tm8AVVxqtA==',
     targetTriple: 'aarch64-apple-darwin',
+  },
+  'linux-x64': {
+    url: `https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-x64.tgz`,
+    sha512:
+      'u8w8LLv3DvsfrDCoswLIemZ0SoNEXyi511WsfFsSiYUazk9qMsB/NtU8N9vhAfN7mZAxLFoMex4v66JjHuZWwA==',
+    targetTriple: 'x86_64-unknown-linux-musl',
+  },
+  'win32-x64': {
+    url: `https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-win32-x64.tgz`,
+    sha512:
+      'u0h9lk094CaXRSqE34SBW2dRaQTPa6fASXqehczWH9QdsU62mBsiAgAdp6tCG4i+YzPmmhjD8FdXNnYGNmwuMg==',
+    targetTriple: 'x86_64-pc-windows-msvc',
   },
 };
 
@@ -46,13 +64,21 @@ export function codexCliAsset(
   platform: NodeJS.Platform,
   arch: string,
 ): CodexCliAsset {
-  if (platform !== 'darwin' || (arch !== 'x64' && arch !== 'arm64')) {
+  const asset = CODEX_ASSETS[`${platform}-${arch}`];
+  if (!asset) {
     throw new AppError(
       'integration',
       `Automatic Codex installation is unavailable for ${platform}/${arch}`,
     );
   }
-  return CODEX_ASSETS[arch];
+  // Keep path resolution and downloaded archive contracts in lockstep.
+  if (asset.targetTriple !== codexTargetTriple(platform, arch)) {
+    throw new AppError(
+      'internal',
+      'Codex platform asset configuration is invalid',
+    );
+  }
+  return asset;
 }
 
 export async function installCodexCli(
@@ -89,16 +115,23 @@ export async function installCodexCli(
       'vendor',
       asset.targetTriple,
       'bin',
-      'codex',
+      executableName('codex', platform),
     );
-    await chmod(extractedBinary, 0o755);
+    if (platform !== 'win32') await chmod(extractedBinary, 0o755);
     await mkdir(dirname(targetDir), { recursive: true });
     await rm(targetDir, { recursive: true, force: true });
     await rename(extractDir, targetDir);
     progress('Codex is ready. Starting sign-in…');
     return options.targetDir
-      ? join(targetDir, 'package', 'vendor', asset.targetTriple, 'bin', 'codex')
-      : codexCliPath(arch);
+      ? join(
+          targetDir,
+          'package',
+          'vendor',
+          asset.targetTriple,
+          'bin',
+          executableName('codex', platform),
+        )
+      : codexCliPath(arch, platform);
   } catch (error) {
     if (error instanceof AppError) throw error;
     throw new AppError(
@@ -116,7 +149,7 @@ async function extractTarball(
   archivePath: string,
   destination: string,
 ): Promise<void> {
-  await execa('/usr/bin/tar', ['-xzf', archivePath, '-C', destination], {
+  await execa('tar', ['-xzf', archivePath, '-C', destination], {
     timeout: 60_000,
   });
 }

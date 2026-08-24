@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -25,22 +32,25 @@ async function tempRoot(): Promise<string> {
   return root;
 }
 
-function assetFor(binary: Buffer): ClaudeCliAsset {
+function assetFor(archive: Buffer): ClaudeCliAsset {
   return {
-    url: 'https://example.test/claude',
-    sha256: createHash('sha256').update(binary).digest('hex'),
+    url: 'https://example.test/claude.tgz',
+    sha512: createHash('sha512').update(archive).digest('base64'),
+    binaryName: 'claude',
   };
 }
 
 describe('claudeCliAsset', () => {
-  it('selects pinned Intel and Apple Silicon native binaries', () => {
-    expect(claudeCliAsset('darwin', 'x64').url).toContain('/darwin-x64/');
-    expect(claudeCliAsset('darwin', 'arm64').url).toContain('/darwin-arm64/');
+  it('selects pinned native packages for every supported platform', () => {
+    expect(claudeCliAsset('darwin', 'x64').url).toContain('darwin-x64');
+    expect(claudeCliAsset('darwin', 'arm64').url).toContain('darwin-arm64');
+    expect(claudeCliAsset('linux', 'x64').binaryName).toBe('claude');
+    expect(claudeCliAsset('win32', 'x64').binaryName).toBe('claude.exe');
   });
 
   it('rejects unsupported platforms', () => {
-    expect(() => claudeCliAsset('win32', 'x64')).toThrow(
-      /unavailable for win32\/x64/,
+    expect(() => claudeCliAsset('linux', 'arm64')).toThrow(
+      /unavailable for linux\/arm64/,
     );
   });
 });
@@ -48,17 +58,24 @@ describe('claudeCliAsset', () => {
 describe('installClaudeCli', () => {
   it('verifies and atomically installs an executable', async () => {
     const root = await tempRoot();
-    const binary = Buffer.from('#!/bin/sh\necho claude\n');
+    const archive = Buffer.from('verified archive');
     const targetPath = join(root, 'tools', 'bin', 'claude');
     const progress: string[] = [];
 
     await installClaudeCli({
       platform: 'darwin',
       arch: 'arm64',
-      asset: assetFor(binary),
+      asset: assetFor(archive),
       targetPath,
       tempRoot: root,
-      fetchImpl: vi.fn(async () => new Response(binary)) as typeof fetch,
+      fetchImpl: vi.fn(async () => new Response(archive)) as typeof fetch,
+      extract: async (_archivePath, destination) => {
+        await mkdir(join(destination, 'package'), { recursive: true });
+        await writeFile(
+          join(destination, 'package', 'claude'),
+          '#!/bin/sh\necho claude\n',
+        );
+      },
       onProgress: (message) => progress.push(message),
     });
 
@@ -81,13 +98,14 @@ describe('installClaudeCli', () => {
         arch: 'arm64',
         asset: {
           ...assetFor(Buffer.from('expected')),
-          sha256: '0'.repeat(64),
+          sha512: Buffer.alloc(64).toString('base64'),
         },
         targetPath,
         tempRoot: root,
         fetchImpl: vi.fn(
           async () => new Response(Buffer.from('downloaded')),
         ) as typeof fetch,
+        extract: vi.fn(async () => undefined),
       }),
     ).rejects.toMatchObject({ code: 'integration' });
 

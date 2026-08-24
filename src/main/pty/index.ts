@@ -20,6 +20,7 @@ import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
 import type { ProcessRegistry } from '../process';
 import { childProcessEnv } from '../process/childEnv';
+import { defaultTerminalShell } from '../process/platform';
 
 /** Options for spawning a PTY (spec §5.2 — env includes PORT/APP_PORT + ws vars). */
 export interface PtySpawnOptions {
@@ -105,7 +106,7 @@ export class PtyService {
     sink: StreamSink<PtyChunk>,
   ): Promise<string> {
     const nodePty = await loadNodePty();
-    const shell = options.shell ?? process.env['SHELL'] ?? '/bin/zsh';
+    const shell = options.shell ?? defaultTerminalShell();
     const args = options.args ?? [];
     const env = childProcessEnv(options.env);
     const id = uuidv7();

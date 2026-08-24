@@ -1,5 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -72,7 +74,10 @@ let brokers: ControlBroker[];
 async function createPeer(
   respond: (socket: Socket, request: BrokerRequest) => void,
 ): Promise<TestPeer> {
-  const socketPath = join(root, `peer-${peers.length}.sock`);
+  const socketPath =
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\harness-proxy-${process.pid}-${peers.length}-${randomUUID()}`
+      : join(root, `peer-${peers.length}.sock`);
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -122,7 +127,11 @@ async function startBroker(handler = fakeHandler()): Promise<{
 }
 
 beforeEach(() => {
-  root = mkdtempSync('/tmp/harness-proxy-client-');
+  root = mkdtempSync(
+    process.platform === 'win32'
+      ? join(tmpdir(), 'harness-proxy-client-')
+      : '/tmp/harness-proxy-client-',
+  );
   peers = [];
   brokers = [];
   setUserDataRoot(root);

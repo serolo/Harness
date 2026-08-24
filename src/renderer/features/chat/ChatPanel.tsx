@@ -251,7 +251,7 @@ function FileViewer({
               path={file.path}
               label={file.path}
               onOpenFile={revealFile}
-              actionLabel={`Reveal ${file.path} in Finder`}
+              actionLabel={`Reveal ${file.path} in file manager`}
             />
             {revealError ? (
               <p className="mt-1 truncate text-xs text-danger" role="alert">
@@ -383,7 +383,8 @@ export function ChatPanel({
   const lastActiveChatTabByWorkspace = useRef(new Map<string, string>());
   const selectChatTab = useCallback(
     (id: string): void => {
-      if (workspaceId) lastActiveChatTabByWorkspace.current.set(workspaceId, id);
+      if (workspaceId)
+        lastActiveChatTabByWorkspace.current.set(workspaceId, id);
       setActiveTab(id);
     },
     [workspaceId],
@@ -415,7 +416,8 @@ export function ChatPanel({
       .then((records) => {
         if (!active) return;
         const manual = records.map(toChatContext);
-        const remembered = lastActiveChatTabByWorkspace.current.get(workspaceId);
+        const remembered =
+          lastActiveChatTabByWorkspace.current.get(workspaceId);
         const restored = manual.some((context) => context.id === remembered)
           ? remembered!
           : (manual[0]?.id ?? null);
@@ -793,7 +795,10 @@ export function ChatPanel({
     const fallbackId =
       remaining[Math.min(closingIndex, remaining.length - 1)]?.id ?? null;
     setChatContexts(remaining);
-    if (workspaceId && lastActiveChatTabByWorkspace.current.get(workspaceId) === id) {
+    if (
+      workspaceId &&
+      lastActiveChatTabByWorkspace.current.get(workspaceId) === id
+    ) {
       if (fallbackId) {
         lastActiveChatTabByWorkspace.current.set(workspaceId, fallbackId);
       } else {

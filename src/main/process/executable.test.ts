@@ -9,9 +9,36 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { resolveExecutable } from './executable';
+import { executableCandidates, resolveExecutable } from './executable';
 
 describe('resolveExecutable', () => {
+  it('resolves native executable suffixes on Windows', () => {
+    expect(executableCandidates('claude', 'win32')).toEqual([
+      'claude.exe',
+      'claude',
+    ]);
+    expect(executableCandidates('claude.exe', 'win32')).toEqual(['claude.exe']);
+    expect(executableCandidates('claude', 'linux')).toEqual(['claude']);
+  });
+
+  it('honors Windows Path casing and executable suffixes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harness-exe-win-'));
+    try {
+      const bin = join(dir, 'tool.exe');
+      writeFileSync(bin, 'fixture');
+      chmodSync(bin, 0o755);
+      expect(
+        resolveExecutable('tool', {
+          platform: 'win32',
+          env: { Path: dir },
+          homeDirectory: dir,
+        }),
+      ).toBe(bin);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('resolves a PATH command to an executable absolute path', () => {
     const dir = mkdtempSync(join(tmpdir(), 'harness-exe-'));
     const bin = join(dir, 'tool');

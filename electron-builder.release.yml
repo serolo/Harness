@@ -1,6 +1,6 @@
 extends: electron-builder.yml
 
-# Production releases fail closed unless a Developer ID identity is available.
+# Production macOS and Windows releases fail closed unless a signing identity is available.
 forceCodeSigning: true
 
 publish:
@@ -17,3 +17,15 @@ mac:
   notarize: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+
+# Windows releases use the same forceCodeSigning gate above. CI materializes a
+# dedicated Authenticode certificate as CSC_LINK before invoking electron-builder.
+win:
+  target:
+    - nsis
+  signAndEditExecutable: true
+
+linux:
+  target:
+    - AppImage
+    - deb

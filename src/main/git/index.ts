@@ -15,6 +15,10 @@ import { join, resolve, sep } from 'node:path';
 import { execa, type Options, type ResultPromise } from 'execa';
 
 import { AppError } from '@shared/errors';
+import {
+  preparePtyCommand,
+  type PtyCommandLaunch,
+} from '../process/pty-command';
 
 /**
  * Run the system git binary with stdio options that are safe for Electron's main
@@ -107,32 +111,34 @@ export async function gitPtyExec(
   const captureDir = await mkdtemp(join(tmpdir(), 'harness-git-pty-'));
   const stdoutPath = join(captureDir, 'stdout');
   const stderrPath = join(captureDir, 'stderr');
-  const env = {
+  const commandEnv = {
     ...stringEnv(process.env),
     ...stringEnv(options.env as Record<string, unknown> | undefined),
-    HARNESS_GIT_STDOUT: stdoutPath,
-    HARNESS_GIT_STDERR: stderrPath,
   };
+  let launch: PtyCommandLaunch;
+  try {
+    launch = await preparePtyCommand({
+      privateDirectory: captureDir,
+      command: 'git',
+      args,
+      env: commandEnv,
+      stdoutPath,
+      stderrPath,
+    });
+  } catch (error) {
+    await rm(captureDir, { recursive: true, force: true });
+    throw error;
+  }
 
   return new Promise<GitPtyResult>((resolvePromise, reject) => {
     let settled = false;
-    const proc = nodePty.spawn(
-      '/bin/zsh',
-      [
-        '-f',
-        '-c',
-        'git "$@" > "$HARNESS_GIT_STDOUT" 2> "$HARNESS_GIT_STDERR"',
-        'git',
-        ...args,
-      ],
-      {
-        name: 'xterm-color',
-        cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
-        env,
-        cols: 160,
-        rows: 40,
-      },
-    );
+    const proc = nodePty.spawn(launch.shell, launch.args, {
+      name: 'xterm-color',
+      cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
+      env: launch.env,
+      cols: 160,
+      rows: 40,
+    });
 
     const abort = (): void => {
       if (settled) return;

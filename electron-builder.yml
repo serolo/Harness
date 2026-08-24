@@ -24,7 +24,6 @@ extraResources:
     filter:
       - '**/*'
 
-# macOS only for v1 (spec §1.3).
 mac:
   icon: build/icon.png
   category: public.app-category.developer-tools
@@ -35,6 +34,26 @@ mac:
   # entitlements: build/entitlements.mac.plist
   # entitlementsInherit: build/entitlements.mac.plist
   hardenedRuntime: false
+
+win:
+  icon: build/icon.png
+  target:
+    - nsis
+  artifactName: ${productName}-${version}-windows-${arch}-setup.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  icon: build/icon.png
+  category: Development
+  maintainer: Sebastian <serolo@users.noreply.github.com>
+  vendor: Serolo
+  target:
+    - AppImage
+    - deb
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
 
 # Deep-link protocol (spec §5.8). Registered at runtime via setAsDefaultProtocolClient too.
 protocols:

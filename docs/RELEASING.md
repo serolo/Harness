@@ -1,15 +1,13 @@
-# Releasing Harness for macOS
+# Releasing Harness
 
-Production releases are signed and notarized macOS arm64 and x64 builds published to the public
-`serolo/Harness` GitHub repository. The workflow uploads assets to a **draft** release; a human
-promotes the draft only after inspecting and smoke-testing it. Never use the unsigned
+Production releases contain macOS arm64/x64, Windows x64, and Linux x64 builds published to the
+public `serolo/Harness` GitHub repository. The workflow creates a **draft** release; a human promotes
+it only after inspecting and smoke-testing the installers. Never distribute an unsigned local
 `npm run package` output as a production release.
 
-The manual-only `App Bundle` workflow also uses the release signing configuration and fails closed
-when Apple credentials are unavailable. Its downloadable artifact is explicitly named
-`Harness-signed-notarized-macOS-<arch>-<sha>`. Do not distribute artifacts from older workflow runs named
-`Harness-macOS-<sha>`; those DMGs were unsigned development packages and Gatekeeper may report them
-as damaged.
+The manual-only `App Bundle` workflow builds the same platforms without publishing a GitHub
+release. macOS and Windows jobs fail closed when signing credentials are unavailable; Linux has no
+platform-standard code-signing requirement.
 
 ## Required GitHub Actions secrets
 
@@ -19,79 +17,69 @@ as damaged.
 - `APPLE_API_KEY_ID`: App Store Connect key ID
 - `APPLE_API_ISSUER`: App Store Connect issuer UUID
 - `APPLE_TEAM_ID`: Apple Developer team ID
+- `WIN_CSC_LINK`: base64-encoded Authenticode code-signing `.pfx`
+- `WIN_CSC_KEY_PASSWORD`: password for that `.pfx`
 
-`GITHUB_TOKEN` is supplied by GitHub Actions and is scoped to `contents: write` only for the final
-release publishing job. The architecture build jobs retain read-only repository access. None of
-these values belongs in source, logs, release notes, packaged resources, renderer
-payloads, or local `.env` files.
+`GITHUB_TOKEN` is supplied by GitHub Actions and receives `contents: write` only in the final
+publishing job. Build and verification jobs have read-only repository access. Credentials must not
+appear in source, logs, release notes, packaged resources, renderer payloads, or local `.env` files.
+The workflows decode certificates under `RUNNER_TEMP`, use them only for signing, and remove them
+in an `always()` step.
 
-Rotate a certificate or API key by creating its replacement first, updating the corresponding
-GitHub secrets, proving a release candidate, and only then revoking the old credential. Record the
-rotation date and owner in the team's secret-management system. Never commit the decoded `.p12` or
-`.p8`; the workflow materializes them in `RUNNER_TEMP` with mode `0600` and removes them before the
-GitHub draft/upload step.
+Rotate credentials by installing their replacements in GitHub secrets and proving an App Bundle
+run before revoking the old credentials. Record the owner and rotation date in the team's secret
+manager.
 
 ## Prepare a release
 
-1. Choose an explicit semver version. Update `package.json` and `package-lock.json` together; the
-   release workflow rejects `0.0.0`.
+1. Choose a stable semver version and update `package.json` and `package-lock.json` together. The
+   workflow rejects `0.0.0` and prerelease versions.
 2. Run `bash ci/harness-gates.sh` and review all user-facing changes.
-3. Commit the version change, then create an annotated tag whose value exactly matches
-   `v${package.version}`. Never move or reuse a published tag.
-4. Push the commit and tag. The tag-gated `Release` workflow verifies the tag points at the checked
-   out commit, rebuilds native modules, and runs the full gate. It then builds, signs, and notarizes
-   arm64 and x64 candidates on matching native runners with publishing disabled. Each build verifies
-   signatures, Gatekeeper assessment, stapling, update metadata, native-module architecture, and
-   artifact hashes. A final token-scoped job verifies both handoffs, combines their updater metadata,
-   creates the draft, and uploads those exact verified files.
+3. Commit the version, then create an annotated tag exactly matching `v${package.version}`. Never
+   move or reuse a published tag.
+4. Push the commit and tag. The tag-triggered workflow verifies the tag/version, runs the repository
+   gate, and then builds all four release candidates on native GitHub runners.
 
-The workflow may also be started manually with an **existing** `v`-prefixed tag. Manual dispatch is
-not an escape hatch: the same tag/version, signing, notarization, metadata, and draft checks apply.
+Manual dispatch accepts an **existing** `v`-prefixed tag and applies the same validation. It is not
+an escape hatch around version, signing, notarization, architecture, or metadata checks.
 
-## Inspect and promote the draft
+Each platform job rebuilds `better-sqlite3` and `node-pty` for Electron, verifies the main executable
+and native-module architecture, checks updater metadata, hashes its handoff, and uploads a one-day
+intermediate artifact. macOS additionally verifies Developer ID signatures, Gatekeeper assessment,
+notarization, and stapling. Windows verifies Authenticode on the application and NSIS installer.
+The final job has no signing credentials: it verifies all hashes, merges macOS metadata, creates an
+empty GitHub draft, and uploads only the verified handoffs.
 
-Before publishing, confirm the draft contains both architecture-specific `.dmg` and `.zip` files,
-their four `.blockmap` files, and one combined `latest-mac.yml` (nine assets total). The zip files
-are required for Squirrel.Mac update metadata. Download the arm64 candidate to a clean Apple-silicon
-Mac and the x64 candidate to a clean Intel Mac, then confirm on each:
+## Expected draft assets
 
-- Gatekeeper accepts the app and the notarization ticket is stapled.
-- Harness launches and both `better-sqlite3` and `node-pty` paths work.
-- `Contents/Resources/app-update.yml` identifies the public `serolo/Harness` GitHub provider.
-- No signing, notarization, or GitHub credential appears in the bundle, metadata, or logs.
+The draft contains 16 files:
 
-Only after those checks should a human edit the draft release notes and choose **Publish release**.
-Stable clients ignore drafts and prereleases.
+- macOS: arm64 and x64 `.dmg`/`.zip` files, four blockmaps, and one merged `latest-mac.yml` (9)
+- Windows x64: signed NSIS `.exe`, its blockmap, and `latest.yml` (3)
+- Linux x64: `.AppImage`, AppImage blockmap, `.deb`, and `latest-linux.yml` (4)
 
-The upload step never replaces an existing asset. A retry may reuse an empty draft, but it fails if
-the tag's draft already contains assets. If an interrupted upload leaves a partial draft, inspect it,
-delete that unpublished draft in GitHub, and rerun the workflow; never delete, replace, or overwrite
-assets on a published release.
+The zip, NSIS, and AppImage assets are required by `electron-updater`; do not delete them while
+keeping their metadata. The publisher refuses to overwrite assets or append to a non-empty draft.
+If an interrupted upload leaves a partial unpublished draft, inspect and delete that draft before
+rerunning. Never replace assets on a published release.
 
-## Bootstrap and update smoke test
+## Smoke test and publish
 
-Existing `0.0.0` builds are unsigned and contain no update metadata, so they cannot discover the
-new channel. Build, inspect, and publish signed/notarized `v0.1.0`, then distribute its DMG once
-through the existing manual download path.
+Download each candidate on clean hardware or a clean VM:
 
-To prove remote updates, use a clean test profile with no irreplaceable data:
+- macOS arm64 and Intel: install the DMG, confirm Gatekeeper accepts it, and validate the stapled
+  notarization ticket.
+- Windows x64: run the NSIS installer, confirm Windows reports a valid publisher signature, and
+  launch from the installed shortcut.
+- Linux x64: run the AppImage and install the `.deb` on a Debian/Ubuntu test system.
+- On every platform, create a project/worktree, start a terminal, run a Claude/Codex turn, exercise
+  `better-sqlite3`, and confirm `app-update.yml` points to public `serolo/Harness` releases.
 
-1. Install and launch the published `v0.1.0`.
-2. Prepare, draft-check, and publish `v0.1.1`.
-3. Launch `v0.1.0`. The automatic check must stay silent while checking/downloading and open exactly
-   one modal when the download is ready.
-4. Choose **Later**. Confirm `v0.1.0` keeps running and quitting does not install the update.
-5. Use the command palette's **Check for Updates** command. Confirm it reopens the downloaded state.
-6. Choose **Restart and update**. Confirm Harness exits, installs, relaunches as `v0.1.1`, and
-   preserves the clean profile's projects, workspaces, and settings.
-7. Exercise offline, no-update, GitHub outage, corrupt metadata, and unsigned local-build paths.
-   Automatic failures stay silent; a manual check remains recoverable.
+Then publish the draft and test an update from the preceding stable version. Automatic checks should
+stay silent until a download is ready; **Later** must keep the current version running, and
+**Restart and update** must install, relaunch, and preserve projects, workspaces, and settings.
+Exercise offline, no-update, corrupt-metadata, and unsigned-development-build paths too. Record the
+OS versions, architectures, application versions, checksums, and results in the release notes.
 
-Record the tested versions, macOS/hardware version, artifact checksums, and results in the release.
-
-## Rollback
-
-GitHub release versions are forward-only. Never replace assets on a published tag, move the tag, or
-publish a lower version. Revert the faulty code, increment to a higher patch version, run the entire
-release process again, and publish that corrective release. If impact warrants it, leave the bad
-release documented and clearly direct users to the higher fixed version.
+Stable clients ignore drafts and prereleases. Releases are forward-only: fix a bad release by
+reverting the code, incrementing to a higher patch version, and running the complete process again.

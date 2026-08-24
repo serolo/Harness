@@ -339,13 +339,20 @@ describe('Claude Code adapter — PTY JSON stream fallback', () => {
     const rec = recordingSink();
 
     const handlePromise = harness.startTurn(opts([]), rec.sink);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(fake.spawnOptions()).toBeDefined());
 
-    expect(fake.spawnOptions()?.shell).toBe('/bin/zsh');
-    expect(
-      fake.spawnOptions()?.args?.some((arg) => arg.includes('claude')),
-    ).toBe(true);
-    expect(fake.spawnOptions()?.args).toContain('--output-format');
+    expect(fake.spawnOptions()?.shell).toBe(process.execPath);
+    expect(fake.spawnOptions()?.args).toEqual([
+      expect.stringMatching(/pty-command-launcher\.js$/),
+    ]);
+    const launchConfigPath =
+      fake.spawnOptions()?.env?.['HARNESS_PTY_COMMAND_CONFIG'];
+    expect(launchConfigPath).toBeDefined();
+    const launchConfig = JSON.parse(
+      readFileSync(launchConfigPath!, 'utf8'),
+    ) as { command: string; args: string[] };
+    expect(launchConfig.command).toMatch(/claude(?:\.exe)?$/);
+    expect(launchConfig.args).toContain('--output-format');
 
     appendCapturedStdout(
       fake,
@@ -377,7 +384,7 @@ describe('Claude Code adapter — PTY JSON stream fallback', () => {
     const rec = recordingSink();
 
     const handlePromise = harness.startTurn(opts([]), rec.sink);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(fake.spawnOptions()).toBeDefined());
 
     appendCapturedStdout(
       fake,
@@ -402,7 +409,7 @@ describe('Claude Code adapter — PTY JSON stream fallback', () => {
     const rec = recordingSink();
 
     const handlePromise = harness.startTurn(opts([]), rec.sink);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(fake.spawnOptions()).toBeDefined());
 
     appendCapturedStdout(
       fake,

@@ -893,7 +893,15 @@ async function nativeApplicationIcon(
 }
 
 async function listInstalledWorkspaceApps(): Promise<WorkspaceOpenApp[]> {
-  if (process.platform !== 'darwin') return [];
+  if (process.platform !== 'darwin') {
+    return [
+      {
+        id: 'finder',
+        label: process.platform === 'win32' ? 'File Explorer' : 'Files',
+        kind: 'finder',
+      },
+    ];
+  }
   const installedApps = await Promise.all(
     WORKSPACE_OPEN_APPS.map(async (candidate) => {
       try {
@@ -926,7 +934,16 @@ async function openWorkspaceInApp(
   workspacePath: string,
 ): Promise<void> {
   if (process.platform !== 'darwin') {
-    throw new AppError('conflict', 'opening in an application requires macOS');
+    if (appId !== 'finder') {
+      throw new AppError(
+        'conflict',
+        'this application shortcut is unavailable on the current platform',
+      );
+    }
+    const error = await shell.openPath(workspacePath);
+    if (error)
+      throw new AppError('internal', 'failed to open workspace folder');
+    return;
   }
   const target = WORKSPACE_OPEN_APPS.find(
     (candidate) => candidate.id === appId,

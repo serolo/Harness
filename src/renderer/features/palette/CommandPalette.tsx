@@ -11,6 +11,7 @@
 // action logic; it only selects + runs.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { useUiStore } from '@renderer/stores/ui';
 import { Kbd } from '@renderer/components/ui';
@@ -85,9 +86,12 @@ export function CommandPalette({
     }
   };
 
-  return (
+  return createPortal(
     <div
-      className="absolute inset-0 z-50 flex animate-[hn-fade_180ms_var(--ease-out)] items-start justify-center bg-scrim backdrop-blur-[8px] pt-[12vh]"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
+      className="fixed inset-0 z-[100] flex animate-[hn-fade_180ms_var(--ease-out)] items-start justify-center bg-scrim backdrop-blur-[8px] pt-[12vh]"
       data-testid="command-palette-overlay"
       onClick={close}
     >
@@ -152,6 +156,7 @@ export function CommandPalette({
           </span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

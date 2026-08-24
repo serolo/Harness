@@ -108,10 +108,18 @@ describe('ProcessRegistry', () => {
 
 describe('treeKillEscalate', () => {
   it('kills a real child process TREE when stopWorkspace runs', async () => {
-    // A parent shell that also spawns a backgrounded child → a 2-level tree.
-    const child = spawn('/bin/sh', ['-c', 'sleep 30 & sleep 30'], {
-      stdio: 'ignore',
-    });
+    // A parent Node process that also spawns a child → a 2-level tree on every OS.
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        "require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 30_000)']); setInterval(() => {}, 30_000)",
+      ],
+      {
+        stdio: 'ignore',
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      },
+    );
     const pid = child.pid;
     expect(pid).toBeDefined();
     expect(isAlive(pid as number)).toBe(true);
@@ -131,7 +139,10 @@ describe('treeKillEscalate', () => {
   });
 
   it('resolves (never rejects) for an already-dead pid', async () => {
-    const child = spawn('/bin/sh', ['-c', 'true'], { stdio: 'ignore' });
+    const child = spawn(process.execPath, ['-e', ''], {
+      stdio: 'ignore',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
     const pid = child.pid as number;
     await new Promise<void>((resolve) => child.on('exit', () => resolve()));
     await expect(treeKillEscalate(pid, 100)).resolves.toBeUndefined();

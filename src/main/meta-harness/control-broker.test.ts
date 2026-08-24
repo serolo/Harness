@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
+import { tmpdir } from 'node:os';
 
 import type { AgentRunPolicy } from '@shared/agents';
 import { setUserDataRoot } from '../paths';
@@ -17,6 +18,7 @@ import {
   type BrokerResponse,
   type BrokerSessionPolicy,
   type ControlBrokerHandler,
+  windowsControlPipeName,
 } from './control-broker';
 
 let root: string;
@@ -116,7 +118,7 @@ async function start(
 beforeEach(() => {
   // Keep transport-focused cases under the macOS sockaddr_un limit. A separate
   // start-path regression covers long user-data roots.
-  root = mkdtempSync('/tmp/hcb-');
+  root = mkdtempSync(join(tmpdir(), 'hcb-'));
   setUserDataRoot(root);
 });
 
@@ -128,6 +130,13 @@ afterEach(async () => {
 });
 
 describe('ControlBroker authorization and transport', () => {
+  it('creates unguessable Windows named-pipe endpoints without filesystem paths', () => {
+    expect(windowsControlPipeName('a'.repeat(32))).toBe(
+      '\\\\.\\pipe\\harness-meta-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    expect(() => windowsControlPipeName('../unsafe')).toThrow(/invalid/);
+  });
+
   it('starts when the user-data root is longer than the macOS socket-path limit', async () => {
     const longRoot = join(root, 'x'.repeat(120));
     mkdirSync(longRoot, { recursive: true });
@@ -141,8 +150,13 @@ describe('ControlBroker authorization and transport', () => {
 
   it('stores the secret out of argv in a private file and routes only closed methods', async () => {
     const target = await start();
-    expect(statSync(authFile).mode & 0o777).toBe(0o600);
-    expect(statSync(socketPath).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') {
+      expect(statSync(authFile).mode & 0o777).toBe(0o600);
+      expect(statSync(socketPath).mode & 0o777).toBe(0o600);
+    } else {
+      expect(statSync(authFile).isFile()).toBe(true);
+      expect(socketPath).toMatch(/^\\\\\.\\pipe\\harness-meta-/);
+    }
     expect(authFile).not.toContain(token);
 
     for (const [id, method] of [

@@ -2,7 +2,8 @@
 // `<div>` overlay pattern already used by SettingsPanel/NewWorkspaceDialog (this repo has
 // no @radix-ui/react-dialog dependency; don't add one).
 
-import type { HTMLAttributes, ReactNode } from 'react';
+import { useId, type HTMLAttributes, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 export interface DialogProps extends Omit<
   HTMLAttributes<HTMLDivElement>,
@@ -32,15 +33,18 @@ export function Dialog({
   className = '',
   ...rest
 }: DialogProps): React.JSX.Element {
-  return (
+  const titleId = useId();
+
+  return createPortal(
     <div
-      className={`fixed inset-0 z-40 flex animate-[hn-fade_180ms_var(--ease-out)] items-center justify-center bg-scrim ${className}`}
+      className={`fixed inset-0 z-[100] flex animate-[hn-fade_180ms_var(--ease-out)] items-center justify-center bg-scrim ${className}`}
       onClick={onClose}
       {...rest}
     >
       <div
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
         onClick={(e) => e.stopPropagation()}
         style={
           fullScreen
@@ -54,7 +58,10 @@ export function Dialog({
         }`}
       >
         {title ? (
-          <div className="px-4 pt-3.5 text-md font-semibold text-fg-1">
+          <div
+            id={titleId}
+            className="px-4 pt-3.5 text-md font-semibold text-fg-1"
+          >
             {title}
           </div>
         ) : null}
@@ -71,6 +78,7 @@ export function Dialog({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

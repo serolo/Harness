@@ -7,9 +7,13 @@ on:
 
 jobs:
   check:
-    # macOS runner: v1 is macOS-only (spec §1.3) and native modules must be
-    # rebuilt against the Electron ABI on the same platform we ship.
-    runs-on: macos-latest
+    name: Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025, ubuntu-24.04]
+    # Native modules must be rebuilt against Electron on every platform we ship.
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 

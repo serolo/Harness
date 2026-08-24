@@ -237,9 +237,160 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-windows:
+    name: Build Windows (x64)
+    needs: validate-release
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules for Electron ABI
+        run: npx @electron/rebuild -f -w better-sqlite3,node-pty
+
+      - name: Materialize Windows signing certificate
+        shell: pwsh
+        env:
+          WIN_CSC_LINK_BASE64: ${{ secrets.WIN_CSC_LINK }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK_BASE64)) { throw 'WIN_CSC_LINK is required' }
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\windows-code-signing.pfx", [Convert]::FromBase64String($env:WIN_CSC_LINK_BASE64))
+
+      - name: Build and sign Windows release candidate
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ runner.temp }}\windows-code-signing.pfx
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)) { throw 'WIN_CSC_KEY_PASSWORD is required' }
+          npm run release:win -- --x64
+
+      - name: Verify signed Windows release output
+        shell: pwsh
+        run: |
+          $app = 'dist\win-unpacked\Harness.exe'
+          $sqlite = Get-ChildItem 'dist\win-unpacked' -Recurse -Filter 'better_sqlite3.node' | Select-Object -First 1 -ExpandProperty FullName
+          $pty = Get-ChildItem 'dist\win-unpacked' -Recurse -Filter 'pty.node' | Select-Object -First 1 -ExpandProperty FullName
+          if (!(Test-Path $app) -or !$sqlite -or !$pty) { throw 'Packaged Windows binaries are missing' }
+          node scripts/verify-binary-architecture.mjs x64 $app $sqlite $pty
+          if ((Get-AuthenticodeSignature $app).Status -ne 'Valid') { throw 'Harness.exe signature is invalid' }
+          $installer = Get-ChildItem dist -File -Filter '*setup.exe' | Select-Object -First 1
+          if (!$installer) { throw 'NSIS installer is missing' }
+          if ((Get-AuthenticodeSignature $installer.FullName).Status -ne 'Valid') { throw 'Installer signature is invalid' }
+          if (!(Test-Path 'dist\win-unpacked\resources\app-update.yml')) { throw 'Packaged updater config is missing' }
+          if (!(Test-Path 'dist\latest.yml')) { throw 'Windows updater metadata is missing' }
+          if (!(Test-Path "$($installer.FullName).blockmap")) { throw 'Windows updater blockmap is missing' }
+
+      - name: Stage verified Windows release candidate
+        shell: pwsh
+        run: |
+          $stage = "$env:RUNNER_TEMP\release-windows-x64"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          $artifacts = @(Get-ChildItem dist -File | Where-Object { $_.Name -match 'setup\.exe(?:\.blockmap)?$' })
+          if ($artifacts.Count -ne 2) { throw "Expected two Windows installer assets, found $($artifacts.Count)" }
+          Copy-Item $artifacts.FullName $stage
+          Copy-Item 'dist\latest.yml' $stage
+          $checksumFile = "$env:RUNNER_TEMP\windows-SHA256SUMS"
+          Get-ChildItem $stage -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content $checksumFile -Encoding ascii
+          Move-Item $checksumFile "$stage\SHA256SUMS"
+
+      - name: Remove Windows signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item "$env:RUNNER_TEMP\windows-code-signing.pfx" -Force -ErrorAction SilentlyContinue
+
+      - name: Upload verified Windows release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Harness-release-Windows-x64-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-windows-x64/
+          if-no-files-found: error
+          retention-days: 1
+
+  build-linux:
+    name: Build Linux (x64)
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules for Electron ABI
+        run: npx @electron/rebuild -f -w better-sqlite3,node-pty
+
+      - name: Build Linux release candidate
+        run: npm run release:linux -- --x64
+
+      - name: Verify Linux release output
+        run: |
+          app="dist/linux-unpacked/harness"
+          test -x "$app"
+          sqlite_module="$(find dist/linux-unpacked -path '*/better-sqlite3/build/Release/better_sqlite3.node' -print -quit)"
+          pty_module="$(find dist/linux-unpacked -path '*/node-pty/build/Release/pty.node' -print -quit)"
+          test -n "$sqlite_module"
+          test -n "$pty_module"
+          node scripts/verify-binary-architecture.mjs x64 "$app" "$sqlite_module" "$pty_module"
+          test -f dist/linux-unpacked/resources/app-update.yml
+          test -f dist/latest-linux.yml
+          find dist -maxdepth 1 -name '*.AppImage' -print -quit | grep -q .
+          find dist -maxdepth 1 -name '*.AppImage.blockmap' -print -quit | grep -q .
+          deb="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$deb"
+          dpkg-deb --info "$deb" >/dev/null
+
+      - name: Stage verified Linux release candidate
+        run: |
+          shopt -s nullglob
+          artifacts=(dist/*.AppImage dist/*.AppImage.blockmap dist/*.deb)
+          test "${#artifacts[@]}" -eq 3
+          stage="$RUNNER_TEMP/release-linux-x64"
+          mkdir -p "$stage"
+          cp "${artifacts[@]}" dist/latest-linux.yml "$stage/"
+          checksum_file="$RUNNER_TEMP/linux-SHA256SUMS"
+          (
+            cd "$stage"
+            for artifact in ./*; do
+              sha256sum "$artifact"
+            done
+          ) > "$checksum_file"
+          mv "$checksum_file" "$stage/SHA256SUMS"
+
+      - name: Upload verified Linux release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Harness-release-Linux-x64-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-linux-x64/
+          if-no-files-found: error
+          retention-days: 1
+
   publish-release:
-    name: Publish macOS release draft
-    needs: build-macos
+    name: Publish cross-platform release draft
+    needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -271,11 +422,29 @@ jobs:
           name: Harness-release-macOS-x64-${{ github.run_id }}
           path: release-input/x64
 
+      - name: Download Windows release candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: Harness-release-Windows-x64-${{ github.run_id }}
+          path: release-input/windows-x64
+
+      - name: Download Linux release candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: Harness-release-Linux-x64-${{ github.run_id }}
+          path: release-input/linux-x64
+
       - name: Verify and combine release candidates
         run: |
           for arch in arm64 x64; do
             (
               cd "release-input/$arch"
+              sha256sum --check SHA256SUMS
+            )
+          done
+          for platform in windows-x64 linux-x64; do
+            (
+              cd "release-input/$platform"
               sha256sum --check SHA256SUMS
             )
           done
@@ -293,8 +462,13 @@ jobs:
             release-input/x64/latest-mac-x64.yml \
             release-assets/latest-mac.yml
 
+          cp release-input/windows-x64/*.exe release-input/windows-x64/*.blockmap \
+            release-input/windows-x64/latest.yml release-assets/
+          cp release-input/linux-x64/*.AppImage release-input/linux-x64/*.AppImage.blockmap \
+            release-input/linux-x64/*.deb release-input/linux-x64/latest-linux.yml release-assets/
+
           asset_count="$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          test "$asset_count" = "9"
+          test "$asset_count" = "16"
           find release-assets -maxdepth 1 -type f -print | sort > "$RUNNER_TEMP/release-assets.list"
           while IFS= read -r artifact; do
             sha256sum "$artifact"
@@ -320,14 +494,14 @@ jobs:
               --draft \
               --verify-tag \
               --title "Harness $RELEASE_TAG" \
-              --notes "Verified macOS arm64 and x64 release candidates. Review before publishing."
+              --notes "Verified macOS arm64/x64, Windows x64, and Linux x64 release candidates. Review before publishing."
           fi
 
           release_assets=()
           while IFS= read -r artifact; do
             release_assets+=("$artifact")
           done < "$RUNNER_TEMP/release-assets.list"
-          test "${#release_assets[@]}" -eq 9
+          test "${#release_assets[@]}" -eq 16
           gh release upload "$RELEASE_TAG" "${release_assets[@]}"
 
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true"

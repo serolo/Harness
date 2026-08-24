@@ -88,10 +88,19 @@ describe('PtyService', () => {
 
     // Run a shell that prints then exits with a known nonzero code — the raw-terminal
     // transcript relies on that code to choose turn_end (0) vs error (nonzero).
+    const rawCommand =
+      process.platform === 'win32'
+        ? {
+            shell: process.env.COMSPEC || 'cmd.exe',
+            args: ['/d', '/s', '/c', '<nul set /p =raw-out & exit /b 3'],
+          }
+        : {
+            shell: '/bin/sh',
+            args: ['-c', 'printf raw-out; exit 3'],
+          };
     const handle = await pty.spawnRaw({
       cwd: process.cwd(),
-      shell: '/bin/sh',
-      args: ['-c', 'printf raw-out; exit 3'],
+      ...rawCommand,
     });
     expect(typeof handle.ptyId).toBe('string');
     // Parity with the other agent adapters: a raw agent turn is NOT registered in the

@@ -21,3 +21,6 @@ This subsystem is the main-process trust boundary around `electron-updater`.
   fully verified before a GH-token-scoped step uploads them to a human-reviewed GitHub draft. Build
   and verification steps never receive `GH_TOKEN`; release uploads never clobber existing assets.
   Stable releases are forward-only; never replace published tag assets.
+- Every production release publishes one coherent updater set: `latest-mac.yml` plus macOS zip
+  assets, `latest.yml` plus the signed Windows NSIS installer, and `latest-linux.yml` plus the Linux
+  AppImage. Platform builders verify native-module architecture before the publisher can run.

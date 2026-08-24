@@ -70,7 +70,7 @@ interface Session {
   server: Server;
   sockets: Set<Socket>;
   dir: string;
-  socketDir: string;
+  socketDir?: string;
   socketPath: string;
   authFile: string;
 }
@@ -81,6 +81,7 @@ const SOCKET_DIRECTORY_ATTEMPTS = 5;
 const RUN_ID = /^[A-Za-z0-9-]{1,100}$/;
 const SHORT_SOCKET_PATH = /^\/tmp\/hcb-[a-f0-9]{16}\/c\.sock$/;
 const SHORT_SOCKET_DIRECTORY = /^hcb-[a-f0-9]{16}$/;
+const WINDOWS_PIPE_PATH = /^\\\\\.\\pipe\\harness-meta-[a-f0-9]{32}$/;
 
 function truncateUtf8(value: string, maxBytes: number): string {
   const encoded = Buffer.from(value, 'utf8');
@@ -111,6 +112,26 @@ async function createSocketDirectory(): Promise<string> {
   );
 }
 
+export function windowsControlPipeName(randomHex: string): string {
+  if (!/^[a-f0-9]{32}$/.test(randomHex)) {
+    throw new AppError('invalid_input', 'invalid control pipe identifier');
+  }
+  return `\\\\.\\pipe\\harness-meta-${randomHex}`;
+}
+
+async function createControlEndpoint(): Promise<{
+  socketPath: string;
+  socketDir?: string;
+}> {
+  if (process.platform === 'win32') {
+    return {
+      socketPath: windowsControlPipeName(randomBytes(16).toString('hex')),
+    };
+  }
+  const socketDir = await createSocketDirectory();
+  return { socketDir, socketPath: join(socketDir, 'c.sock') };
+}
+
 export class ControlBroker {
   private readonly sessions = new Map<string, Session>();
   constructor(private readonly handler: ControlBrokerHandler) {}
@@ -123,8 +144,7 @@ export class ControlBroker {
     const dir = metaRunControlDir(policy.runId);
     const authFile = join(dir, 'control.json');
     const token = randomBytes(32).toString('base64url');
-    const socketDir = await createSocketDirectory();
-    const socketPath = join(socketDir, 'c.sock');
+    const { socketDir, socketPath } = await createControlEndpoint();
     const server = createServer();
     const session: Session = {
       policy,
@@ -135,7 +155,7 @@ export class ControlBroker {
       server,
       sockets: new Set(),
       dir,
-      socketDir,
+      ...(socketDir === undefined ? {} : { socketDir }),
       socketPath,
       authFile,
     };
@@ -152,12 +172,14 @@ export class ControlBroker {
           resolve();
         });
       });
-      await chmod(socketPath, 0o600);
-      await writeFile(join(socketDir, 'run'), `${policy.runId}\n`, {
-        encoding: 'utf8',
-        mode: 0o600,
-        flag: 'wx',
-      });
+      if (socketDir !== undefined) {
+        await chmod(socketPath, 0o600);
+        await writeFile(join(socketDir, 'run'), `${policy.runId}\n`, {
+          encoding: 'utf8',
+          mode: 0o600,
+          flag: 'wx',
+        });
+      }
       await writeFile(authFile, `${JSON.stringify({ socketPath, token })}\n`, {
         encoding: 'utf8',
         mode: 0o600,
@@ -168,7 +190,9 @@ export class ControlBroker {
       if (server.listening) {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
-      await rm(socketDir, { recursive: true, force: true });
+      if (socketDir !== undefined) {
+        await rm(socketDir, { recursive: true, force: true });
+      }
       await rm(authFile, { force: true });
       await rm(dir, { recursive: true, force: true });
       throw error;
@@ -190,8 +214,10 @@ export class ControlBroker {
       session.server.close(() => resolve()),
     ).catch(() => undefined);
     await rm(session.authFile, { force: true });
-    await rm(session.socketPath, { force: true });
-    await rm(session.socketDir, { recursive: true, force: true });
+    if (session.socketDir !== undefined) {
+      await rm(session.socketPath, { force: true });
+      await rm(session.socketDir, { recursive: true, force: true });
+    }
     await rm(session.dir, { recursive: true, force: true });
   }
 
@@ -380,7 +406,10 @@ export class ControlBroker {
           raw
             .replaceAll(session.token, '[redacted]')
             .replaceAll(session.socketPath, '[private control path]')
-            .replaceAll(session.socketDir, '[private control path]'),
+            .replaceAll(
+              session.socketDir ?? session.socketPath,
+              '[private control path]',
+            ),
           'broker request failed',
         ),
       );
@@ -410,28 +439,36 @@ export class ControlBroker {
         ) {
           await rm(socketPath, { force: true });
           await rm(dirname(socketPath), { recursive: true, force: true });
+        } else if (
+          typeof socketPath === 'string' &&
+          WINDOWS_PIPE_PATH.test(socketPath)
+        ) {
+          // Named pipes disappear with their server; validating prevents an attacker
+          // from turning persisted auth state into an arbitrary filesystem deletion.
         }
       }
     } catch {
       // Missing/corrupt auth state still permits removal of the run-owned directory.
     }
-    try {
-      const entries = await readdir('/tmp', { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || !SHORT_SOCKET_DIRECTORY.test(entry.name))
-          continue;
-        const candidate = join('/tmp', entry.name);
-        const stat = await lstat(candidate);
-        if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
-        const marker = await readFile(join(candidate, 'run'), 'utf8').catch(
-          () => '',
-        );
-        if (marker.trim() === runId) {
-          await rm(candidate, { recursive: true, force: true });
+    if (process.platform !== 'win32') {
+      try {
+        const entries = await readdir('/tmp', { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory() || !SHORT_SOCKET_DIRECTORY.test(entry.name))
+            continue;
+          const candidate = join('/tmp', entry.name);
+          const stat = await lstat(candidate);
+          if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
+          const marker = await readFile(join(candidate, 'run'), 'utf8').catch(
+            () => '',
+          );
+          if (marker.trim() === runId) {
+            await rm(candidate, { recursive: true, force: true });
+          }
         }
+      } catch {
+        // Best-effort recovery; validated auth cleanup above remains authoritative.
       }
-    } catch {
-      // Best-effort recovery; validated auth cleanup above remains authoritative.
     }
     await rm(dir, { recursive: true, force: true });
   }

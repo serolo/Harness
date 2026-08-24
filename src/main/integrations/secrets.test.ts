@@ -127,12 +127,15 @@ describe('SecretStore — ciphertext at rest', () => {
     expect(raw.toString('utf8')).not.toContain(secret);
   });
 
-  it('writes the ciphertext file with mode 0600 (owner read/write only)', async () => {
+  it('writes the ciphertext file with owner-only permissions on POSIX', async () => {
     const store = new SecretStore(fakeSafeStorage(), tmpDir);
     const tokenRef = await store.put('some-token');
 
-    const mode = statSync(join(tmpDir, tokenRef)).mode & 0o777;
-    expect(mode).toBe(0o600);
+    const path = join(tmpDir, tokenRef);
+    expect(statSync(path).isFile()).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('the tokenRef itself is an opaque id, not the token', async () => {

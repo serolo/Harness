@@ -8,6 +8,9 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { app } from 'electron';
 
+import { AppError } from './error';
+import { executableName } from './process/platform';
+
 /**
  * Test seam (Task 10 depends on this).
  *
@@ -141,20 +144,47 @@ export function toolsDir(): string {
 }
 
 /** App-managed GitHub CLI executable installed during onboarding when needed. */
-export function githubCliPath(): string {
-  return join(toolsBinDir(), 'gh');
+export function githubCliPath(
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return join(toolsBinDir(), executableName('gh', platform));
 }
 
 /** App-managed Claude Code native executable. */
-export function claudeCliPath(): string {
-  return join(toolsBinDir(), 'claude');
+export function claudeCliPath(
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return join(toolsBinDir(), executableName('claude', platform));
 }
 
 /** App-managed Codex executable inside its required vendor resource layout. */
-export function codexCliPath(arch: string = process.arch): string {
-  const target =
-    arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
-  return join(codexInstallDir(), 'package', 'vendor', target, 'bin', 'codex');
+export function codexCliPath(
+  arch: string = process.arch,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return join(
+    codexInstallDir(),
+    'package',
+    'vendor',
+    codexTargetTriple(platform, arch),
+    'bin',
+    executableName('codex', platform),
+  );
+}
+
+export function codexTargetTriple(
+  platform: NodeJS.Platform,
+  arch: string,
+): string {
+  if (platform === 'darwin' && arch === 'arm64') return 'aarch64-apple-darwin';
+  if (platform === 'darwin' && arch === 'x64') return 'x86_64-apple-darwin';
+  if (platform === 'linux' && arch === 'x64')
+    return 'x86_64-unknown-linux-musl';
+  if (platform === 'win32' && arch === 'x64') return 'x86_64-pc-windows-msvc';
+  throw new AppError(
+    'integration',
+    `Automatic Codex installation is unavailable for ${platform}/${arch}`,
+  );
 }
 
 /** Root of the app-managed Codex package, including companion vendor resources. */

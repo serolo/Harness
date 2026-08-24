@@ -41,12 +41,18 @@ function assetFor(archive: Buffer): CodexCliAsset {
 }
 
 describe('codexCliAsset', () => {
-  it('selects pinned Intel and Apple Silicon npm packages', () => {
+  it('selects pinned packages for every supported platform', () => {
     expect(codexCliAsset('darwin', 'x64')).toMatchObject({
       targetTriple: 'x86_64-apple-darwin',
     });
     expect(codexCliAsset('darwin', 'arm64')).toMatchObject({
       targetTriple: 'aarch64-apple-darwin',
+    });
+    expect(codexCliAsset('linux', 'x64')).toMatchObject({
+      targetTriple: 'x86_64-unknown-linux-musl',
+    });
+    expect(codexCliAsset('win32', 'x64')).toMatchObject({
+      targetTriple: 'x86_64-pc-windows-msvc',
     });
   });
 

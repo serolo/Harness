@@ -3,11 +3,10 @@
 // a destructive op (plan Task 11 gotcha) — its copy explicitly states: the worktree is
 // reset to that checkpoint, files added since are removed, the current state is
 // auto-backed-up first, later chat turns are truncated, and the next turn starts a
-// fresh session. Plain React modal (no @radix-ui/react-dialog in this project) —
-// mirrors `NewWorkspaceDialog`'s fixed-overlay + centered-panel pattern.
+// fresh session. The shared Dialog portal keeps the safety gate above every app pane.
 
 import { useState } from 'react';
-import { Button } from '@renderer/components/ui';
+import { Button, Dialog } from '@renderer/components/ui';
 import type { Checkpoint } from '@shared/review';
 
 export interface CheckpointTimelineProps {
@@ -73,61 +72,40 @@ export function CheckpointTimeline({
         )}
       </div>
 
-      {confirmTarget && (
-        <>
-          <div
-            className="fixed inset-0 z-40 bg-scrim"
-            aria-hidden="true"
-            onClick={() => !reverting && setConfirmTarget(null)}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Revert to checkpoint"
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            data-testid="checkpoint-revert-dialog"
-            onClick={(event) => {
-              if (event.target === event.currentTarget && !reverting) {
-                setConfirmTarget(null);
-              }
-            }}
-          >
-            <div
-              className="relative w-full max-w-md rounded-4 border border-border-1 bg-surface-overlay p-4 shadow-4"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h2 className="mb-2 text-sm font-semibold text-fg-1">
-                Revert to checkpoint #
-                {turnIdxFromRefName(confirmTarget.refName)}?
-              </h2>
-              <p className="mb-3 text-xs leading-relaxed text-fg-2">
-                This resets the worktree to this checkpoint — files added since
-                will be removed. Your current state is automatically backed up
-                first. Chat turns after this point will be truncated, and the
-                next turn starts a fresh session.
-              </p>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => setConfirmTarget(null)}
-                  disabled={reverting}
-                  data-testid="checkpoint-revert-cancel"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={() => void confirmRevert()}
-                  disabled={reverting}
-                  data-testid="checkpoint-revert-confirm"
-                >
-                  {reverting ? 'Reverting…' : 'Revert'}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
+      {confirmTarget ? (
+        <Dialog
+          title={`Revert to checkpoint #${turnIdxFromRefName(confirmTarget.refName)}?`}
+          onClose={() => !reverting && setConfirmTarget(null)}
+          data-testid="checkpoint-revert-dialog"
+          footer={
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => setConfirmTarget(null)}
+                disabled={reverting}
+                data-testid="checkpoint-revert-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => void confirmRevert()}
+                disabled={reverting}
+                data-testid="checkpoint-revert-confirm"
+              >
+                {reverting ? 'Reverting…' : 'Revert'}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-xs leading-relaxed text-fg-2">
+            This resets the worktree to this checkpoint — files added since will
+            be removed. Your current state is automatically backed up first.
+            Chat turns after this point will be truncated, and the next turn
+            starts a fresh session.
+          </p>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

@@ -52,6 +52,7 @@ import type {
 import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
 import { childProcessEnv } from '../process/childEnv';
+import { preparePtyCommand } from '../process/pty-command';
 import { resolveHarnessExecutable } from './executable';
 import { createJsonLineSplitter } from './parser';
 import type { RawPtyHandle, RawPtySpawner } from './raw-terminal';
@@ -327,20 +328,19 @@ export class CodexHarness implements Harness {
     }
     let handle: RawPtyHandle;
     try {
+      const launch = await preparePtyCommand({
+        privateDirectory: captureDir,
+        command,
+        args,
+        env: childProcessEnv(),
+        stdoutPath,
+        stderrPath,
+      });
       handle = await this.rawPtySpawner!.spawn({
         cwd: opts.workspaceDir,
-        shell: '/bin/zsh',
-        args: [
-          '-f',
-          '-c',
-          '"$0" "$@" > "$HARNESS_AGENT_STDOUT" 2> "$HARNESS_AGENT_STDERR"',
-          command,
-          ...args,
-        ],
-        env: childProcessEnv({
-          HARNESS_AGENT_STDOUT: stdoutPath,
-          HARNESS_AGENT_STDERR: stderrPath,
-        }),
+        shell: launch.shell,
+        args: launch.args,
+        env: launch.env,
         cols: 120,
         rows: 40,
       });

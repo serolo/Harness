@@ -146,3 +146,118 @@ jobs:
             dist/latest*.yml
           if-no-files-found: error
           retention-days: 14
+
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules for Electron ABI
+        run: npx @electron/rebuild -f -w better-sqlite3,node-pty
+
+      - name: Materialize Windows signing certificate
+        shell: pwsh
+        env:
+          WIN_CSC_LINK_BASE64: ${{ secrets.WIN_CSC_LINK }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK_BASE64)) { throw 'WIN_CSC_LINK is required' }
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\windows-code-signing.pfx", [Convert]::FromBase64String($env:WIN_CSC_LINK_BASE64))
+
+      - name: Build and sign Windows installer
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ runner.temp }}\windows-code-signing.pfx
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)) { throw 'WIN_CSC_KEY_PASSWORD is required' }
+          npm run release:win -- --x64
+
+      - name: Verify signed Windows output
+        shell: pwsh
+        run: |
+          $app = 'dist\win-unpacked\Harness.exe'
+          $sqlite = Get-ChildItem 'dist\win-unpacked' -Recurse -Filter 'better_sqlite3.node' | Select-Object -First 1 -ExpandProperty FullName
+          $pty = Get-ChildItem 'dist\win-unpacked' -Recurse -Filter 'pty.node' | Select-Object -First 1 -ExpandProperty FullName
+          if (!(Test-Path $app) -or !$sqlite -or !$pty) { throw 'Packaged Windows binaries are missing' }
+          node scripts/verify-binary-architecture.mjs x64 $app $sqlite $pty
+          if ((Get-AuthenticodeSignature $app).Status -ne 'Valid') { throw 'Harness.exe signature is invalid' }
+          $installer = Get-ChildItem dist -File -Filter '*setup.exe' | Select-Object -First 1
+          if (!$installer) { throw 'NSIS installer is missing' }
+          if ((Get-AuthenticodeSignature $installer.FullName).Status -ne 'Valid') { throw 'Installer signature is invalid' }
+          if (!(Test-Path 'dist\win-unpacked\resources\app-update.yml')) { throw 'Packaged updater config is missing' }
+          if (!(Test-Path 'dist\latest.yml')) { throw 'Windows updater metadata is missing' }
+          if (!(Test-Path "$($installer.FullName).blockmap")) { throw 'Windows updater blockmap is missing' }
+
+      - name: Remove Windows signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item "$env:RUNNER_TEMP\windows-code-signing.pfx" -Force -ErrorAction SilentlyContinue
+
+      - name: Upload signed Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Harness-signed-Windows-x64-${{ github.sha }}
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  build-linux:
+    name: Build Linux (x64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules for Electron ABI
+        run: npx @electron/rebuild -f -w better-sqlite3,node-pty
+
+      - name: Build Linux packages
+        run: npm run release:linux -- --x64
+
+      - name: Verify Linux output
+        run: |
+          app="dist/linux-unpacked/harness"
+          test -x "$app"
+          sqlite_module="$(find dist/linux-unpacked -path '*/better-sqlite3/build/Release/better_sqlite3.node' -print -quit)"
+          pty_module="$(find dist/linux-unpacked -path '*/node-pty/build/Release/pty.node' -print -quit)"
+          test -n "$sqlite_module"
+          test -n "$pty_module"
+          node scripts/verify-binary-architecture.mjs x64 "$app" "$sqlite_module" "$pty_module"
+          test -f dist/linux-unpacked/resources/app-update.yml
+          test -f dist/latest-linux.yml
+          find dist -maxdepth 1 -name '*.AppImage' -print -quit | grep -q .
+          find dist -maxdepth 1 -name '*.AppImage.blockmap' -print -quit | grep -q .
+          deb="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$deb"
+          dpkg-deb --info "$deb" >/dev/null
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Harness-Linux-x64-${{ github.sha }}
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.blockmap
+            dist/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 14

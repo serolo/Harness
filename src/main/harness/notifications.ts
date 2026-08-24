@@ -45,8 +45,11 @@ const SYSTEM_SOUND_FILES: Record<Exclude<CompletionSound, 'none'>, string> = {
  * Play an allowlisted macOS system sound without a shell. The setting selects a map
  * key, never a path, so renderer/config input cannot influence the executable or args.
  */
-export function playCompletionSound(sound: CompletionSound): void {
-  if (sound === 'none') return;
+export function playCompletionSound(
+  sound: CompletionSound,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (sound === 'none' || platform !== 'darwin') return;
   try {
     const child = spawn('/usr/bin/afplay', [SYSTEM_SOUND_FILES[sound]], {
       stdio: 'ignore',

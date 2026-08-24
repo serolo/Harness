@@ -16,6 +16,10 @@ export default defineConfig({
           'mcp-stdio': resolve(__dirname, 'src/main/meta-harness/mcp-stdio.ts'),
           'knowledge-mcp': resolve(__dirname, 'src/main/knowledge-mcp.ts'),
           'mcp-launcher': resolve(__dirname, 'src/main/mcp-launcher.ts'),
+          'pty-command-launcher': resolve(
+            __dirname,
+            'src/main/pty-command-launcher.ts',
+          ),
         },
       },
     },

@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,20 +37,23 @@ function assetFor(archive: Buffer): GithubCliAsset {
     url: 'https://example.test/gh.zip',
     sha256: createHash('sha256').update(archive).digest('hex'),
     archiveRoot: 'gh_test_macOS_arm64',
+    archiveType: 'zip',
   };
 }
 
 describe('githubCliAsset', () => {
-  it('selects pinned Intel and Apple Silicon assets', () => {
+  it('selects pinned assets for every supported platform', () => {
     expect(githubCliAsset('darwin', 'x64').url).toContain('macOS_amd64.zip');
-    expect(githubCliAsset('darwin', 'arm64').url).toContain(
-      'macOS_arm64.zip',
-    );
+    expect(githubCliAsset('darwin', 'arm64').url).toContain('macOS_arm64.zip');
+    expect(githubCliAsset('linux', 'x64')).toMatchObject({
+      archiveType: 'tar.gz',
+    });
+    expect(githubCliAsset('win32', 'x64').url).toContain('windows_amd64.zip');
   });
 
   it('rejects unsupported platforms', () => {
-    expect(() => githubCliAsset('win32', 'x64')).toThrow(
-      /unavailable for win32\/x64/,
+    expect(() => githubCliAsset('linux', 'arm64')).toThrow(
+      /unavailable for linux\/arm64/,
     );
   });
 });
@@ -92,8 +102,8 @@ describe('installGithubCli', () => {
         asset: { ...assetFor(Buffer.from('expected')), sha256: '0'.repeat(64) },
         targetPath,
         tempRoot: root,
-        fetchImpl: vi.fn(async () =>
-          new Response(Buffer.from('downloaded')),
+        fetchImpl: vi.fn(
+          async () => new Response(Buffer.from('downloaded')),
         ) as typeof fetch,
         extract,
       }),

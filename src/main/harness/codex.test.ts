@@ -423,7 +423,10 @@ describe('Codex adapter — buildArgs', () => {
       expect(proxy?.args[0]).toMatch(/mcp-launcher\.js$/);
       expect(proxy?.env.ELECTRON_RUN_AS_NODE).toBe('1');
       const configPath = proxy!.env.HARNESS_MCP_LAUNCH_CONFIG!;
-      expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(statSync(configPath).isFile()).toBe(true);
+      if (process.platform !== 'win32') {
+        expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      }
       expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
         command: 'my-cmd',
         args: ['--flag'],

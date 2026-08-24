@@ -11,7 +11,7 @@
 
 ### 1.1 Product summary
 
-A macOS desktop application for running multiple coding agents (Claude Code, Codex, Cursor) in parallel against a single repository. Each task runs in an isolated **workspace** backed by a git worktree, with its own branch, terminal, running app process, and chat session. The user monitors all agents from a sidebar dashboard, reviews changes in a built-in diff viewer, sends review feedback back to the agent, and merges through an integrated PR workflow.
+A cross-platform desktop application for running multiple coding agents (Claude Code, Codex, Cursor) in parallel against a single repository. Each task runs in an isolated **workspace** backed by a git worktree, with its own branch, terminal, running app process, and chat session. The user monitors all agents from a sidebar dashboard, reviews changes in a built-in diff viewer, sends review feedback back to the agent, and merges through an integrated PR workflow.
 
 ### 1.2 Goals
 
@@ -25,7 +25,7 @@ A macOS desktop application for running multiple coding agents (Claude Code, Cod
 
 - Cloud/remote agent execution.
 - Enterprise managed deployment / org policy distribution.
-- Windows/Linux support (macOS only for v1).
+- Additional architectures beyond macOS arm64/x64, Windows x64, and Linux x64.
 - Multi-repo projects in a single workspace.
 - Building our own agent — we orchestrate existing CLIs.
 

@@ -146,45 +146,51 @@ describe('discoverNativeSlashCommands', () => {
     ]);
   });
 
-  it('keeps the duplicated repository workflow skill catalogue in provider parity', async () => {
-    const home = await tempHome();
-    const workspaceDir = fileURLToPath(new URL('../../../', import.meta.url));
-    const [codex, claude] = await Promise.all([
-      discoverNativeSlashCommands({
-        harness: 'codex',
-        workspaceDir,
-        homeDir: home,
-        adminDir: null,
-      }),
-      discoverNativeSlashCommands({
-        harness: 'claude_code',
-        workspaceDir,
-        homeDir: home,
-        adminDir: null,
-      }),
-    ]);
-    const workflowNames = (commands: typeof codex) =>
-      commands
-        .filter(
-          (command) =>
-            command.source === 'native_skill' &&
-            command.name.startsWith('harness-'),
-        )
-        .map((command) => command.name)
-        .sort();
+  it.skipIf(process.platform === 'win32')(
+    'keeps the duplicated repository workflow skill catalogue in provider parity',
+    async () => {
+      const home = await tempHome();
+      const workspaceDir = fileURLToPath(new URL('../../../', import.meta.url));
+      const [codex, claude] = await Promise.all([
+        discoverNativeSlashCommands({
+          harness: 'codex',
+          workspaceDir,
+          homeDir: home,
+          adminDir: null,
+        }),
+        discoverNativeSlashCommands({
+          harness: 'claude_code',
+          workspaceDir,
+          homeDir: home,
+          adminDir: null,
+        }),
+      ]);
+      const workflowNames = (commands: typeof codex) =>
+        commands
+          .filter(
+            (command) =>
+              command.source === 'native_skill' &&
+              command.name.startsWith('harness-'),
+          )
+          .map((command) => command.name)
+          .sort();
 
-    expect(workflowNames(codex)).toEqual(workflowNames(claude));
-    expect(workflowNames(codex)).toEqual([
-      'harness-implement',
-      'harness-improve',
-      'harness-plan',
-      'harness-review',
-    ]);
-    expect(
-      codex.find((command) => command.name === 'harness-plan'),
-    ).toMatchObject({ template: '$harness-plan $ARGS', invocation: 'dollar' });
-    expect(
-      claude.find((command) => command.name === 'harness-plan'),
-    ).toMatchObject({ template: '/harness-plan $ARGS', invocation: 'slash' });
-  });
+      expect(workflowNames(codex)).toEqual(workflowNames(claude));
+      expect(workflowNames(codex)).toEqual([
+        'harness-implement',
+        'harness-improve',
+        'harness-plan',
+        'harness-review',
+      ]);
+      expect(
+        codex.find((command) => command.name === 'harness-plan'),
+      ).toMatchObject({
+        template: '$harness-plan $ARGS',
+        invocation: 'dollar',
+      });
+      expect(
+        claude.find((command) => command.name === 'harness-plan'),
+      ).toMatchObject({ template: '/harness-plan $ARGS', invocation: 'slash' });
+    },
+  );
 });

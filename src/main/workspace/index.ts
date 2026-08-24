@@ -44,6 +44,19 @@ import type { SettingsService } from '../settings';
 export type CreateWorkspaceOptions = CreateWorkspaceReq;
 
 function sameFilesystemPath(left: string, right: string): boolean {
+  try {
+    const leftStats = statSync(left);
+    const rightStats = statSync(right);
+    if (
+      (leftStats.dev !== 0 || leftStats.ino !== 0) &&
+      leftStats.dev === rightStats.dev &&
+      leftStats.ino === rightStats.ino
+    ) {
+      return true;
+    }
+  } catch {
+    // Fall through to canonical/lexical comparison for missing stale paths.
+  }
   let leftPath: string;
   let rightPath: string;
   try {

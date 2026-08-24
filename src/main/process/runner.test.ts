@@ -4,19 +4,20 @@
 // Spawns real short-lived / `sleep` children in a temp cwd; no Electron runtime needed.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { WorkspaceStatus } from '@shared/models';
 import { ProcessRegistry, ProcessRunner, type RunHandlers } from './index';
+import { removeTestDirectory } from '../test-utils';
 
 let cwd: string;
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'harness-runner-'));
 });
 afterEach(() => {
-  rmSync(cwd, { recursive: true, force: true });
+  removeTestDirectory(cwd);
 });
 
 /** Handlers that record logs and resolve `exited` with the terminal exit tuple. */

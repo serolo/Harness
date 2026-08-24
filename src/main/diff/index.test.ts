@@ -138,7 +138,12 @@ beforeAll(async () => {
 afterAll(async () => {
   diffService.stopAll();
   await db.destroy();
-  rmSync(tmpRoot, { recursive: true, force: true });
+  rmSync(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 6,
+    retryDelay: 100,
+  });
 });
 
 // ---------------------------------------------------------------------------

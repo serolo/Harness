@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { parseDocument } from 'yaml';
 import type { HarnessId } from '@shared/harness';
@@ -189,7 +189,7 @@ async function collectFiles(
         if (entry.name === 'node_modules' || entry.name === '.git') continue;
         await walk(path, depth + 1);
       } else if (entry.isFile()) {
-        const parts = relative(root, path).split(sep);
+        const parts = relative(root, path).split(/[\\/]/);
         if (
           kind === 'command' &&
           entry.name.endsWith('.md') &&

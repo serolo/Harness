@@ -299,6 +299,40 @@ export interface RepoInfo {
   defaultBranch: string;
 }
 
+/** Parse `git worktree list --porcelain` with either Unix or Windows newlines. */
+export function parseWorktreeList(stdout: string): WorktreeInfo[] {
+  const worktrees: WorktreeInfo[] = [];
+  const blocks = stdout.split(/\r?\n(?:\r?\n)+/);
+
+  for (const block of blocks) {
+    const lines = block.trim().split(/\r?\n/);
+    if (lines.length === 0 || lines[0] === '') continue;
+
+    let path = '';
+    let head = '';
+    let branch: string | null = null;
+
+    for (const line of lines) {
+      if (line.startsWith('worktree ')) {
+        path = line.slice('worktree '.length).trim();
+      } else if (line.startsWith('HEAD ')) {
+        head = line.slice('HEAD '.length).trim();
+      } else if (line.startsWith('branch ')) {
+        const ref = line.slice('branch '.length).trim();
+        branch = ref.startsWith('refs/heads/')
+          ? ref.slice('refs/heads/'.length)
+          : ref;
+      } else if (line.trim() === 'detached') {
+        branch = null;
+      }
+    }
+
+    if (path !== '' && head !== '') worktrees.push({ path, head, branch });
+  }
+
+  return worktrees;
+}
+
 /** One entry from `git worktree list --porcelain`. */
 export interface WorktreeInfo {
   /** Absolute path of the worktree on disk. */
@@ -1078,40 +1112,7 @@ export class GitService {
       throw toGitError(e, `git ${args.join(' ')}`);
     }
 
-    const worktrees: WorktreeInfo[] = [];
-    // Each worktree is separated by a blank line.
-    const blocks = stdout.split(/\n\n+/);
-
-    for (const block of blocks) {
-      const lines = block.trim().split('\n');
-      if (lines.length === 0 || lines[0] === '') continue;
-
-      let path = '';
-      let head = '';
-      let branch: string | null = null;
-
-      for (const line of lines) {
-        if (line.startsWith('worktree ')) {
-          path = line.slice('worktree '.length).trim();
-        } else if (line.startsWith('HEAD ')) {
-          head = line.slice('HEAD '.length).trim();
-        } else if (line.startsWith('branch ')) {
-          // "branch refs/heads/<name>" — strip the prefix.
-          const ref = line.slice('branch '.length).trim();
-          branch = ref.startsWith('refs/heads/')
-            ? ref.slice('refs/heads/'.length)
-            : ref;
-        } else if (line.trim() === 'detached') {
-          branch = null;
-        }
-      }
-
-      if (path !== '' && head !== '') {
-        worktrees.push({ path, head, branch });
-      }
-    }
-
-    return worktrees;
+    return parseWorktreeList(stdout);
   }
 
   /**

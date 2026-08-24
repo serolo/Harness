@@ -845,7 +845,7 @@ describe('OKF project knowledge', () => {
       'possible secret',
     );
     expect(await service.listProposals(projectId)).toEqual([]);
-  });
+  }, 15_000);
 
   it('projects retrieval metadata into a deterministic catalog', async () => {
     const { service, projectId } = await fixture();

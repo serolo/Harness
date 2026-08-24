@@ -13,9 +13,28 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
-import { GitService, gitPtyExec } from './index';
+import { GitService, gitPtyExec, parseWorktreeList } from './index';
 
 const git = new GitService();
+
+it('parses CRLF-separated worktree porcelain records', () => {
+  expect(
+    parseWorktreeList(
+      'worktree C:/repo\r\nHEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nbranch refs/heads/main\r\n\r\nworktree C:/repo-wt\r\nHEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\nbranch refs/heads/agent/x\r\n',
+    ),
+  ).toEqual([
+    {
+      path: 'C:/repo',
+      head: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      branch: 'main',
+    },
+    {
+      path: 'C:/repo-wt',
+      head: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      branch: 'agent/x',
+    },
+  ]);
+});
 
 // Shared temp dirs — created once, cleaned up after all tests.
 let tmpRoot: string;
@@ -51,7 +70,12 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  rmSync(tmpRoot, { recursive: true, force: true });
+  rmSync(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 6,
+    retryDelay: 100,
+  });
 });
 
 // ---------------------------------------------------------------------------

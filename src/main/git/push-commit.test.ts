@@ -55,7 +55,12 @@ describe('GitService.commit', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 6,
+      retryDelay: 100,
+    });
   });
 
   it('stages and commits a new file, returning the new HEAD sha', async () => {
@@ -192,7 +197,12 @@ describe('GitService.push', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 6,
+      retryDelay: 100,
+    });
   });
 
   it('pushes the named branch to origin and the bare repo receives exactly that ref', async () => {

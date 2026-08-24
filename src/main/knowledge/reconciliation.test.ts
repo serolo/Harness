@@ -73,7 +73,12 @@ describe('repository change evidence', () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 6,
+      retryDelay: 100,
+    });
   });
 
   async function changedPaths(

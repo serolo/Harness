@@ -59,7 +59,12 @@ describe('GitService.diff / status', () => {
   });
 
   afterAll(() => {
-    rmSync(tmpRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 6,
+      retryDelay: 100,
+    });
   });
 
   it('returns baseRef/headRef and a non-empty patch', async () => {

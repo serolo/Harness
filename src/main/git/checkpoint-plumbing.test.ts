@@ -37,13 +37,19 @@ describe('GitService checkpoint plumbing', () => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'git-cp-test-'));
     wt = join(tmpRoot, 'repo');
     await execa('git', ['init', '-b', 'main', wt]);
+    await execa('git', ['config', 'core.autocrlf', 'false'], { cwd: wt });
     writeFileSync(join(wt, 'fileA.txt'), 'a\n');
     await g(wt, 'add', '.');
     await g(wt, 'commit', '-m', 'base commit');
   });
 
   afterEach(() => {
-    rmSync(tmpRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 6,
+      retryDelay: 100,
+    });
   });
 
   // -------------------------------------------------------------------------

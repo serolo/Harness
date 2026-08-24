@@ -205,10 +205,15 @@ beforeEach(async () => {
   stopSpy = vi.fn<(id: string) => void>();
 });
 
-afterEach(() => {
+afterEach(async () => {
   setUserDataRoot(undefined);
-  // Close db by letting it go out of scope; sqlite WAL needs no explicit close for tests
-  rmSync(tmpRoot, { recursive: true, force: true });
+  await db.destroy();
+  rmSync(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 6,
+    retryDelay: 100,
+  });
   vi.restoreAllMocks();
 });
 

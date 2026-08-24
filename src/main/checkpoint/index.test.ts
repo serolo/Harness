@@ -92,7 +92,12 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await db.destroy();
-  rmSync(tmpDir, { recursive: true, force: true });
+  rmSync(tmpDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 6,
+    retryDelay: 100,
+  });
 });
 
 describe('CheckpointService.snapshot', () => {

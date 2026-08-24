@@ -8,7 +8,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { stringify as stringifyYaml } from 'yaml';
 import { AppError } from '@shared/errors';
@@ -197,7 +197,7 @@ export class AgentRegistry {
     const source = await lstat(sourceDir);
     if (!source.isDirectory() || source.isSymbolicLink())
       throw new AppError('invalid_input', 'import source must be a directory');
-    const originalSlug = sourceDir.split('/').at(-1) ?? 'imported-agent';
+    const originalSlug = basename(sourceDir) || 'imported-agent';
     const base = SLUG.test(originalSlug) ? originalSlug : 'imported-agent';
     let slug = base;
     let suffix = 2;
@@ -327,16 +327,26 @@ export class AgentRegistry {
         );
       }
       const backup = `${entry.dir}.backup-${randomUUID()}`;
-      await rename(entry.dir, backup);
+      await renameWithRetry(entry.dir, backup);
       try {
-        await rename(staging, entry.dir);
+        await renameWithRetry(staging, entry.dir);
       } catch (error) {
-        await rename(backup, entry.dir);
+        await renameWithRetry(backup, entry.dir);
         throw error;
       }
-      await rm(backup, { recursive: true, force: true });
+      await rm(backup, {
+        recursive: true,
+        force: true,
+        maxRetries: 6,
+        retryDelay: 100,
+      });
     } finally {
-      await rm(staging, { recursive: true, force: true });
+      await rm(staging, {
+        recursive: true,
+        force: true,
+        maxRetries: 6,
+        retryDelay: 100,
+      });
     }
     await this.reloadEntry(
       projectId,
@@ -555,6 +565,27 @@ export class AgentRegistry {
           'invalid_input',
           'agent imports cannot contain symbolic links',
         );
+    }
+  }
+}
+
+async function renameWithRetry(source: string, target: string): Promise<void> {
+  const retries = process.platform === 'win32' ? 6 : 0;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        attempt >= retries ||
+        (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')
+      ) {
+        throw error;
+      }
+      await new Promise((resolvePromise) =>
+        setTimeout(resolvePromise, 50 * (attempt + 1)),
+      );
     }
   }
 }

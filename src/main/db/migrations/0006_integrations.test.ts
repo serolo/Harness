@@ -33,7 +33,12 @@ afterEach(async () => {
     await db.destroy();
     db = undefined;
   }
-  rmSync(tmpDir, { recursive: true, force: true });
+  rmSync(tmpDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 6,
+    retryDelay: 100,
+  });
 });
 
 describe('migrations 0006/0007 (fresh temp DB)', () => {

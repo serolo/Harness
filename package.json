@@ -1,7 +1,7 @@
 {
   "name": "harness",
   "productName": "Harness",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Parallel Coding Agents — a cross-platform desktop app for running multiple coding agents against one repo.",
   "author": {
     "name": "Sebastian",

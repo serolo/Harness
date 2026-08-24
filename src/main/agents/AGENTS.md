@@ -5,7 +5,9 @@
   including unreferenced instructions, are rejected.
 - Resolve and realpath every read inside the bundle. Symlinks and special files are rejected.
 - Built-ins are immutable. Project bundles support bounded multi-file create/edit/delete and publish
-  the fully validated directory atomically; delete whole bundles through OS trash.
+  the fully validated directory atomically; delete whole bundles through OS trash. Close the
+  project watcher during an atomic directory swap and restore it afterward because Windows watcher
+  handles can block directory renames.
 - Discovery is streamed and capped before parsing. Diagnostics retain the actual file and YAML
   location, while native I/O failures cross IPC only as stable path-free errors.
 - Renderer DTOs never include managed absolute paths or stored run snapshots.

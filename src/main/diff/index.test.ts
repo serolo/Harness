@@ -8,9 +8,10 @@
 // implementation's structure.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 
 import { AppError } from '@shared/errors';
@@ -138,12 +139,7 @@ beforeAll(async () => {
 afterAll(async () => {
   diffService.stopAll();
   await db.destroy();
-  rmSync(tmpRoot, {
-    recursive: true,
-    force: true,
-    maxRetries: 6,
-    retryDelay: 100,
-  });
+  removeTestDirectory(tmpRoot);
 });
 
 // ---------------------------------------------------------------------------

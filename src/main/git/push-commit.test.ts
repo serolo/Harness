@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 import { AppError } from '@shared/errors';
 import { GitService } from './index';
@@ -55,12 +56,7 @@ describe('GitService.commit', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: 6,
-      retryDelay: 100,
-    });
+    removeTestDirectory(tmpRoot);
   });
 
   it('stages and commits a new file, returning the new HEAD sha', async () => {
@@ -197,12 +193,7 @@ describe('GitService.push', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: 6,
-      retryDelay: 100,
-    });
+    removeTestDirectory(tmpRoot);
   });
 
   it('pushes the named branch to origin and the bare repo receives exactly that ref', async () => {

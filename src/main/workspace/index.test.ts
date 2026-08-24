@@ -21,6 +21,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 
 import { openDb } from '../db/index';
@@ -208,12 +209,7 @@ beforeEach(async () => {
 afterEach(async () => {
   setUserDataRoot(undefined);
   await db.destroy();
-  rmSync(tmpRoot, {
-    recursive: true,
-    force: true,
-    maxRetries: 6,
-    retryDelay: 100,
-  });
+  removeTestDirectory(tmpRoot);
   vi.restoreAllMocks();
 });
 

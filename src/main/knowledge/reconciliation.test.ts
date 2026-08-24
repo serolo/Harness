@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 import { GitService } from '../git';
 import { hasEligibleRepositoryChanges } from './reconciliation';
@@ -73,12 +74,7 @@ describe('repository change evidence', () => {
   });
 
   afterEach(() => {
-    rmSync(root, {
-      recursive: true,
-      force: true,
-      maxRetries: 6,
-      retryDelay: 100,
-    });
+    removeTestDirectory(root);
   });
 
   async function changedPaths(

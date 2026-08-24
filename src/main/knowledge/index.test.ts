@@ -394,7 +394,7 @@ describe('OKF project knowledge', () => {
       64,
     );
     expect(tiny.length).toBeLessThanOrEqual(256);
-  });
+  }, 15_000);
 
   it('uses QMD before loading pages and only injects its relevant matches', async () => {
     const qmd = new QmdSearchProvider(async (args) => ({

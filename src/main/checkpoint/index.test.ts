@@ -12,9 +12,10 @@
 // .git/refs and on disk.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 
 import { openDb, type AppDatabase } from '../db';
@@ -92,12 +93,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await db.destroy();
-  rmSync(tmpDir, {
-    recursive: true,
-    force: true,
-    maxRetries: 6,
-    retryDelay: 100,
-  });
+  removeTestDirectory(tmpDir);
 });
 
 describe('CheckpointService.snapshot', () => {

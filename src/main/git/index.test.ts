@@ -3,15 +3,10 @@
 // git 2.50.1 is on PATH.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import {
-  mkdtempSync,
-  existsSync,
-  rmSync,
-  writeFileSync,
-  realpathSync,
-} from 'node:fs';
+import { mkdtempSync, existsSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 import { GitService, gitPtyExec, parseWorktreeList } from './index';
 
@@ -70,12 +65,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  rmSync(tmpRoot, {
-    recursive: true,
-    force: true,
-    maxRetries: 6,
-    retryDelay: 100,
-  });
+  removeTestDirectory(tmpRoot);
 });
 
 // ---------------------------------------------------------------------------
@@ -180,8 +170,12 @@ describe('GitService worktree lifecycle', () => {
     const list = await git.worktreeList(repoDir);
     // git resolves symlinks in worktree paths (e.g. /var → /private/var on macOS).
     // Normalize both sides with realpathSync for a reliable comparison.
-    const wtPathReal = realpathSync(wtPath);
-    const entry = list.find((wt) => realpathSync(wt.path) === wtPathReal);
+    const comparablePath = (path: string): string => {
+      const real = realpathSync(path);
+      return process.platform === 'win32' ? real.toLowerCase() : real;
+    };
+    const wtPathReal = comparablePath(wtPath);
+    const entry = list.find((wt) => comparablePath(wt.path) === wtPathReal);
     expect(entry).toBeDefined();
     expect(entry?.branch).toBe('agent/x');
     expect(entry?.head).toBeTruthy();

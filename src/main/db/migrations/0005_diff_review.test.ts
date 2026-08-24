@@ -8,9 +8,10 @@
 // later task, so rows are inserted directly via the Kysely handle `openDb` returns.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../../test-utils';
 import BetterSqlite3 from 'better-sqlite3';
 
 import { openDb, type AppDatabase } from '../index';
@@ -33,12 +34,7 @@ afterEach(async () => {
     await db.destroy();
     db = undefined;
   }
-  rmSync(tmpDir, {
-    recursive: true,
-    force: true,
-    maxRetries: 6,
-    retryDelay: 100,
-  });
+  removeTestDirectory(tmpDir);
 });
 
 /** Create a project + workspace + turn (FK parents) and return their ids. */

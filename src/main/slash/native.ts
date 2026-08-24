@@ -97,7 +97,7 @@ async function nativeRoots(
       const directories = await codexRepositoryDirectories(workspaceDir);
       directories.forEach((directory, index) => {
         roots.push({
-          path: join(directory, '.agents'),
+          path: join(directory, '.agents', 'skills'),
           kind: 'skill',
           provider: 'codex',
           provenance: index === 0 ? 'workspace' : 'repository',
@@ -105,14 +105,14 @@ async function nativeRoots(
       });
     }
     roots.push({
-      path: join(home, '.agents'),
+      path: join(home, '.agents', 'skills'),
       kind: 'skill',
       provider: 'codex',
       provenance: 'user',
     });
     if (adminDir !== null) {
       roots.push({
-        path: adminDir,
+        path: join(adminDir, 'skills'),
         kind: 'skill',
         provider: 'codex',
         provenance: 'admin',
@@ -196,11 +196,7 @@ async function collectFiles(
           parts.includes('commands')
         ) {
           files.push(path);
-        } else if (
-          kind === 'skill' &&
-          entry.name === 'SKILL.md' &&
-          parts.includes('skills')
-        ) {
+        } else if (kind === 'skill' && entry.name === 'SKILL.md') {
           files.push(path);
         }
       }

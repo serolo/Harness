@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 import { GitService, parseUnifiedHunks } from './index';
 
@@ -59,12 +60,7 @@ describe('GitService.diff / status', () => {
   });
 
   afterAll(() => {
-    rmSync(tmpRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: 6,
-      retryDelay: 100,
-    });
+    removeTestDirectory(tmpRoot);
   });
 
   it('returns baseRef/headRef and a non-empty patch', async () => {

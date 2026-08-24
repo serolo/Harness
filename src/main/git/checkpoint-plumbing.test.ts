@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import { execa } from 'execa';
 import { AppError } from '@shared/errors';
 import { GitService } from './index';
@@ -44,12 +45,7 @@ describe('GitService checkpoint plumbing', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: 6,
-      retryDelay: 100,
-    });
+    removeTestDirectory(tmpRoot);
   });
 
   // -------------------------------------------------------------------------

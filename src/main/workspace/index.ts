@@ -44,13 +44,20 @@ import type { SettingsService } from '../settings';
 export type CreateWorkspaceOptions = CreateWorkspaceReq;
 
 function sameFilesystemPath(left: string, right: string): boolean {
+  let leftPath: string;
+  let rightPath: string;
   try {
-    return realpathSync(left) === realpathSync(right);
+    leftPath = realpathSync(left);
+    rightPath = realpathSync(right);
   } catch {
     // A stale Git registration can point at a missing path. Preserve a useful
     // lexical comparison without requiring either side to exist.
-    return resolve(left) === resolve(right);
+    leftPath = resolve(left);
+    rightPath = resolve(right);
   }
+  return process.platform === 'win32'
+    ? leftPath.toLowerCase() === rightPath.toLowerCase()
+    : leftPath === rightPath;
 }
 
 function worktreeDestinationIsOccupied(path: string): boolean {

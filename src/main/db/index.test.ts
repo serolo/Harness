@@ -13,9 +13,10 @@
 //   - Constraints: unique (project_id, name) rejects duplicates; FK rejects a bogus project_id.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../test-utils';
 import BetterSqlite3 from 'better-sqlite3';
 
 import { openDb, type AppDatabase } from './index';
@@ -41,12 +42,7 @@ afterEach(async () => {
     await db.destroy();
     db = undefined;
   }
-  rmSync(tmpDir, {
-    recursive: true,
-    force: true,
-    maxRetries: 6,
-    retryDelay: 100,
-  });
+  removeTestDirectory(tmpDir);
 });
 
 // --- fixtures / builders ------------------------------------------------------

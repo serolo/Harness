@@ -327,19 +327,24 @@ export class AgentRegistry {
         );
       }
       const backup = `${entry.dir}.backup-${randomUUID()}`;
-      await renameWithRetry(entry.dir, backup);
+      const restartWatcher = await this.closeProjectWatcher(projectId);
       try {
-        await renameWithRetry(staging, entry.dir);
-      } catch (error) {
-        await renameWithRetry(backup, entry.dir);
-        throw error;
+        await renameWithRetry(entry.dir, backup);
+        try {
+          await renameWithRetry(staging, entry.dir);
+        } catch (error) {
+          await renameWithRetry(backup, entry.dir);
+          throw error;
+        }
+        await rm(backup, {
+          recursive: true,
+          force: true,
+          maxRetries: 6,
+          retryDelay: 100,
+        });
+      } finally {
+        if (restartWatcher) this.watchProject(projectId);
       }
-      await rm(backup, {
-        recursive: true,
-        force: true,
-        maxRetries: 6,
-        retryDelay: 100,
-      });
     } finally {
       await rm(staging, {
         recursive: true,
@@ -395,15 +400,28 @@ export class AgentRegistry {
       ![...this.cache.values()].some((entry) => entry.projectId === projectId)
     )
       await this.loadRoot(projectId, 'project', this.projectRoot(projectId));
-    if (!this.watchers.has(projectId)) {
-      const watcher = chokidar.watch(this.projectRoot(projectId), {
-        ignoreInitial: true,
-        depth: 3,
-        awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
-      });
-      watcher.on('all', () => this.scheduleReload(projectId));
-      this.watchers.set(projectId, watcher);
-    }
+    if (!this.watchers.has(projectId)) this.watchProject(projectId);
+  }
+
+  private watchProject(projectId: string): void {
+    const watcher = chokidar.watch(this.projectRoot(projectId), {
+      ignoreInitial: true,
+      depth: 3,
+      awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
+    });
+    watcher.on('all', () => this.scheduleReload(projectId));
+    this.watchers.set(projectId, watcher);
+  }
+
+  private async closeProjectWatcher(projectId: string): Promise<boolean> {
+    const timer = this.debounce.get(projectId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.debounce.delete(projectId);
+    const watcher = this.watchers.get(projectId);
+    if (watcher === undefined) return false;
+    this.watchers.delete(projectId);
+    await watcher.close();
+    return true;
   }
 
   private scheduleReload(projectId: string): void {

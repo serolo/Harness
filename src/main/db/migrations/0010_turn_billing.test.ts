@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTestDirectory } from '../../test-utils';
 import BetterSqlite3 from 'better-sqlite3';
 import { openDb, type AppDatabase } from '../index';
 
@@ -17,12 +18,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await db.destroy();
-  rmSync(tmpDir, {
-    recursive: true,
-    force: true,
-    maxRetries: 6,
-    retryDelay: 100,
-  });
+  removeTestDirectory(tmpDir);
 });
 
 describe('migration 0010 turn billing', () => {

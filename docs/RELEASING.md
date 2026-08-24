@@ -6,10 +6,15 @@ it only after inspecting and smoke-testing the installers. Never distribute an u
 `npm run package` output as a production release.
 
 The manual-only `App Bundle` workflow builds the same platforms without publishing a GitHub
-release. macOS and Windows jobs fail closed when signing credentials are unavailable; Linux has no
-platform-standard code-signing requirement.
+release. macOS remains signed and notarized, while Windows artifacts are explicitly unsigned test
+builds until CI-compatible Authenticode signing is configured. Linux has no platform-standard
+code-signing requirement. Never distribute the unsigned Windows App Bundle artifacts as a
+production release.
 
-## Required GitHub Actions secrets
+## Required production release secrets
+
+The macOS App Bundle also uses its macOS signing/notarization secrets. The unsigned Windows App
+Bundle does not use either Windows signing secret.
 
 - `MAC_CSC_LINK`: base64-encoded Developer ID Application `.p12`
 - `MAC_CSC_KEY_PASSWORD`: password for that `.p12`

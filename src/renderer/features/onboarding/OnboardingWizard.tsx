@@ -17,6 +17,7 @@ import {
 import { invoke } from '@renderer/ipc';
 import { useSettings } from '@renderer/features/settings/useSettings';
 import { OnboardingLoginTerminal } from './OnboardingLoginTerminal';
+import { TelemetryConsentControls } from '../privacy/TelemetryConsentControls';
 
 export function OnboardingWizard(): React.JSX.Element | null {
   const [state, setState] = useState<OnboardingState | null>(null);
@@ -337,6 +338,14 @@ function OnboardingWizardContent({
                 ))}
               </select>
               <SpeakerMark />
+            </div>
+
+            <SettingCopy
+              title="Privacy"
+              description="Choose whether Harness may send anonymous product analytics or sanitized crash diagnostics. Both are off by default and can be changed later."
+            />
+            <div className="lg:col-span-1">
+              <TelemetryConsentControls />
             </div>
           </div>
         </div>

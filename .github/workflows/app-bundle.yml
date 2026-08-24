@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 
+env:
+  HARNESS_POSTHOG_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+  HARNESS_POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+  HARNESS_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
 concurrency:
   group: app-bundle-${{ github.ref }}
   cancel-in-progress: true

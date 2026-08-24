@@ -116,6 +116,11 @@ export function onboardingStatePath(): string {
   return join(userDataRoot(), 'onboarding.json');
 }
 
+/** `<userData>/privacy.json` — app-global telemetry consent, never project-controlled. */
+export function telemetryPrivacyPath(): string {
+  return join(userDataRoot(), 'privacy.json');
+}
+
 /** `<userData>/pricing-catalog.json` — validated last-known-good token pricing. */
 export function pricingCatalogPath(): string {
   return join(userDataRoot(), 'pricing-catalog.json');

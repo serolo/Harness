@@ -60,6 +60,7 @@ import type {
 import type { SlashCommand } from './slash';
 import type { CreateTaskReq, ScheduledTask, UpdateTaskReq } from './tasks';
 import type { MonthlyUsage, PricingCatalogSnapshot } from './billing';
+import type { TelemetryConsent, TelemetryConsentUpdate } from './telemetry';
 import type {
   AgentFileResult,
   AgentValidationDiagnostic,
@@ -702,6 +703,15 @@ export interface Commands {
   'attachment:imagePreview': {
     req: { workspaceId: string; turnId: string; attachmentIndex: number };
     res: { dataUrl: string };
+  };
+
+  // --- App-global telemetry privacy (APPEND-ONLY) ---
+  /** Read the two opt-in choices. No analytics identity crosses this boundary. */
+  'privacy:getTelemetryConsent': { req: void; res: TelemetryConsent };
+  /** Update one or both choices after strict boolean narrowing in main. */
+  'privacy:setTelemetryConsent': {
+    req: TelemetryConsentUpdate;
+    res: TelemetryConsent;
   };
 }
 

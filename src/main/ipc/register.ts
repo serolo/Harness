@@ -508,10 +508,15 @@ export function focusRefreshWorkspaceIds(): string[] {
  * shape into it (`encodeAppErrorMessage`); the preload decodes it (`decodeAppErrorMessage`).
  */
 function toBoundaryError(channelLabel: string, e: unknown): Error {
+  if (!(e instanceof AppError)) {
+    ipcTelemetry?.captureException(e, `ipc:${channelLabel}`);
+  }
   const appError = toAppError(e);
   logger.error(`[ipc:${channelLabel}] ${appError.code}: ${appError.message}`);
   return new Error(encodeAppErrorMessage(appError.toJSON()));
 }
+
+let ipcTelemetry: AppContext['telemetry'] | undefined;
 
 async function confinedAgentOperation<T>(
   label: string,
@@ -1043,6 +1048,9 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           (chunk) => sink.push({ kind: 'setupLog', chunk }),
           (workspace) => sink.push({ kind: 'created', workspace }),
         );
+        ctx.telemetry.capture('workspace created', {
+          harness: arg.harness,
+        });
         sink.end();
       } catch (e) {
         const error = toAppError(e);
@@ -1063,6 +1071,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         }
         await ctx.metaHarness.assertWorkspaceAvailable(arg.id);
         await ctx.workspaces.archive(arg.id, (event) => sink.push(event));
+        ctx.telemetry.capture('workspace archived');
         sink.end();
       } catch (error) {
         sink.error(toAppError(error));
@@ -1178,8 +1187,28 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         // Buffer events until the `started` frame is sent (started-first guarantee).
         let started = false;
         const buffered: AgentEvent[] = [];
+        const telemetryStartedAt = Date.now();
+        let telemetryCompleted = false;
+        const resolvedMode = opts.mode ?? 'default';
         const agentSink: StreamSink<AgentEvent> = {
           push: (event) => {
+            if (!telemetryCompleted && event.kind === 'turn_end') {
+              telemetryCompleted = true;
+              ctx.telemetry.capture('turn completed', {
+                harness: selectedHarness,
+                mode: resolvedMode,
+                outcome: 'completed',
+                duration_ms: Date.now() - telemetryStartedAt,
+              });
+            } else if (!telemetryCompleted && event.kind === 'error') {
+              telemetryCompleted = true;
+              ctx.telemetry.capture('turn completed', {
+                harness: selectedHarness,
+                mode: resolvedMode,
+                outcome: 'error',
+                duration_ms: Date.now() - telemetryStartedAt,
+              });
+            }
             if (started) sink.push({ kind: 'event', event });
             else buffered.push(event);
           },
@@ -1193,6 +1222,10 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           agentSink,
           harnessOverride,
         );
+        ctx.telemetry.capture('turn started', {
+          harness: selectedHarness,
+          mode: resolvedMode,
+        });
         turnAccepted = true;
         const turnId = ctx.harness.getActiveTurnId(arg.workspaceId) ?? '';
         sink.push({
@@ -1270,6 +1303,7 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
           },
           ptySink,
         );
+        ctx.telemetry.capture('terminal started');
         sink.push({ kind: 'started', ptyId });
         started = true;
         for (const data of buffered) sink.push({ kind: 'data', data });
@@ -1620,6 +1654,9 @@ function registerStreamControl(ctx: AppContext): void {
  * would throw, which is the desired signal if it is ever called twice.
  */
 export function registerIpc(ctx: AppContext): void {
+  // Test contexts can intentionally be partial; overwrite on every registration so a
+  // prior test/window cannot retain a stale reporting service.
+  ipcTelemetry = ctx.telemetry;
   // app:ping — the renderer health check (flips the "IPC OK" indicator).
   handle('app:ping', async () => 'ok');
 
@@ -1761,13 +1798,15 @@ export function registerIpc(ctx: AppContext): void {
     const projects = new ProjectsRepo(ctx.db);
     const info = await ctx.git.open(req.localPath);
     const name = basename(req.localPath);
-    return projects.create({
+    const project = await projects.create({
       name,
       originUrl: info.originUrl,
       defaultBranch: info.defaultBranch,
       repoPath: req.localPath,
       directoryName: await nextProjectDirectoryName(projects, name),
     });
+    ctx.telemetry.capture('project added');
+    return project;
   });
 
   // project:list — all registered projects, newest first.
@@ -1850,8 +1889,13 @@ export function registerIpc(ctx: AppContext): void {
   handle('workspace:archive', async (req) => {
     await ctx.metaHarness.assertWorkspaceAvailable(req.id);
     await ctx.workspaces.archive(req.id);
+    ctx.telemetry.capture('workspace archived');
   });
-  handle('workspace:restore', async (req) => ctx.workspaces.restore(req.id));
+  handle('workspace:restore', async (req) => {
+    const workspace = await ctx.workspaces.restore(req.id);
+    ctx.telemetry.capture('workspace restored');
+    return workspace;
+  });
   handle('workspace:archivePreview', async (req) => {
     if (typeof req.id !== 'string' || req.id === '') {
       throw new AppError('invalid_input', 'workspace id is required');
@@ -2302,7 +2346,9 @@ export function registerIpc(ctx: AppContext): void {
     const gitDiff = await ctx.diff.getDiff(req.workspaceId);
     // Map the main-only GitDiff → the shared DiffSet (drop the raw patch; Monaco fetches
     // per-file content lazily via diff:file, keeping the list payload small).
-    return diffSetFromGitDiff(gitDiff);
+    const diff = diffSetFromGitDiff(gitDiff);
+    ctx.telemetry.capture('diff opened', { file_count: diff.files.length });
+    return diff;
   });
 
   // diff:file — per-file old/new content + parsed hunks. Chat file previews may pass
@@ -2827,7 +2873,9 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
     trackForFocusRefresh(req.workspaceId);
-    return ctx.checks.get(req.workspaceId);
+    const result = await ctx.checks.get(req.workspaceId);
+    ctx.telemetry.capture('checks completed', { status: result.state });
+    return result;
   });
 
   // pr:open — open (or return) a PR for the workspace's branch (spec §5.6). Title/body
@@ -2836,11 +2884,13 @@ export function registerIpc(ctx: AppContext): void {
     if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
-    return ctx.prWorkflow.openPr(req.workspaceId, {
+    const pr = await ctx.prWorkflow.openPr(req.workspaceId, {
       draft: req.draft,
       title: req.title,
       body: req.body,
     });
+    ctx.telemetry.capture('pull request opened', { draft: pr.draft });
+    return pr;
   });
 
   // pr:merge — merge the workspace's PR with the chosen strategy (spec §5.6). `method` is
@@ -3094,7 +3144,14 @@ export function registerIpc(ctx: AppContext): void {
   // onboarding:state — compose the onboarding readiness (harness / GitHub / projects) for
   // the first-run wizard (spec §7). No input; delegates to the OnboardingService.
   handle('onboarding:state', async () => ctx.onboarding.getState());
-  handle('onboarding:acknowledge', async () => ctx.onboarding.acknowledge());
+  handle('onboarding:acknowledge', async () => {
+    const state = await ctx.onboarding.getState();
+    await ctx.onboarding.acknowledge();
+    ctx.telemetry.capture('onboarding completed', {
+      github_connected: state.githubConnected,
+      harness_ready: state.harnessReady,
+    });
+  });
 
   // update:getStatus — hydration only. This read cannot trigger network activity.
   handle('update:getStatus', async () => ctx.updater.getStatus());
@@ -3457,6 +3514,37 @@ export function registerIpc(ctx: AppContext): void {
       assertBoundedId(req.runId, 'runId'),
     ),
   );
+
+  // App-global privacy choices. Never route these through layered project settings:
+  // repository files must not be able to enable telemetry.
+  handle('privacy:getTelemetryConsent', async () => ctx.telemetry.getConsent());
+  handle('privacy:setTelemetryConsent', async (req) => {
+    if (typeof req !== 'object' || req === null) {
+      throw new AppError(
+        'invalid_input',
+        'telemetry consent update is required',
+      );
+    }
+    if (
+      req.usageAnalytics !== undefined &&
+      typeof req.usageAnalytics !== 'boolean'
+    ) {
+      throw new AppError('invalid_input', 'usageAnalytics must be a boolean');
+    }
+    if (
+      req.crashReporting !== undefined &&
+      typeof req.crashReporting !== 'boolean'
+    ) {
+      throw new AppError('invalid_input', 'crashReporting must be a boolean');
+    }
+    if (req.usageAnalytics === undefined && req.crashReporting === undefined) {
+      throw new AppError(
+        'invalid_input',
+        'at least one consent choice is required',
+      );
+    }
+    return ctx.telemetry.setConsent(req);
+  });
 
   registerStreamControl(ctx);
 

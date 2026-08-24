@@ -102,6 +102,7 @@ import {
 } from './shortcuts';
 import { initLogging } from './logging';
 import { sanitizeErrorMessage } from './security/sanitize-error';
+import { bootstrapCrashReporting, TelemetryService } from './telemetry';
 
 ensureStandardFileDescriptors();
 
@@ -290,6 +291,8 @@ async function createAppContext(): Promise<AppContext> {
   const settings = new SettingsService();
   settings.load();
   logger.info('[startup] settings loaded');
+
+  const telemetry = await TelemetryService.create();
 
   const pricing = new PricingService({
     cachePath: pricingCatalogPath(),
@@ -780,6 +783,7 @@ async function createAppContext(): Promise<AppContext> {
     controlBroker,
     metaHarness,
     turnPreparation,
+    telemetry,
   };
 
   return ctx;
@@ -975,6 +979,11 @@ function buildAppMenu(actions: readonly ShortcutAction[]): Menu {
 // not contend with a developer's already-running Harness process for the global lock,
 // otherwise Electron exits cleanly before the first test window is created.
 const isE2E = process.env['AGENTAPP_E2E'] === '1';
+
+// Sentry's Electron native integration must initialize before the ready event. The
+// bootstrap is a strict no-op unless crash reporting was explicitly persisted on a
+// previous launch and a production DSN was embedded at build time.
+bootstrapCrashReporting();
 const gotSingleInstanceLock = isE2E || app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
@@ -1037,6 +1046,7 @@ if (!gotSingleInstanceLock) {
 
     createWindow();
     logger.info('[startup] window created');
+    ctx.telemetry.capture('app launched');
 
     // Phase 6: install the application menu (accelerators broadcast `menu:action`).
     // Overrides would come from settings once a `[shortcuts]` section exists; today the
@@ -1127,6 +1137,10 @@ if (!gotSingleInstanceLock) {
       .then(() => ctx.process.registry.killAll())
       .catch((err) =>
         logger.error(`[shutdown] process teardown failed: ${String(err)}`),
+      )
+      .then(() => ctx.telemetry.shutdown())
+      .catch((err) =>
+        logger.error(`[shutdown] telemetry teardown failed: ${String(err)}`),
       )
       .finally(() => {
         logger.info('[shutdown] agents interrupted + process trees torn down');

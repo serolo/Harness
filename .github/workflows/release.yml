@@ -20,6 +20,9 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  HARNESS_POSTHOG_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+  HARNESS_POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+  HARNESS_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
 jobs:
   validate-release:
@@ -64,6 +67,13 @@ jobs:
 
       - name: Run repository gate
         run: npm run check
+
+      - name: Upload telemetry source maps
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: npm run telemetry:upload-sourcemaps
 
   build-macos:
     name: Build macOS (${{ matrix.arch }})

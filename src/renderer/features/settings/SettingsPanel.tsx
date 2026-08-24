@@ -21,6 +21,7 @@ import {
   Pencil,
   Play,
   RefreshCw,
+  ShieldCheck,
   Settings2,
   SlidersHorizontal,
   TerminalSquare,
@@ -58,6 +59,7 @@ import {
 } from '../chat/modelCatalog';
 import { AgentMemoryImport } from '../knowledge/AgentMemoryImport';
 import { OnboardingLoginTerminal } from '../onboarding/OnboardingLoginTerminal';
+import { TelemetryConsentControls } from '../privacy/TelemetryConsentControls';
 
 export interface SettingsPanelProps {
   /** Close affordance for the overlay host (a header button). */
@@ -571,6 +573,15 @@ export function SettingsPanel({
                 </SettingsSection>
               ) : null}
 
+              {activeSection === 'privacy' ? (
+                <SettingsSection
+                  title="Privacy"
+                  testId="settings-section-privacy"
+                >
+                  <TelemetryConsentControls />
+                </SettingsSection>
+              ) : null}
+
               {activeSection === 'advanced' ? <AdvancedSettings /> : null}
 
               {activeSection !== 'general' &&
@@ -579,6 +590,7 @@ export function SettingsPanel({
               activeSection !== 'git' &&
               activeSection !== 'environment' &&
               activeSection !== 'appearance' &&
+              activeSection !== 'privacy' &&
               activeSection !== 'advanced' ? (
                 <SettingsSection
                   title={SECTION_LABELS[activeSection]}
@@ -631,6 +643,7 @@ type SettingsSectionId =
   | 'environment'
   | 'git'
   | 'appearance'
+  | 'privacy'
   | 'advanced';
 
 const SECTION_LABELS: Record<SettingsSectionId, string> = {
@@ -640,6 +653,7 @@ const SECTION_LABELS: Record<SettingsSectionId, string> = {
   environment: 'Environment',
   git: 'Git',
   appearance: 'Appearance',
+  privacy: 'Privacy',
   advanced: 'Advanced',
 };
 
@@ -653,6 +667,7 @@ const PRIMARY_NAV: Array<{
   { id: 'environment', icon: Laptop },
   { id: 'git', icon: GitBranch },
   { id: 'appearance', icon: Palette },
+  { id: 'privacy', icon: ShieldCheck },
   { id: 'advanced', icon: SlidersHorizontal },
 ];
 

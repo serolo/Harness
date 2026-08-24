@@ -8,8 +8,20 @@ import react from '@vitejs/plugin-react';
 // against the rebuilt Electron ABI (see `npm run rebuild`).
 export default defineConfig({
   main: {
+    define: {
+      __HARNESS_POSTHOG_TOKEN__: JSON.stringify(
+        process.env.HARNESS_POSTHOG_TOKEN ?? '',
+      ),
+      __HARNESS_POSTHOG_HOST__: JSON.stringify(
+        process.env.HARNESS_POSTHOG_HOST ?? 'https://us.i.posthog.com',
+      ),
+      __HARNESS_SENTRY_DSN__: JSON.stringify(
+        process.env.HARNESS_SENTRY_DSN ?? '',
+      ),
+    },
     plugins: [externalizeDepsPlugin()],
     build: {
+      sourcemap: 'hidden',
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/main/index.ts'),
@@ -32,6 +44,7 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
+      sourcemap: 'hidden',
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/preload/index.ts') },
         // A sandboxed preload (`sandbox: true`) is loaded by Electron as
@@ -61,6 +74,7 @@ export default defineConfig({
       },
     },
     build: {
+      sourcemap: 'hidden',
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/renderer/index.html') },
       },

@@ -48,6 +48,13 @@ function installApi(state: OnboardingState | undefined): {
     }
     if (channel === 'settings:getProvenance') return Promise.resolve({});
     if (channel === 'settings:getIssues') return Promise.resolve([]);
+    if (channel === 'privacy:getTelemetryConsent') {
+      return Promise.resolve({
+        usageAnalytics: false,
+        crashReporting: false,
+        crashReportingActive: false,
+      });
+    }
     if (channel === 'settings:set') {
       return Promise.resolve({
         appearance: { theme: 'light' },

@@ -16,6 +16,7 @@ directories:
 
 files:
   - out/**/*
+  - '!out/**/*.map'
   - package.json
 
 extraResources:

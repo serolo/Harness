@@ -19,6 +19,13 @@ export default defineConfig({
     // execPath from the parent (scripts/vitest-electron.mjs) — required for the
     // native-module ABI to match in the process that opens the sqlite file.
     pool: 'forks',
+    // ConPTY cannot reliably attach multiple Electron-as-Node fork workers to
+    // the same non-interactive Windows CI console. Serial Windows files also
+    // prevent SQLite/Git integration tests from exceeding their timeout while
+    // competing for the two-core hosted runner.
+    maxWorkers: process.platform === 'win32' ? 1 : undefined,
+    testTimeout: process.platform === 'win32' ? 15_000 : 5_000,
+    hookTimeout: process.platform === 'win32' ? 20_000 : 10_000,
     setupFiles: ['src/test/setup.ts'],
     exclude: ['node_modules', 'out', 'dist', 'e2e'],
     projects: [

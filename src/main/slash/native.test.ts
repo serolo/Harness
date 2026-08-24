@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { discoverNativeSlashCommands } from './native';
 
 const tempDirs: string[] = [];
@@ -147,7 +148,7 @@ describe('discoverNativeSlashCommands', () => {
 
   it('keeps the duplicated repository workflow skill catalogue in provider parity', async () => {
     const home = await tempHome();
-    const workspaceDir = process.cwd();
+    const workspaceDir = fileURLToPath(new URL('../../../', import.meta.url));
     const [codex, claude] = await Promise.all([
       discoverNativeSlashCommands({
         harness: 'codex',

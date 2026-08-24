@@ -31,6 +31,25 @@ it('parses CRLF-separated worktree porcelain records', () => {
   ]);
 });
 
+it('parses NUL-separated worktree porcelain records', () => {
+  expect(
+    parseWorktreeList(
+      'worktree C:/repo\0HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0branch refs/heads/main\0\0worktree C:/repo-wt\0HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\0branch refs/heads/agent/x\0\0',
+    ),
+  ).toEqual([
+    {
+      path: 'C:/repo',
+      head: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      branch: 'main',
+    },
+    {
+      path: 'C:/repo-wt',
+      head: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      branch: 'agent/x',
+    },
+  ]);
+});
+
 // Shared temp dirs — created once, cleaned up after all tests.
 let tmpRoot: string;
 let sourceRepo: string; // the "origin" bare-ish repo we clone from

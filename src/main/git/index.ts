@@ -302,10 +302,15 @@ export interface RepoInfo {
 /** Parse `git worktree list --porcelain` with either Unix or Windows newlines. */
 export function parseWorktreeList(stdout: string): WorktreeInfo[] {
   const worktrees: WorktreeInfo[] = [];
-  const blocks = stdout.split(/\r?\n(?:\r?\n)+/);
+  const nulTerminated = stdout.includes('\0');
+  const blocks = nulTerminated
+    ? stdout.split(/\0\0+/)
+    : stdout.split(/\r?\n(?:\r?\n)+/);
 
   for (const block of blocks) {
-    const lines = block.trim().split(/\r?\n/);
+    const lines = nulTerminated
+      ? block.split('\0').filter((line) => line !== '')
+      : block.trim().split(/\r?\n/);
     if (lines.length === 0 || lines[0] === '') continue;
 
     let path = '';
@@ -1103,7 +1108,7 @@ export class GitService {
    * We map each stanza to a {@link WorktreeInfo}.
    */
   async worktreeList(repoPath: string): Promise<WorktreeInfo[]> {
-    const args = ['-C', repoPath, 'worktree', 'list', '--porcelain'];
+    const args = ['-C', repoPath, 'worktree', 'list', '--porcelain', '-z'];
     let stdout: string;
     try {
       const result = await gitExeca(args);

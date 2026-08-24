@@ -154,6 +154,8 @@ jobs:
 
   build-windows:
     name: Build Windows (x64)
+    # Temporarily disabled while cross-platform packaging is stabilized.
+    if: ${{ false }}
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
@@ -202,6 +204,8 @@ jobs:
 
   build-linux:
     name: Build Linux (x64)
+    # Temporarily disabled while cross-platform packaging is stabilized.
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

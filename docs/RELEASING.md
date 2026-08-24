@@ -1,20 +1,18 @@
 # Releasing Harness
 
-Production releases contain macOS arm64/x64, Windows x64, and Linux x64 builds published to the
-public `serolo/Harness` GitHub repository. The workflow creates a **draft** release; a human promotes
-it only after inspecting and smoke-testing the installers. Never distribute an unsigned local
-`npm run package` output as a production release.
+Production releases currently contain macOS arm64/x64 builds published to the public
+`serolo/Harness` GitHub repository. Windows and Linux CI, App Bundle, and Release jobs are
+temporarily disabled while cross-platform support is stabilized. The workflow creates a **draft**
+release; a human promotes it only after inspecting and smoke-testing the installers. Never
+distribute an unsigned local `npm run package` output as a production release.
 
-The manual-only `App Bundle` workflow builds the same platforms without publishing a GitHub
-release. macOS remains signed and notarized, while Windows artifacts are explicitly unsigned test
-builds until CI-compatible Authenticode signing is configured. Linux has no platform-standard
-code-signing requirement. Never distribute the unsigned Windows App Bundle artifacts as a
-production release.
+The manual-only `App Bundle` workflow currently builds signed and notarized macOS artifacts without
+publishing a GitHub release. Its retained Windows and Linux jobs are disabled in the workflow and
+can be re-enabled when cross-platform packaging resumes.
 
 ## Required production release secrets
 
-The macOS App Bundle also uses its macOS signing/notarization secrets. The unsigned Windows App
-Bundle does not use either Windows signing secret.
+The macOS App Bundle also uses these macOS signing/notarization secrets:
 
 - `MAC_CSC_LINK`: base64-encoded Developer ID Application `.p12`
 - `MAC_CSC_KEY_PASSWORD`: password for that `.p12`
@@ -22,6 +20,9 @@ Bundle does not use either Windows signing secret.
 - `APPLE_API_KEY_ID`: App Store Connect key ID
 - `APPLE_API_ISSUER`: App Store Connect issuer UUID
 - `APPLE_TEAM_ID`: Apple Developer team ID
+
+The disabled Windows release job will additionally require these secrets when it is re-enabled:
+
 - `WIN_CSC_LINK`: base64-encoded Authenticode code-signing `.pfx`
 - `WIN_CSC_KEY_PASSWORD`: password for that `.pfx`
 
@@ -31,9 +32,9 @@ appear in source, logs, release notes, packaged resources, renderer payloads, or
 The workflows decode certificates under `RUNNER_TEMP`, use them only for signing, and remove them
 in an `always()` step.
 
-Rotate credentials by installing their replacements in GitHub secrets and proving an App Bundle
-run before revoking the old credentials. Record the owner and rotation date in the team's secret
-manager.
+Rotate macOS credentials by installing their replacements in GitHub secrets and proving an App
+Bundle run before revoking the old credentials. Validate replacement Windows credentials before
+re-enabling its release job. Record the owner and rotation date in the team's secret manager.
 
 ## Prepare a release
 
@@ -43,30 +44,27 @@ manager.
 3. Commit the version, then create an annotated tag exactly matching `v${package.version}`. Never
    move or reuse a published tag.
 4. Push the commit and tag. The tag-triggered workflow verifies the tag/version, runs the repository
-   gate, and then builds all four release candidates on native GitHub runners.
+   gate, and then builds both macOS release candidates on native GitHub runners.
 
 Manual dispatch accepts an **existing** `v`-prefixed tag and applies the same validation. It is not
 an escape hatch around version, signing, notarization, architecture, or metadata checks.
 
-Each platform job rebuilds `better-sqlite3` and `node-pty` for Electron, verifies the main executable
+Each macOS job rebuilds `better-sqlite3` and `node-pty` for Electron, verifies the main executable
 and native-module architecture, checks updater metadata, hashes its handoff, and uploads a one-day
-intermediate artifact. macOS additionally verifies Developer ID signatures, Gatekeeper assessment,
-notarization, and stapling. Windows verifies Authenticode on the application and NSIS installer.
-The final job has no signing credentials: it verifies all hashes, merges macOS metadata, creates an
-empty GitHub draft, and uploads only the verified handoffs.
+intermediate artifact. It also verifies Developer ID signatures, Gatekeeper assessment,
+notarization, and stapling. The final job has no signing credentials: it verifies both hashes,
+merges macOS metadata, creates an empty GitHub draft, and uploads only the verified handoffs.
 
 ## Expected draft assets
 
-The draft contains 16 files:
+The draft currently contains 9 files:
 
 - macOS: arm64 and x64 `.dmg`/`.zip` files, four blockmaps, and one merged `latest-mac.yml` (9)
-- Windows x64: signed NSIS `.exe`, its blockmap, and `latest.yml` (3)
-- Linux x64: `.AppImage`, AppImage blockmap, `.deb`, and `latest-linux.yml` (4)
 
-The zip, NSIS, and AppImage assets are required by `electron-updater`; do not delete them while
-keeping their metadata. The publisher refuses to overwrite assets or append to a non-empty draft.
-If an interrupted upload leaves a partial unpublished draft, inspect and delete that draft before
-rerunning. Never replace assets on a published release.
+The zip assets are required by `electron-updater`; do not delete them while keeping their metadata.
+The publisher refuses to overwrite assets or append to a non-empty draft. If an interrupted upload
+leaves a partial unpublished draft, inspect and delete that draft before rerunning. Never replace
+assets on a published release.
 
 ## Smoke test and publish
 
@@ -74,11 +72,8 @@ Download each candidate on clean hardware or a clean VM:
 
 - macOS arm64 and Intel: install the DMG, confirm Gatekeeper accepts it, and validate the stapled
   notarization ticket.
-- Windows x64: run the NSIS installer, confirm Windows reports a valid publisher signature, and
-  launch from the installed shortcut.
-- Linux x64: run the AppImage and install the `.deb` on a Debian/Ubuntu test system.
-- On every platform, create a project/worktree, start a terminal, run a Claude/Codex turn, exercise
-  `better-sqlite3`, and confirm `app-update.yml` points to public `serolo/Harness` releases.
+- On both macOS architectures, create a project/worktree, start a terminal, run a Claude/Codex turn,
+  exercise `better-sqlite3`, and confirm `app-update.yml` points to public `serolo/Harness` releases.
 
 Then publish the draft and test an update from the preceding stable version. Automatic checks should
 stay silent until a download is ready; **Later** must keep the current version running, and

@@ -250,6 +250,8 @@ jobs:
   build-windows:
     name: Build Windows (x64)
     needs: validate-release
+    # Temporarily disabled while cross-platform packaging is stabilized.
+    if: ${{ false }}
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
@@ -334,6 +336,8 @@ jobs:
   build-linux:
     name: Build Linux (x64)
     needs: validate-release
+    # Temporarily disabled while cross-platform packaging is stabilized.
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -399,8 +403,8 @@ jobs:
           retention-days: 1
 
   publish-release:
-    name: Publish cross-platform release draft
-    needs: [build-macos, build-windows, build-linux]
+    name: Publish macOS release draft
+    needs: build-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -432,29 +436,11 @@ jobs:
           name: Harness-release-macOS-x64-${{ github.run_id }}
           path: release-input/x64
 
-      - name: Download Windows release candidate
-        uses: actions/download-artifact@v4
-        with:
-          name: Harness-release-Windows-x64-${{ github.run_id }}
-          path: release-input/windows-x64
-
-      - name: Download Linux release candidate
-        uses: actions/download-artifact@v4
-        with:
-          name: Harness-release-Linux-x64-${{ github.run_id }}
-          path: release-input/linux-x64
-
       - name: Verify and combine release candidates
         run: |
           for arch in arm64 x64; do
             (
               cd "release-input/$arch"
-              sha256sum --check SHA256SUMS
-            )
-          done
-          for platform in windows-x64 linux-x64; do
-            (
-              cd "release-input/$platform"
               sha256sum --check SHA256SUMS
             )
           done
@@ -472,13 +458,8 @@ jobs:
             release-input/x64/latest-mac-x64.yml \
             release-assets/latest-mac.yml
 
-          cp release-input/windows-x64/*.exe release-input/windows-x64/*.blockmap \
-            release-input/windows-x64/latest.yml release-assets/
-          cp release-input/linux-x64/*.AppImage release-input/linux-x64/*.AppImage.blockmap \
-            release-input/linux-x64/*.deb release-input/linux-x64/latest-linux.yml release-assets/
-
           asset_count="$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          test "$asset_count" = "16"
+          test "$asset_count" = "9"
           find release-assets -maxdepth 1 -type f -print | sort > "$RUNNER_TEMP/release-assets.list"
           while IFS= read -r artifact; do
             sha256sum "$artifact"
@@ -504,14 +485,14 @@ jobs:
               --draft \
               --verify-tag \
               --title "Harness $RELEASE_TAG" \
-              --notes "Verified macOS arm64/x64, Windows x64, and Linux x64 release candidates. Review before publishing."
+              --notes "Verified macOS arm64/x64 release candidates. Windows and Linux builds are temporarily disabled. Review before publishing."
           fi
 
           release_assets=()
           while IFS= read -r artifact; do
             release_assets+=("$artifact")
           done < "$RUNNER_TEMP/release-assets.list"
-          test "${#release_assets[@]}" -eq 16
+          test "${#release_assets[@]}" -eq 9
           gh release upload "$RELEASE_TAG" "${release_assets[@]}"
 
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true"

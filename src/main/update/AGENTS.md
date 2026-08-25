@@ -16,6 +16,9 @@ This subsystem is the main-process trust boundary around `electron-updater`.
   Never expose credentials, signed URLs, filesystem paths, raw updater objects, or release secrets.
 - Embedded metadata validation and updater import stay behind the injected `loadReleaseUpdater`
   seam. Invalid/missing metadata must return before the importer is called.
+- Resolve `electron-updater` through `autoUpdaterFromModule`: packaged Node runtimes expose the
+  CommonJS singleton under `default.autoUpdater`, while bundlers may provide a named export. The
+  resolved object must satisfy the narrow updater surface or fail closed.
 - Download progress accepts only finite numeric percentages and clamps them to `0..100`.
 - Production artifacts must be Developer ID signed, hardened-runtime enabled, notarized, and
   fully verified before a GH-token-scoped step uploads them to a human-reviewed GitHub draft. Build

@@ -74,7 +74,11 @@ import {
   pricingCatalogPath,
   rootDirectory,
 } from './paths';
-import { loadReleaseUpdater, UpdateService } from './update';
+import {
+  autoUpdaterFromModule,
+  loadReleaseUpdater,
+  UpdateService,
+} from './update';
 import { WikiService } from './knowledge';
 import { hasEligibleRepositoryChanges } from './knowledge/reconciliation';
 import { PricingService } from './billing/pricing';
@@ -740,7 +744,8 @@ async function createAppContext(): Promise<AppContext> {
     isPackaged: app.isPackaged,
     readMetadata: () =>
       readFile(join(process.resourcesPath, 'app-update.yml'), 'utf8'),
-    importUpdater: async () => (await import('electron-updater')).autoUpdater,
+    importUpdater: async () =>
+      autoUpdaterFromModule(await import('electron-updater')),
     log: (message) => logger.warn(message),
   });
   const updater = new UpdateService({

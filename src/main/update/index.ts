@@ -34,6 +34,41 @@ export interface AutoUpdaterLike {
   removeAllListeners(event?: string): void;
 }
 
+/**
+ * Resolve electron-updater across its ESM and CommonJS module shapes. Node's dynamic
+ * import of the package exposes `autoUpdater` on `default`, while some bundlers expose
+ * it as a named export. Validate the narrow runtime surface before enabling updates so
+ * an incompatible package shape fails closed instead of silently appearing supported.
+ */
+export function autoUpdaterFromModule(module: unknown): AutoUpdaterLike {
+  const namespace = objectRecord(module);
+  const direct = namespace?.autoUpdater;
+  const fallback = objectRecord(namespace?.default)?.autoUpdater;
+  const candidate = direct ?? fallback;
+
+  if (!isAutoUpdaterLike(candidate)) {
+    throw new Error('electron-updater did not expose a compatible autoUpdater');
+  }
+  return candidate;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function isAutoUpdaterLike(value: unknown): value is AutoUpdaterLike {
+  const candidate = objectRecord(value);
+  return (
+    candidate !== undefined &&
+    typeof candidate.checkForUpdates === 'function' &&
+    typeof candidate.quitAndInstall === 'function' &&
+    typeof candidate.on === 'function' &&
+    typeof candidate.removeAllListeners === 'function'
+  );
+}
+
 export interface UpdateServiceDeps {
   /** Whether this is a packaged build (dev runs are never updatable). */
   isPackaged: boolean;

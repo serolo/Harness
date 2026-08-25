@@ -5,6 +5,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import {
+  autoUpdaterFromModule,
   isTrustedReleaseMetadata,
   loadReleaseUpdater,
   UpdateService,
@@ -42,6 +43,16 @@ const TRUSTED_METADATA = [
   'owner: serolo',
   'repo: Harness',
 ].join('\n');
+
+describe('electron-updater module interop', () => {
+  it('loads autoUpdater from the CommonJS default export used by packaged builds', () => {
+    const updater = fakeUpdater();
+
+    expect(autoUpdaterFromModule({ default: { autoUpdater: updater } })).toBe(
+      updater,
+    );
+  });
+});
 
 describe('release updater metadata trust gate', () => {
   it.each([

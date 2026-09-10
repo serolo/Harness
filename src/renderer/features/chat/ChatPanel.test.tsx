@@ -80,6 +80,7 @@ function installApi(opts: {
   imagePreviews?: Record<string, string>;
   pickedFile?: string;
   directories?: Record<string, WorkspaceDirectoryEntry[]>;
+  upstream?: string | null;
 }): ApiStub {
   // Fake `chat_contexts` persistence, keyed by workspace — mirrors main's
   // `ChatContextsRepo`: `list` bootstraps a single 'Untitled' tab the first time a
@@ -166,7 +167,12 @@ function installApi(opts: {
       return Promise.resolve(undefined);
     }
     if (channel === 'harness:list') return Promise.resolve(HARNESS_LIST);
-    if (channel === 'turn:interrupt') return Promise.resolve(undefined);
+    if (channel === 'turn:interrupt' || channel === 'turn:interruptContext') {
+      return Promise.resolve(undefined);
+    }
+    if (channel === 'git:getUpstream') {
+      return Promise.resolve({ upstream: opts.upstream ?? null });
+    }
     if (channel === 'chat:clear') return Promise.resolve(undefined);
     if (channel === 'task:list') return Promise.resolve(opts.tasks ?? []);
     if (channel === 'workspace:readFile') {
@@ -491,7 +497,7 @@ describe('ChatPanel reconstruction', () => {
   });
 
   it('shows workspace context at the start of a new chat', async () => {
-    installApi({});
+    const api = installApi({ upstream: 'origin/qa/147' });
     useWorkspacesStore.setState({
       projects: [
         {
@@ -533,7 +539,10 @@ describe('ChatPanel reconstruction', () => {
     const context = await screen.findByTestId('new-chat-workspace-context');
     expect(context).toHaveTextContent('FeatureFlag Context');
     expect(context).toHaveTextContent('feature/featureflag-context');
-    expect(context).toHaveTextContent('Base branchmain');
+    expect(context).toHaveTextContent('Base branchorigin/qa/147');
+    expect(api.invoke).toHaveBeenCalledWith('git:getUpstream', {
+      workspaceId: 'ws1',
+    });
     expect(context).toHaveTextContent('w2-platform');
     expect(context).toHaveTextContent('Worktreefeatureflag-context');
     expect(context).not.toHaveTextContent('/src/worktrees/featureflag-context');
@@ -2014,6 +2023,39 @@ describe('ChatPanel reconstruction', () => {
     );
   });
 
+  it('preserves a separate unsent draft for each manual chat context', async () => {
+    installApi({});
+    render(<ChatPanel workspaceId="ws1" />);
+
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'draft for first tab' } });
+
+    fireEvent.click(screen.getByTestId('chat-new'));
+    await screen.findByTestId('chat-context-tab');
+    expect(screen.getByTestId('composer-input')).toHaveValue('');
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'draft for second tab' },
+    });
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    expect(screen.getByTestId('composer-input')).toHaveValue(
+      'draft for first tab',
+    );
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-context-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    expect(screen.getByTestId('composer-input')).toHaveValue(
+      'draft for second tab',
+    );
+  });
+
   it('defaults every new context to regular mode while preserving explicit context-local plan mode', async () => {
     writeModelPreferences({
       ...DEFAULT_MODEL_PREFERENCES,
@@ -2568,7 +2610,7 @@ describe('ChatPanel streaming', () => {
     );
   });
 
-  it('shows Stop while busy and interrupts via turn:interrupt', async () => {
+  it('shows Stop while busy and interrupts the active manual context', async () => {
     // A stream that emits `started` then never resolves → stays busy.
     let capturedResolve: (() => void) | undefined;
     const stream = vi.fn(
@@ -2599,7 +2641,7 @@ describe('ChatPanel streaming', () => {
     fireEvent.change(input, { target: { value: 'work' } });
     fireEvent.click(screen.getByTestId('composer-send'));
 
-    // Busy → Stop button shows; clicking it invokes turn:interrupt.
+    // Busy → Stop button shows; clicking it interrupts only this durable chat context.
     const stop = await screen.findByTestId('composer-interrupt');
     expect(await screen.findByTestId('turn-elapsed')).toHaveTextContent(
       /\d+\.\ds/,
@@ -2607,14 +2649,252 @@ describe('ChatPanel streaming', () => {
     expect(screen.queryByText('streaming…')).not.toBeInTheDocument();
     fireEvent.click(stop);
     await waitFor(() =>
-      expect(api.invoke).toHaveBeenCalledWith('turn:interrupt', {
+      expect(api.invoke).toHaveBeenCalledWith('turn:interruptContext', {
         workspaceId: 'ws1',
+        contextId: 'ctx-ws1-1',
       }),
     );
 
     // Clean up the pending stream promise.
     await act(async () => {
       capturedResolve?.();
+    });
+  });
+
+  it('restores Send on a terminal event even when the stream transport stays open', async () => {
+    let capturedResolve: (() => void) | undefined;
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: 'terminal-open-stream',
+          sessionId: 'session-1',
+          mode: 'default',
+        });
+        onChunk({
+          kind: 'event',
+          event: { kind: 'turn_end', usage: {} },
+        });
+        return new Promise<void>((resolve) => {
+          capturedResolve = resolve;
+        });
+      },
+    );
+    installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'finish cleanly' } });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('composer-send')).toBeInTheDocument(),
+    );
+    expect(useChatStore.getState().busyByWorkspace.ws1).toBe(false);
+
+    await act(async () => capturedResolve?.());
+  });
+
+  it('lets a second manual chat tab send while the first tab is streaming', async () => {
+    const capturedResolves: (() => void)[] = [];
+    const stream = vi.fn(
+      (
+        _channel: string,
+        arg: { contextId?: string },
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: `running-${arg.contextId ?? 'unowned'}`,
+          sessionId: `session-${arg.contextId ?? 'unowned'}`,
+          mode: 'default',
+        });
+        return new Promise<void>((resolve) => {
+          capturedResolves.push(resolve);
+        });
+      },
+    );
+    installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'long task' } });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    await screen.findByTestId('composer-interrupt');
+
+    const newChat = screen.getByTestId('chat-new');
+    expect(newChat).toBeEnabled();
+    fireEvent.click(newChat);
+    await screen.findByTestId('chat-context-tab');
+
+    expect(screen.queryByTestId('composer-interrupt')).not.toBeInTheDocument();
+    expect(screen.getByTestId('composer-input')).toBeEnabled();
+    expect(screen.getByTestId('chat-context-close-0')).toBeDisabled();
+    expect(screen.getByTestId('chat-context-close-1')).toBeEnabled();
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'run independently' },
+    });
+    expect(screen.getByTestId('composer-send')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() => expect(stream).toHaveBeenCalledTimes(2));
+    expect(stream.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining({ contextId: 'ctx-ws1-1' }),
+      expect.objectContaining({ contextId: 'ctx-ws1-2' }),
+    ]);
+
+    await act(async () => {
+      for (const resolve of capturedResolves) resolve();
+    });
+  });
+
+  it('keeps interleaved stream chunks in their originating manual chat tabs', async () => {
+    const streams = new Map<
+      string,
+      {
+        onChunk: (chunk: TurnStreamChunk) => void;
+        resolve: () => void;
+      }
+    >();
+    const stream = vi.fn(
+      (
+        _channel: string,
+        arg: { contextId?: string },
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        const contextId = arg.contextId ?? 'unowned';
+        onChunk({
+          kind: 'started',
+          turnId: `turn-${contextId}`,
+          sessionId: `session-${contextId}`,
+          mode: 'default',
+        });
+        return new Promise<void>((resolve) => {
+          streams.set(contextId, { onChunk, resolve });
+        });
+      },
+    );
+    installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    const input = await screen.findByTestId('composer-input');
+    fireEvent.change(input, { target: { value: 'first request' } });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    fireEvent.click(screen.getByTestId('chat-new'));
+    await screen.findByTestId('chat-context-tab');
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'second request' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    await waitFor(() => expect(streams.size).toBe(2));
+
+    await act(async () => {
+      streams.get('ctx-ws1-2')?.onChunk({
+        kind: 'event',
+        event: { kind: 'text', delta: 'reply from second' },
+      });
+      streams.get('ctx-ws1-1')?.onChunk({
+        kind: 'event',
+        event: { kind: 'text', delta: 'reply from first' },
+      });
+    });
+
+    expect(screen.getByText('reply from second')).toBeInTheDocument();
+    expect(screen.queryByText('reply from first')).not.toBeInTheDocument();
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    expect(await screen.findByText('reply from first')).toBeInTheDocument();
+    expect(screen.queryByText('reply from second')).not.toBeInTheDocument();
+
+    await act(async () => {
+      for (const active of streams.values()) {
+        active.onChunk({
+          kind: 'event',
+          event: { kind: 'turn_end', usage: {} },
+        });
+        active.resolve();
+      }
+    });
+  });
+
+  it('interrupts only the active turn in the selected manual chat context', async () => {
+    const streamCallbacks = new Map<string, (chunk: TurnStreamChunk) => void>();
+    const streamResolves: (() => void)[] = [];
+    const stream = vi.fn(
+      (
+        _channel: string,
+        arg: { contextId?: string },
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        const contextId = arg.contextId ?? 'unowned';
+        streamCallbacks.set(contextId, onChunk);
+        onChunk({
+          kind: 'started',
+          turnId: `turn-${contextId}`,
+          sessionId: `session-${contextId}`,
+          mode: 'default',
+        });
+        return new Promise<void>((resolve) => streamResolves.push(resolve));
+      },
+    );
+    const api = installApi({ stream });
+
+    render(<ChatPanel workspaceId="ws1" />);
+    fireEvent.change(await screen.findByTestId('composer-input'), {
+      target: { value: 'first request' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    fireEvent.click(screen.getByTestId('chat-new'));
+    await screen.findByTestId('chat-context-tab');
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'second request' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    await waitFor(() => expect(streamCallbacks.size).toBe(2));
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    fireEvent.click(await screen.findByTestId('composer-interrupt'));
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('turn:interruptContext', {
+        workspaceId: 'ws1',
+        contextId: 'ctx-ws1-1',
+      }),
+    );
+    expect(api.invoke).not.toHaveBeenCalledWith('turn:interrupt', {
+      workspaceId: 'ws1',
+    });
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-context-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    expect(screen.getByTestId('composer-interrupt')).toBeInTheDocument();
+
+    await act(async () => {
+      for (const [contextId, onChunk] of streamCallbacks) {
+        onChunk({
+          kind: 'event',
+          event: { kind: 'turn_end', usage: {} },
+        });
+        expect(contextId).toMatch(/^ctx-ws1-/);
+      }
+      for (const resolve of streamResolves) resolve();
     });
   });
 
@@ -2944,12 +3224,81 @@ describe('ChatPanel streaming', () => {
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: false });
 
     await waitFor(() =>
-      expect(api.invoke).toHaveBeenCalledWith('chat:clear', {
+      expect(api.invoke).toHaveBeenCalledWith('chat:clearContext', {
         workspaceId: 'ws1',
+        contextId: 'ctx-ws1-1',
       }),
     );
     expect(api.stream).not.toHaveBeenCalled();
     expect(input).toHaveValue('');
+  });
+
+  it('clears only the selected context while an active sibling keeps streaming', async () => {
+    let resolveStream!: () => void;
+    const stream = vi.fn(
+      (
+        _channel: string,
+        arg: { contextId?: string },
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: `turn-${arg.contextId}`,
+          sessionId: `session-${arg.contextId}`,
+          mode: 'default',
+        });
+        return new Promise<void>((resolve) => {
+          resolveStream = resolve;
+        });
+      },
+    );
+    const api = installApi({
+      stream,
+      slashCommands: [
+        {
+          name: 'clear',
+          template: 'Clear the selected chat context.',
+          description: 'Clear this context',
+        },
+      ],
+    });
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.change(await screen.findByTestId('composer-input'), {
+      target: { value: 'keep running' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+    await screen.findByTestId('composer-interrupt');
+
+    fireEvent.click(screen.getByTestId('chat-new'));
+    await screen.findByTestId('chat-context-tab');
+    const input = screen.getByTestId('composer-input');
+    fireEvent.change(input, { target: { value: '/clear' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: false });
+    await waitFor(() =>
+      expect(
+        api.invoke.mock.calls.some(([channel]) =>
+          String(channel).startsWith('chat:clear'),
+        ),
+      ).toBe(true),
+    );
+
+    expect(api.invoke).toHaveBeenCalledWith('chat:clearContext', {
+      workspaceId: 'ws1',
+      contextId: 'ctx-ws1-2',
+    });
+    expect(api.invoke).not.toHaveBeenCalledWith('chat:clear', {
+      workspaceId: 'ws1',
+    });
+
+    fireEvent.click(
+      within(screen.getByTestId('chat-tab')).getByRole('button', {
+        name: 'Untitled',
+      }),
+    );
+    expect(screen.getByTestId('composer-interrupt')).toBeInTheDocument();
+
+    await act(async () => resolveStream());
   });
 
   it('shows /clear as an app command even when no native skill is present', async () => {

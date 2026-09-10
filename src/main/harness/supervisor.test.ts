@@ -28,6 +28,7 @@ import { ProjectsRepo } from '../db/repos/projects';
 import { WorkspacesRepo } from '../db/repos/workspaces';
 import { TurnsRepo } from '../db/repos/turns';
 import { EventsRepo } from '../db/repos/events';
+import { ChatContextsRepo } from '../db/repos/chatContexts';
 import { TurnRecorder } from './turns';
 import { MockHarness } from './mock';
 import { HarnessSupervisor } from './supervisor';
@@ -131,11 +132,11 @@ function collectSink(): {
 
 /** Poll until `predicate()` is true (real timers), up to `timeoutMs`. */
 async function waitUntil(
-  predicate: () => boolean,
+  predicate: () => boolean | Promise<boolean>,
   timeoutMs = 1000,
 ): Promise<void> {
   const start = Date.now();
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() - start > timeoutMs) {
       throw new Error('waitUntil timed out');
     }
@@ -391,6 +392,319 @@ describe('HarnessSupervisor turn lifecycle', () => {
 
     await first.done;
     await waitForFinalized(h.recorder, h.workspace.id);
+  });
+
+  it('runs different manual contexts concurrently but rejects a duplicate context', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const sinks = new Map<string, StreamSink<AgentEvent>>();
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (opts, sink) => {
+        const contextId = opts.contextId ?? 'unowned';
+        sinks.set(contextId, sink);
+        return {
+          sessionId: `session-${contextId}`,
+          interrupt: vi.fn(async () => undefined),
+        };
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const contexts = new ChatContextsRepo(db);
+    const firstContext = await contexts.create({
+      workspaceId: h.workspace.id,
+      label: 'First',
+    });
+    const secondContext = await contexts.create({
+      workspaceId: h.workspace.id,
+      label: 'Second',
+    });
+    const first = collectSink();
+    const second = collectSink();
+
+    await h.supervisor.startContextTurn(
+      h.workspace.id,
+      firstContext.id,
+      baseOpts,
+      first.sink,
+    );
+    await h.supervisor.startContextTurn(
+      h.workspace.id,
+      secondContext.id,
+      baseOpts,
+      second.sink,
+    );
+
+    expect(h.supervisor.isContextActive(h.workspace.id, firstContext.id)).toBe(
+      true,
+    );
+    expect(h.supervisor.isContextActive(h.workspace.id, secondContext.id)).toBe(
+      true,
+    );
+    expect(
+      h.supervisor.getContextActiveTurnId(h.workspace.id, firstContext.id),
+    ).toBeTypeOf('string');
+    expect(
+      h.supervisor.getContextActiveTurnId(h.workspace.id, secondContext.id),
+    ).toBeTypeOf('string');
+
+    await expect(
+      h.supervisor.startContextTurn(
+        h.workspace.id,
+        firstContext.id,
+        baseOpts,
+        collectSink().sink,
+      ),
+    ).rejects.toMatchObject({ code: 'conflict' } as Partial<AppError>);
+
+    sinks.get(firstContext.id)?.push({ kind: 'turn_end' });
+    sinks.get(firstContext.id)?.end();
+    await first.done;
+    await waitUntil(
+      async () =>
+        (await h.recorder.history(h.workspace.id)).find(
+          (turn) => turn.contextId === firstContext.id,
+        )?.status === 'completed',
+    );
+
+    expect(h.supervisor.isContextActive(h.workspace.id, firstContext.id)).toBe(
+      false,
+    );
+    expect(h.supervisor.isContextActive(h.workspace.id, secondContext.id)).toBe(
+      true,
+    );
+    expect(h.statusCalls.at(-1)).toBe('working');
+    expect(h.statusCalls).not.toContain('needs_attention');
+
+    sinks.get(secondContext.id)?.push({ kind: 'turn_end' });
+    sinks.get(secondContext.id)?.end();
+    await second.done;
+    await waitUntil(() => h.statusCalls.includes('needs_attention'));
+
+    expect(h.supervisor.isContextActive(h.workspace.id, secondContext.id)).toBe(
+      false,
+    );
+    expect(h.statusCalls.at(-1)).toBe('needs_attention');
+  });
+
+  it('interrupts only the targeted manual context', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const sinks = new Map<string, StreamSink<AgentEvent>>();
+    const interrupts = new Map<string, ReturnType<typeof vi.fn>>();
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (opts, sink) => {
+        const contextId = opts.contextId ?? 'unowned';
+        const interrupt = vi.fn(async () => undefined);
+        sinks.set(contextId, sink);
+        interrupts.set(contextId, interrupt);
+        return { sessionId: `session-${contextId}`, interrupt };
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const contexts = new ChatContextsRepo(db);
+    const firstContext = await contexts.create({
+      workspaceId: h.workspace.id,
+      label: 'First',
+    });
+    const secondContext = await contexts.create({
+      workspaceId: h.workspace.id,
+      label: 'Second',
+    });
+    const first = collectSink();
+    const second = collectSink();
+
+    await h.supervisor.startContextTurn(
+      h.workspace.id,
+      firstContext.id,
+      baseOpts,
+      first.sink,
+    );
+    await h.supervisor.startContextTurn(
+      h.workspace.id,
+      secondContext.id,
+      baseOpts,
+      second.sink,
+    );
+
+    await h.supervisor.interruptContext(h.workspace.id, firstContext.id);
+
+    expect(interrupts.get(firstContext.id)).toHaveBeenCalledOnce();
+    expect(interrupts.get(secondContext.id)).not.toHaveBeenCalled();
+    expect(h.supervisor.isContextActive(h.workspace.id, secondContext.id)).toBe(
+      true,
+    );
+
+    sinks.get(firstContext.id)?.push({ kind: 'turn_end' });
+    sinks.get(firstContext.id)?.end();
+    sinks.get(secondContext.id)?.push({ kind: 'turn_end' });
+    sinks.get(secondContext.id)?.end();
+    await Promise.all([first.done, second.done]);
+    await waitUntil(async () => {
+      const turns = await h.recorder.history(h.workspace.id);
+      return (
+        turns.find((turn) => turn.contextId === firstContext.id)?.status ===
+          'interrupted' &&
+        turns.find((turn) => turn.contextId === secondContext.id)?.status ===
+          'completed'
+      );
+    });
+  });
+
+  it('rejects a manual context start while an exclusive workspace turn is live', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (_opts, sink) => ({
+        sessionId: 'held-exclusive',
+        interrupt: vi.fn(async () => {
+          sink.push({ kind: 'turn_end' });
+          sink.end();
+        }),
+      }),
+    };
+    const h = await makeHarness(db, adapter);
+    const context = await new ChatContextsRepo(db).create({
+      workspaceId: h.workspace.id,
+    });
+    const exclusive = collectSink();
+
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, exclusive.sink);
+
+    await expect(
+      h.supervisor.startContextTurn(
+        h.workspace.id,
+        context.id,
+        baseOpts,
+        collectSink().sink,
+      ),
+    ).rejects.toMatchObject({ code: 'conflict' } as Partial<AppError>);
+
+    await h.supervisor.interrupt(h.workspace.id);
+    await exclusive.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+  });
+
+  it('emits one final attention transition when contexts terminate simultaneously', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const sinks = new Map<string, StreamSink<AgentEvent>>();
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (opts, sink) => {
+        const contextId = opts.contextId!;
+        sinks.set(contextId, sink);
+        return {
+          sessionId: `session-${contextId}`,
+          interrupt: vi.fn(async () => undefined),
+        };
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const contexts = new ChatContextsRepo(db);
+    const firstContext = await contexts.create({ workspaceId: h.workspace.id });
+    const secondContext = await contexts.create({
+      workspaceId: h.workspace.id,
+    });
+    const first = collectSink();
+    const second = collectSink();
+    await h.supervisor.startContextTurn(
+      h.workspace.id,
+      firstContext.id,
+      baseOpts,
+      first.sink,
+    );
+    await h.supervisor.startContextTurn(
+      h.workspace.id,
+      secondContext.id,
+      baseOpts,
+      second.sink,
+    );
+
+    sinks.get(firstContext.id)?.push({ kind: 'turn_end' });
+    sinks.get(secondContext.id)?.push({ kind: 'turn_end' });
+    sinks.get(firstContext.id)?.end();
+    sinks.get(secondContext.id)?.end();
+    await Promise.all([first.done, second.done]);
+    await waitUntil(async () => {
+      const turns = await h.recorder.history(h.workspace.id);
+      return (
+        turns.length === 2 && turns.every((turn) => turn.status === 'completed')
+      );
+    });
+
+    expect(
+      h.statusCalls.filter((status) => status === 'needs_attention'),
+    ).toHaveLength(1);
+    expect(
+      h.emitCalls.filter((call) => call.event === 'notify:needsAttention'),
+    ).toHaveLength(1);
+    expect(h.notify.turnDone).toHaveBeenCalledOnce();
+  });
+
+  it('drops provider events that arrive after a terminal event', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    let providerSink: StreamSink<AgentEvent> | undefined;
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (_opts, sink) => {
+        providerSink = sink;
+        return {
+          sessionId: 'late-event-session',
+          interrupt: vi.fn(async () => undefined),
+        };
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const collected = collectSink();
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, collected.sink);
+
+    providerSink?.push({ kind: 'turn_end' });
+    providerSink?.push({ kind: 'text', delta: 'must be dropped' });
+    providerSink?.end();
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(collected.events).not.toContainEqual({
+      kind: 'text',
+      delta: 'must be dropped',
+    });
+    expect(
+      JSON.stringify(await h.recorder.history(h.workspace.id)),
+    ).not.toContain('must be dropped');
   });
 
   it('sanitizes adapter stream failures before forwarding them to consumers', async () => {

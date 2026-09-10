@@ -141,4 +141,6 @@ export interface DiffMenuInfo {
   branches: string[];
   commits: CommitInfo[];
   uncommittedFileCount: number;
+  /** Commits the current branch is behind its configured upstream tracking branch. */
+  behind: number;
 }

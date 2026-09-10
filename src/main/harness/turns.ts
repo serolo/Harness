@@ -57,6 +57,8 @@ export class TurnRecorder {
   private readonly events: EventsRepo;
   private readonly textFlushThreshold: number;
   private readonly state = new Map<string, TurnState>();
+  /** Serializes MAX(idx)+insert per workspace without blocking unrelated workspaces. */
+  private readonly beginTurnChains = new Map<string, Promise<void>>();
 
   constructor(deps: TurnRecorderDeps, opts: TurnRecorderOptions = {}) {
     this.turns = deps.turns;
@@ -80,23 +82,40 @@ export class TurnRecorder {
       contextId?: string;
     } = {},
   ): Promise<string> {
-    const idx = await this.turns.nextIdx(workspaceId);
-    const turn = await this.turns.create({
-      workspaceId,
-      idx,
-      status: 'streaming',
-      sessionId: meta.sessionId ?? null,
-      mode: meta.mode ?? null,
-      harness: meta.harness ?? null,
-      model: meta.model ?? null,
-      contextId: meta.contextId ?? null,
-    });
-    this.state.set(turn.id, {
-      pendingText: '',
-      harness: meta.harness ?? null,
-      model: meta.model ?? null,
-    });
-    return turn.id;
+    const previous = this.beginTurnChains.get(workspaceId) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const idx = await this.turns.nextIdx(workspaceId);
+        const turn = await this.turns.create({
+          workspaceId,
+          idx,
+          status: 'streaming',
+          sessionId: meta.sessionId ?? null,
+          mode: meta.mode ?? null,
+          harness: meta.harness ?? null,
+          model: meta.model ?? null,
+          contextId: meta.contextId ?? null,
+        });
+        this.state.set(turn.id, {
+          pendingText: '',
+          harness: meta.harness ?? null,
+          model: meta.model ?? null,
+        });
+        return turn.id;
+      });
+    const tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.beginTurnChains.set(workspaceId, tail);
+    try {
+      return await operation;
+    } finally {
+      if (this.beginTurnChains.get(workspaceId) === tail) {
+        this.beginTurnChains.delete(workspaceId);
+      }
+    }
   }
 
   /**
@@ -195,6 +214,17 @@ export class TurnRecorder {
       }
     }
     await this.turns.clearWorkspaceHistory(workspaceId);
+  }
+
+  /** Clear one manual context without disturbing sibling or scheduled-task turns. */
+  async clearContext(workspaceId: string, contextId: string): Promise<void> {
+    for (const [turnId] of this.state) {
+      const turn = await this.turns.getById(turnId);
+      if (turn?.workspaceId === workspaceId && turn.contextId === contextId) {
+        this.state.delete(turnId);
+      }
+    }
+    await this.turns.clearContextHistory(workspaceId, contextId);
   }
 
   /** Flush the pending text buffer as one coalesced `text` event row (if non-empty). */

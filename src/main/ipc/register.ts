@@ -492,6 +492,14 @@ function emitTaskChanged(workspaceId: string): void {
   );
 }
 
+function emitKnowledgeChanged(projectId: string): void {
+  emitAll(
+    BrowserWindow.getAllWindows().map((window) => window.webContents),
+    'knowledge:changed',
+    { projectId },
+  );
+}
+
 /**
  * Snapshot of the workspace ids to recompute checks for on window focus. Returned as an
  * array copy so the caller can iterate without racing further `checks:get` calls that
@@ -1187,6 +1195,8 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         // Buffer events until the `started` frame is sent (started-first guarantee).
         let started = false;
         const buffered: AgentEvent[] = [];
+        let terminalBeforeStarted:
+          { kind: 'end' } | { kind: 'error'; error: AppError } | undefined;
         const telemetryStartedAt = Date.now();
         let telemetryCompleted = false;
         const resolvedMode = opts.mode ?? 'default';
@@ -1212,22 +1222,44 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
             if (started) sink.push({ kind: 'event', event });
             else buffered.push(event);
           },
-          end: () => sink.end(),
-          error: (e) => sink.error(e),
+          end: () => {
+            if (started) sink.end();
+            else terminalBeforeStarted = { kind: 'end' };
+          },
+          error: (e) => {
+            if (started) sink.error(e);
+            else terminalBeforeStarted = { kind: 'error', error: e };
+          },
         };
 
-        const handle = await ctx.harness.startTurn(
-          arg.workspaceId,
-          opts,
-          agentSink,
-          harnessOverride,
-        );
+        const handle =
+          contextId === undefined
+            ? await ctx.harness.startTurn(
+                arg.workspaceId,
+                opts,
+                agentSink,
+                harnessOverride,
+              )
+            : await ctx.harness.startContextTurn(
+                arg.workspaceId,
+                contextId,
+                opts,
+                agentSink,
+                harnessOverride,
+              );
         ctx.telemetry.capture('turn started', {
           harness: selectedHarness,
           mode: resolvedMode,
         });
         turnAccepted = true;
-        const turnId = ctx.harness.getActiveTurnId(arg.workspaceId) ?? '';
+        const turnId =
+          contextId === undefined
+            ? (ctx.harness.takeStartedTurnId?.(arg.workspaceId) ??
+              ctx.harness.getActiveTurnId(arg.workspaceId) ??
+              '')
+            : (ctx.harness.takeStartedTurnId?.(arg.workspaceId, contextId) ??
+              ctx.harness.getContextActiveTurnId(arg.workspaceId, contextId) ??
+              '');
         sink.push({
           kind: 'started',
           turnId,
@@ -1237,6 +1269,11 @@ const streamProducers: { [S in StreamChannel]: StreamProducer<S> } = {
         started = true;
         for (const event of buffered) {
           sink.push({ kind: 'event', event });
+        }
+        if (terminalBeforeStarted?.kind === 'error') {
+          sink.error(terminalBeforeStarted.error);
+        } else if (terminalBeforeStarted?.kind === 'end') {
+          sink.end();
         }
       } catch (e) {
         if (!turnAccepted) ctx.turnPreparation.discard(preparedOpts);
@@ -1919,6 +1956,20 @@ export function registerIpc(ctx: AppContext): void {
     await ctx.harness.interrupt(req.workspaceId);
   });
 
+  // Manual tabs own independent turns; validate ownership before targeting one.
+  handle('turn:interruptContext', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    assertChatContextId(req.contextId);
+    const context = await new ChatContextsRepo(ctx.db).get(req.contextId);
+    if (!context || context.workspaceId !== req.workspaceId) {
+      throw new AppError('not_found', 'chat context not found', {
+        workspaceId: req.workspaceId,
+        contextId: req.contextId,
+      });
+    }
+    await ctx.harness.interruptContext(req.workspaceId, req.contextId);
+  });
+
   // chat:history — reconstruct the full transcript. Fetching it also clears a
   // `needs_attention` workspace back to `idle` (D4: implicit "viewed" semantics).
   handle('chat:history', async (req) => {
@@ -1938,7 +1989,26 @@ export function registerIpc(ctx: AppContext): void {
     if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
       throw new AppError('invalid_input', 'workspaceId is required');
     }
+    if (ctx.harness.isActive(req.workspaceId)) {
+      throw new AppError('conflict', 'cannot clear while a turn is active');
+    }
     await ctx.recorder.clear(req.workspaceId);
+  });
+
+  handle('chat:clearContext', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    assertChatContextId(req.contextId);
+    const context = await new ChatContextsRepo(ctx.db).get(req.contextId);
+    if (!context || context.workspaceId !== req.workspaceId) {
+      throw new AppError('not_found', 'chat context not found', {
+        workspaceId: req.workspaceId,
+        contextId: req.contextId,
+      });
+    }
+    if (ctx.harness.isContextActive(req.workspaceId, req.contextId)) {
+      throw new AppError('conflict', 'cannot clear an active chat context');
+    }
+    await ctx.recorder.clearContext(req.workspaceId, req.contextId);
   });
 
   // --- Durable chat tabs (chat_contexts, migration 0016) ---
@@ -1988,7 +2058,15 @@ export function registerIpc(ctx: AppContext): void {
   // chat:contexts:close — orphan the tab's turns then delete it (no-op if already gone).
   handle('chat:contexts:close', async (req) => {
     assertChatContextId(req.contextId);
-    await new ChatContextsRepo(ctx.db).close(req.contextId);
+    const contexts = new ChatContextsRepo(ctx.db);
+    const context = await contexts.get(req.contextId);
+    if (
+      context &&
+      ctx.harness.isContextActive(context.workspaceId, context.id)
+    ) {
+      throw new AppError('conflict', 'cannot close an active chat context');
+    }
+    await contexts.close(req.contextId);
   });
 
   handle('usage:monthly', async (req) => {
@@ -2338,7 +2416,7 @@ export function registerIpc(ctx: AppContext): void {
   // inside DiffService (heightened-scrutiny: IPC boundary + git/fs on user workspaces).
 
   // diff:get — the lightweight worktree-vs-merge-base file list (no patch). Starting the
-  // diff also lazily starts the FS watcher (idempotent, inside getDiff).
+  // diff also lazily starts the bounded status monitor (idempotent, inside getDiff).
   handle('diff:get', async (req) => {
     if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {
       throw new AppError('invalid_input', 'workspaceId is required');
@@ -2384,6 +2462,43 @@ export function registerIpc(ctx: AppContext): void {
       );
     }
     return ctx.diff.menu(req.workspaceId, req.targetRef);
+  });
+
+  // git:pull — fast-forward only from the workspace branch's configured upstream.
+  // The worktree path comes from persistence, never from renderer input.
+  handle('git:pull', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (workspace === null || workspace.worktreePath === null) {
+      throw new AppError('not_found', 'workspace checkout is unavailable');
+    }
+    const status = await ctx.git.status(workspace.worktreePath);
+    if (!status.clean) {
+      throw new AppError(
+        'conflict',
+        'commit or discard uncommitted changes before pulling',
+      );
+    }
+    await ctx.git.pullFastForward(workspace.worktreePath);
+    ctx.diff.invalidate(req.workspaceId);
+    emitAll(
+      BrowserWindow.getAllWindows().map((window) => window.webContents),
+      'diff:changed',
+      { workspaceId: req.workspaceId },
+    );
+  });
+
+  // git:getUpstream — resolve the workspace path in main and return only the safe ref
+  // name. The renderer never supplies or receives a filesystem path.
+  handle('git:getUpstream', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    const workspace = await ctx.workspaces.get(req.workspaceId);
+    if (workspace === null || workspace.worktreePath === null) {
+      throw new AppError('not_found', 'workspace checkout is unavailable');
+    }
+    return {
+      upstream: await ctx.git.upstreamBranch(workspace.worktreePath),
+    };
   });
 
   // diff:query — explicit target/scope comparison used by the Git menu.
@@ -3184,7 +3299,9 @@ export function registerIpc(ctx: AppContext): void {
   });
   handle('knowledge:initialize', async (req) => {
     assertProjectId(req?.projectId);
-    return ctx.knowledge.initializeProject(req.projectId);
+    const result = await ctx.knowledge.initializeProject(req.projectId);
+    emitKnowledgeChanged(req.projectId);
+    return result;
   });
   handle('knowledge:listPages', async (req) => {
     assertProjectId(req?.projectId);
@@ -3216,7 +3333,9 @@ export function registerIpc(ctx: AppContext): void {
   });
   handle('knowledge:updateCatalog', async (req) => {
     assertProjectId(req?.projectId);
-    return ctx.knowledge.updateCatalog(req.projectId);
+    const result = await ctx.knowledge.updateCatalog(req.projectId);
+    emitKnowledgeChanged(req.projectId);
+    return result;
   });
   handle('knowledge:qmdStatus', async () => qmdStatus());
   handle('knowledge:installQmd', async () => installQmd());
@@ -3229,7 +3348,9 @@ export function registerIpc(ctx: AppContext): void {
     ) {
       throw new AppError('invalid_input', 'invalid knowledge proposal');
     }
-    return ctx.knowledge.createProposal(req);
+    const proposal = await ctx.knowledge.createProposal(req);
+    emitKnowledgeChanged(req.projectId);
+    return proposal;
   });
   handle('knowledge:listProposals', async (req) => {
     assertProjectId(req?.projectId);
@@ -3238,7 +3359,12 @@ export function registerIpc(ctx: AppContext): void {
   handle('knowledge:acceptProposal', async (req) => {
     assertProjectId(req?.projectId);
     assertProposalId(req?.proposalId);
-    return ctx.knowledge.acceptProposal(req.projectId, req.proposalId);
+    const proposal = await ctx.knowledge.acceptProposal(
+      req.projectId,
+      req.proposalId,
+    );
+    emitKnowledgeChanged(req.projectId);
+    return proposal;
   });
   handle('knowledge:rejectProposal', async (req) => {
     assertProjectId(req?.projectId);
@@ -3246,11 +3372,13 @@ export function registerIpc(ctx: AppContext): void {
     if (req.reason !== undefined && typeof req.reason !== 'string') {
       throw new AppError('invalid_input', 'reason must be a string');
     }
-    return ctx.knowledge.rejectProposal(
+    const proposal = await ctx.knowledge.rejectProposal(
       req.projectId,
       req.proposalId,
       req.reason,
     );
+    emitKnowledgeChanged(req.projectId);
+    return proposal;
   });
   handle('knowledge:history', async (req) => {
     assertProjectId(req?.projectId);
@@ -3276,7 +3404,12 @@ export function registerIpc(ctx: AppContext): void {
         updatedCount: 0,
       };
     }
-    return ctx.knowledge.importZip(req.projectId, selection.filePaths[0]);
+    const result = await ctx.knowledge.importZip(
+      req.projectId,
+      selection.filePaths[0],
+    );
+    if (result.imported) emitKnowledgeChanged(req.projectId);
+    return result;
   });
   handle('knowledge:discoverAgentMemory', async (req, event) => {
     assertProjectId(req?.projectId);
@@ -3318,7 +3451,9 @@ export function registerIpc(ctx: AppContext): void {
     ) {
       throw new AppError('invalid_input', 'invalid agent memory selection');
     }
-    return ctx.knowledge.createAgentMemoryProposal(req);
+    const proposal = await ctx.knowledge.createAgentMemoryProposal(req);
+    emitKnowledgeChanged(req.projectId);
+    return proposal;
   });
   handle('github:getWorkspacePr', async (req) => {
     if (typeof req.workspaceId !== 'string' || req.workspaceId === '') {

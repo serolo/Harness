@@ -657,10 +657,10 @@ export function Composer({
   const slashRequestRef = useRef(0);
   const slashWasOpenRef = useRef(false);
   const modelSelectionInitializedRef = useRef(false);
-  const activeDraftWorkspaceRef = useRef<string | null>(null);
+  const activeDraftContextRef = useRef<string | null>(null);
   const activeModeContextRef = useRef<string | null>(null);
   const modesByContextRef = useRef<Record<string, AgentMode>>({});
-  const draftsByWorkspaceRef = useRef<
+  const draftsByContextRef = useRef<
     Record<
       string,
       {
@@ -692,13 +692,13 @@ export function Composer({
   // switch render, it captures the outgoing values before that effect loads the incoming
   // workspace's cached draft.
   useEffect(() => {
-    const workspace = activeDraftWorkspaceRef.current;
-    if (workspace === null) return;
-    draftsByWorkspaceRef.current[workspace] = {
+    const context = activeDraftContextRef.current;
+    if (context === null) return;
+    draftsByContextRef.current[context] = {
       text,
       attachments,
     };
-  }, [text, attachments, selectedWorkspaceId]);
+  }, [text, attachments, contextId, selectedWorkspaceId]);
 
   // Plan mode is an explicit choice for one chat context, not a workspace-wide
   // default. Capture the outgoing context before loading the destination so an
@@ -722,20 +722,22 @@ export function Composer({
     );
   }, [contextId, selectedWorkspaceId]);
 
-  // Composer state belongs to one workspace. The component itself survives navigation,
-  // so swap in the destination workspace's cached draft and close transient UI. A
+  // Composer state belongs to one workspace+chat context. The component itself survives
+  // tab navigation, so swap in the destination context's cached draft and close transient UI. A
   // one-time seeded prompt (e.g. "From issue") takes precedence over cached text.
   useEffect(() => {
-    const cached =
+    const draftContext =
       selectedWorkspaceId === null
+        ? null
+        : `${selectedWorkspaceId}\u0000${contextId ?? ''}`;
+    const cached =
+      draftContext === null
         ? undefined
-        : draftsByWorkspaceRef.current[selectedWorkspaceId];
-    activeDraftWorkspaceRef.current = selectedWorkspaceId;
+        : draftsByContextRef.current[draftContext];
+    activeDraftContextRef.current = draftContext;
 
     setText(cached?.text ?? '');
     setAttachments(cached?.attachments ?? []);
-    setSlashCommands([]);
-    setSlashLoading(false);
     setSlashActive(0);
     setCaret(0);
     setMentionEntries([]);
@@ -757,7 +759,7 @@ export function Composer({
     if (pending !== undefined && pending !== '') {
       setText(pending);
     }
-  }, [selectedWorkspaceId, takePendingPrompt]);
+  }, [contextId, selectedWorkspaceId, takePendingPrompt]);
 
   useEffect(() => {
     void loadHarnesses();
@@ -771,7 +773,7 @@ export function Composer({
     sentTextHistoryRef.current = [];
     sentTextHistoryIndexRef.current = -1;
     preHistoryDraftRef.current = '';
-  }, [selectedWorkspaceId]);
+  }, [contextId, selectedWorkspaceId]);
 
   useEffect(() => {
     const persisted = (turns ?? []).flatMap((turn) =>
@@ -952,7 +954,8 @@ export function Composer({
     !mentionDismissed &&
     mention !== null &&
     selectedWorkspaceId !== null &&
-    activeDraftWorkspaceRef.current === selectedWorkspaceId;
+    activeDraftContextRef.current ===
+      `${selectedWorkspaceId}\u0000${contextId ?? ''}`;
   const mentionDirectoryKey =
     mention === null || selectedWorkspaceId === null
       ? null

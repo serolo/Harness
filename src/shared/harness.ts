@@ -138,7 +138,8 @@ export type AgentEvent =
       /** Deterministic record of meta-skill revisions made available to a turn. APPEND-ONLY. */
       kind: 'meta_skill_access';
       skills: { slug: string; digest: string }[];
-    };
+    }
+  | KnowledgeExtractionEvent;
 
 export type KnowledgeTurnStatus =
   | 'not_configured'
@@ -262,4 +263,13 @@ export interface Usage {
   cachedInputTokens?: number;
   /** Input tokens written to a provider prompt cache. */
   cacheWriteInputTokens?: number;
+}
+
+/** Sanitized post-turn extraction result; independent of retrieval. APPEND-ONLY. */
+export interface KnowledgeExtractionEvent {
+  kind: 'knowledge_extraction';
+  status: 'disabled' | 'skipped' | 'no_proposals' | 'proposed' | 'failed';
+  reason?: 'plan' | 'no_changes' | 'snapshot' | 'processing';
+  proposalCount: number;
+  rejectedCount: number;
 }

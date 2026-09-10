@@ -125,6 +125,10 @@ Do not edit provider-private memory files. If there is durable knowledge to pres
 append one or more ${PROPOSAL_OPEN} JSON blocks ${PROPOSAL_CLOSE}.
 Each JSON object must have "title", "summary", and "operations". Operations are
 {"op":"create"|"update","path":"<OKF relative .md path>","content":"<complete OKF v0.1 Markdown>"}.
+Every content value MUST begin with YAML frontmatter delimited by --- on separate lines.
+Required fields: type (a non-empty string such as Decision, Component, or Note) and status.
+Example of a complete valid proposal (encode newlines inside JSON strings):
+${JSON.stringify({ title: 'Record a durable decision', summary: 'Explain the choice and its reason.', operations: [{ op: 'create', path: 'decisions/example.md', content: '---\ntype: Decision\ntitle: Example\nstatus: canonical\n---\n\n# Example\n\nDescribe the verified decision and its source.\n' }] })}
 Use status "canonical" in OKF frontmatter because the operation is applied only after approval.
 Use "update" when the catalog already contains the target path, and preserve/consolidate
 the existing durable content in the complete replacement document.
@@ -1451,11 +1455,49 @@ export class WikiService {
     turnId: string;
     responseText: string;
   }): Promise<WikiProposal[]> {
+    return (await this.reconcileTurnWithOutcome(input)).proposals;
+  }
+
+  async reconcileTurnWithOutcome(input: {
+    projectId: string;
+    workspaceId: string;
+    turnId: string;
+    responseText: string;
+  }): Promise<{
+    proposals: WikiProposal[];
+    rejectedCount: number;
+    status: 'disabled' | 'no_proposals' | 'proposed' | 'failed';
+  }> {
     const config = await this.getConfig(input.projectId);
-    if (!config.enabled || !config.extractAfterTurn) return [];
+    if (!config.enabled || !config.extractAfterTurn) {
+      return { proposals: [], rejectedCount: 0, status: 'disabled' };
+    }
+    const curated = this.curator.curateWithOutcome(input.responseText);
     const proposals: WikiProposal[] = [];
-    for (const parsed of this.curator.curate(input.responseText)) {
+    let rejectedCount = curated.rejectedCount;
+    for (const parsed of curated.proposals) {
       try {
+        const operations = parsed.operations.map((operation) => {
+          if (operation.op === 'move') return operation;
+          // Repair only absent metadata; malformed or explicitly invalid fields
+          // still go through the ordinary proposal validator. Never touch the wiki.
+          const page = parseOkfMarkdown(operation.content);
+          const fields: string[] = [];
+          if (!Object.hasOwn(page.frontmatter, 'type'))
+            fields.push('type: Note');
+          if (!Object.hasOwn(page.frontmatter, 'status'))
+            fields.push('status: canonical');
+          return {
+            ...operation,
+            content:
+              fields.length === 0
+                ? operation.content
+                : operation.content.replace(
+                    /^---\n/,
+                    `---\n${fields.join('\n')}\n`,
+                  ),
+          };
+        });
         proposals.push(
           await this.createProposal({
             projectId: input.projectId,
@@ -1463,16 +1505,24 @@ export class WikiService {
             turnId: input.turnId,
             title: parsed.title,
             summary: parsed.summary,
-            operations: parsed.operations,
+            operations,
           }),
         );
-      } catch (error) {
-        logger.warn(
-          `[knowledge:reconcile] ignored invalid OKF proposal: ${String(error)}`,
-        );
+      } catch {
+        rejectedCount += 1;
+        logger.warn('[knowledge:reconcile] ignored invalid OKF proposal');
       }
     }
-    return proposals;
+    return {
+      proposals,
+      rejectedCount,
+      status:
+        proposals.length > 0
+          ? 'proposed'
+          : rejectedCount > 0
+            ? 'failed'
+            : 'no_proposals',
+    };
   }
 
   async history(projectId: string): Promise<WikiHistoryEntry[]> {

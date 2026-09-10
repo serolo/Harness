@@ -55,6 +55,7 @@ export interface ChatState {
     harness?: HarnessId,
     model?: string,
     contextId?: string,
+    pendingTurnId?: string,
   ) => void;
   /** Atomically claim and begin a scheduled-task turn. */
   startTaskTurn: (
@@ -90,6 +91,8 @@ export interface ChatState {
   setBusy: (workspaceId: string, busy: boolean) => void;
   /** Clear a workspace's transcript + busy flag. */
   reset: (workspaceId: string) => void;
+  /** Remove only turns owned by one manual chat context. */
+  clearContext: (workspaceId: string, contextId: string) => void;
 }
 
 /** Append `event` to `turns`' last turn, coalescing consecutive text deltas. */
@@ -114,6 +117,14 @@ function appendToLastTurn(
   ) {
     // `useChat(workspaceId)` is consumed by Chat, Checks, and Diff. Each consumer can
     // observe the same broadcast, so make this out-of-band event idempotent in-store.
+    return turns;
+  }
+  if (
+    event.kind === 'knowledge_extraction' &&
+    turns
+      .at(-1)
+      ?.events.some((existing) => existing.kind === 'knowledge_extraction')
+  ) {
     return turns;
   }
   const next = turns.slice();
@@ -145,6 +156,7 @@ function startTurnInList(
   contextId?: string,
   // Internal flag — kept last so `startTaskTurn`'s explicit `false` stays at the tail.
   replacePending = true,
+  pendingTurnId?: string,
 ): RenderedTurn[] {
   const existingIndex = turns.findIndex((turn) => turn.turnId === turnId);
   if (existingIndex !== -1) {
@@ -175,7 +187,6 @@ function startTurnInList(
     return next;
   }
 
-  const last = turns[turns.length - 1];
   const turn: RenderedTurn = {
     turnId,
     status: 'streaming',
@@ -187,23 +198,27 @@ function startTurnInList(
     model,
     contextId,
   };
+  const pendingIndex =
+    pendingTurnId === undefined
+      ? turns.length - 1
+      : turns.findIndex((candidate) => candidate.turnId === pendingTurnId);
+  const pending = turns[pendingIndex];
   if (
     replacePending &&
-    last?.turnId.startsWith('pending:') &&
-    last.status === 'streaming'
+    pending?.turnId.startsWith('pending:') &&
+    pending.status === 'streaming'
   ) {
-    return [
-      ...turns.slice(0, -1),
-      {
-        ...turn,
-        events: last.events,
-        startedAt: last.startedAt ?? turn.startedAt,
-        mode: turn.mode ?? last.mode,
-        harness: turn.harness ?? last.harness,
-        model: turn.model ?? last.model,
-        contextId: turn.contextId ?? last.contextId,
-      },
-    ];
+    const next = turns.slice();
+    next[pendingIndex] = {
+      ...turn,
+      events: pending.events,
+      startedAt: pending.startedAt ?? turn.startedAt,
+      mode: turn.mode ?? pending.mode,
+      harness: turn.harness ?? pending.harness,
+      model: turn.model ?? pending.model,
+      contextId: turn.contextId ?? pending.contextId,
+    };
+    return next;
   }
   return [...turns, turn];
 }
@@ -228,6 +243,7 @@ export const useChatStore = create<ChatState>((set) => ({
     harness,
     model,
     contextId,
+    pendingTurnId,
   ) =>
     set((state) => {
       const turns = state.byWorkspace[workspaceId] ?? [];
@@ -244,6 +260,8 @@ export const useChatStore = create<ChatState>((set) => ({
             harness,
             model,
             contextId,
+            true,
+            pendingTurnId,
           ),
         },
       };
@@ -348,4 +366,14 @@ export const useChatStore = create<ChatState>((set) => ({
       delete taskTurnsByWorkspace[workspaceId];
       return { byWorkspace, busyByWorkspace, taskTurnsByWorkspace };
     }),
+
+  clearContext: (workspaceId, contextId) =>
+    set((state) => ({
+      byWorkspace: {
+        ...state.byWorkspace,
+        [workspaceId]: (state.byWorkspace[workspaceId] ?? []).filter(
+          (turn) => turn.contextId !== contextId,
+        ),
+      },
+    })),
 }));

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, focusManager } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { PrSummary } from '@shared/github';
 import { createQueryClient } from '@renderer/app/providers';
@@ -32,17 +32,19 @@ function wrapper({ children }: { children: ReactNode }): React.JSX.Element {
 }
 
 afterEach(() => {
+  focusManager.setFocused(undefined);
   vi.useRealTimers();
   vi.restoreAllMocks();
   delete (window as unknown as { api?: unknown }).api;
 });
 
 describe('useWorkspacePr', () => {
-  it('stops interval and focus refetches after a failed lookup', async () => {
+  it('stops interval retries but recovers on focus after a failed lookup', async () => {
     vi.useFakeTimers();
-    const invoke = vi.fn(() =>
-      Promise.reject(new Error('Connect Timeout Error')),
-    );
+    const invoke = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Connect Timeout Error'))
+      .mockResolvedValue(OPEN_PR);
     installApi(invoke);
 
     const { result } = renderHook(
@@ -62,11 +64,19 @@ describe('useWorkspacePr', () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(120_001);
-      window.dispatchEvent(new Event('focus'));
-      await vi.advanceTimersByTimeAsync(0);
     });
 
     expect(invoke).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.data).toEqual(OPEN_PR);
   });
 
   it('allows an explicit successful retry and resumes polling', async () => {

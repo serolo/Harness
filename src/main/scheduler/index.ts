@@ -60,6 +60,7 @@ export class TaskScheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   /** Re-entrancy guard so a slow tick can't overlap the next interval fire. */
   private ticking = false;
+  private readonly drainingWorkspaces = new Set<string>();
   private metaHarness:
     | Pick<
         MetaHarnessService,
@@ -125,16 +126,23 @@ export class TaskScheduler {
    * a drain failure can never wedge the finalize path.
    */
   onWorkspaceTurnEnd(workspaceId: string): void {
+    if (this.drainingWorkspaces.has(workspaceId)) return;
+    this.drainingWorkspaces.add(workspaceId);
     void (async () => {
+      if (this.deps.harness.isActive(workspaceId)) return;
       const next = await this.deps.repo.nextQueued(workspaceId);
       if (next) {
         await this.runTask(next);
       }
-    })().catch((err) => {
-      logger.error(
-        `[scheduler] drain for ${workspaceId} failed: ${errText(err)}`,
-      );
-    });
+    })()
+      .catch((err) => {
+        logger.error(
+          `[scheduler] drain for ${workspaceId} failed: ${errText(err)}`,
+        );
+      })
+      .finally(() => {
+        this.drainingWorkspaces.delete(workspaceId);
+      });
   }
 
   /**

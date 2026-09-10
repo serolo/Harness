@@ -2,6 +2,51 @@ import { describe, expect, it, vi } from 'vitest';
 import { PostTurnKnowledgeCurator } from './curator';
 
 describe('PostTurnKnowledgeCurator', () => {
+  it.each([
+    ['no blocks', 'All done.', 0],
+    [
+      'malformed JSON',
+      '<harness_knowledge_proposal>{bad}</harness_knowledge_proposal>',
+      1,
+    ],
+    [
+      'invalid shape',
+      '<harness_knowledge_proposal>{"title":"Missing operations"}</harness_knowledge_proposal>',
+      1,
+    ],
+    [
+      'truncated block',
+      '<harness_knowledge_proposal>{"title":"Interrupted"',
+      1,
+    ],
+    ['oversized output', 'x'.repeat(2_000_001), 1],
+  ])('reports rejected count for %s', (_name, response, rejectedCount) => {
+    const curator = new PostTurnKnowledgeCurator({ warn: vi.fn() });
+    expect(curator.curateWithOutcome(response)).toEqual({
+      proposals: [],
+      rejectedCount,
+    });
+  });
+
+  it('reports proposals dropped by the extraction limit', () => {
+    const curator = new PostTurnKnowledgeCurator({ warn: vi.fn() });
+    const payload = {
+      title: 'Lesson',
+      summary: 'A durable change.',
+      operations: [
+        {
+          op: 'create',
+          path: 'notes/example.md',
+          content: '---\ntype: Note\n---\n# Lesson',
+        },
+      ],
+    };
+    const block = `<harness_knowledge_proposal>${JSON.stringify(payload)}</harness_knowledge_proposal>`;
+    const outcome = curator.curateWithOutcome(block.repeat(10));
+    expect(outcome.proposals).toHaveLength(8);
+    expect(outcome.rejectedCount).toBe(2);
+  });
+
   it('keeps the legacy hidden proposal protocol', () => {
     const curator = new PostTurnKnowledgeCurator({ warn: vi.fn() });
     const payload = {

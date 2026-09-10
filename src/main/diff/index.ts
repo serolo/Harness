@@ -1,7 +1,7 @@
 // DiffService — computes a workspace's diff (worktree vs merge-base(HEAD,
 // origin/<base>)), recomputed on debounced FS events + after each turn, and owns
 // the inline diff-comment lifecycle (spec §5.3). Emits `diff:changed` when the
-// watcher fires. Implemented in Phase 4.
+// status monitor observes a change. Implemented in Phase 4.
 //
 // Diff shapes (`GitDiff`/`DiffFile`) are main-only, reused from GitService; the
 // cross-boundary comment DTOs (`DiffComment`/`NewDiffComment`/`DiffCommentState`)
@@ -15,10 +15,8 @@
 // filesystem read; git only ever runs through GitService or the shared gitExeca
 // argument-array helper.
 
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-
-import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 
 import { AppError } from '@shared/errors';
 import type { Attachment } from '@shared/harness';
@@ -41,6 +39,7 @@ import {
   parseUnifiedHunks,
   type GitDiff,
   type GitService,
+  type GitStatus,
 } from '../git';
 
 // The inline-comment DTOs now live in the shared contract; re-export so callers
@@ -51,7 +50,7 @@ export type {
   DiffCommentState,
 } from '@shared/review';
 
-/** Disposes a diff watcher subscription (README §6.2 stream teardown). */
+/** Disposes a diff change-monitor subscription (README §6.2 stream teardown). */
 export interface DiffWatchHandle {
   stop(): void;
 }
@@ -67,6 +66,8 @@ export interface DiffServiceDeps {
   getWorkspace: (id: string) => Promise<Workspace | null>;
   emit: <K extends EventChannel>(event: K, payload: EventPayload<K>) => void;
   comments: DiffCommentsRepo;
+  /** Test seam for the status-monitor cadence. Production defaults to one second. */
+  watchIntervalMs?: number;
 }
 
 /** One cached diff computation, keyed on the workspace's `(base, HEAD, status)` signature. */
@@ -75,25 +76,16 @@ interface DiffCacheEntry {
   value: GitDiff;
 }
 
-/** A live chokidar watcher entry for a workspace (idempotent per workspace). */
+/** A live Git-status monitor entry for a workspace (idempotent per workspace). */
 interface WatcherEntry {
   handle: DiffWatchHandle;
+  lastUsedAt: number;
 }
 
 /** Debounce window coalescing editor save-storms into a single recompute + emit. */
-const WATCH_DEBOUNCE_MS = 300;
-
-/**
- * Directories never worth watching / diffing — matched as any path segment. chokidar
- * v4 dropped glob support, so this is a plain segment regex fed to `ignored` as a
- * {@link chokidarWatch} `MatchFunction`.
- */
-const IGNORED_SEGMENT = /(^|[/\\])(\.git|node_modules|dist)([/\\]|$)/;
-
-/** chokidar `ignored` predicate: skip `.git`, `node_modules`, `dist` at any depth. */
-function isIgnoredPath(candidate: string): boolean {
-  return IGNORED_SEGMENT.test(candidate);
-}
+const WATCH_INTERVAL_MS = 1_000;
+/** Keep monitoring bounded when users visit many workspaces during one app session. */
+const MAX_ACTIVE_WATCHERS = 4;
 
 /**
  * Count the lines in a file's text content (used for an untracked file's `additions`
@@ -128,13 +120,13 @@ function addedFileHunks(content: string): FileDiff['hunks'] {
 /**
  * Computes diffs and manages inline comments per workspace. One instance is shared
  * via `AppContext`. The service is otherwise stateless apart from a single-slot
- * per-workspace diff cache and its FS watchers.
+ * per-workspace diff cache and its bounded Git-status monitors.
  */
 export class DiffService {
-  /** Per-workspace single-slot diff cache; invalidated on watcher fire / turn end. */
+  /** Per-workspace single-slot diff cache; invalidated on status change / turn end. */
   private readonly cache = new Map<string, DiffCacheEntry>();
 
-  /** Per-workspace FS watcher (idempotent: one watcher per workspace at a time). */
+  /** Per-workspace Git-status monitor (idempotent and bounded by LRU). */
   private readonly watchers = new Map<string, WatcherEntry>();
 
   constructor(private readonly deps: DiffServiceDeps) {}
@@ -147,7 +139,7 @@ export class DiffService {
    * `git diff` only reports TRACKED changes, so untracked files are surfaced here
    * by folding each `status`-reported untracked path into an `added` {@link DiffFile}
    * (its `additions` = the file's line count; binary / unreadable → 0). The result is
-   * cached under a `(base, HEAD sha, status signature)` key and the FS watcher is
+   * cached under a `(base, HEAD sha, status signature)` key and the change monitor is
    * lazily started (idempotent) so subsequent changes emit `diff:changed`.
    */
   async getDiff(workspaceId: string, commitFilter?: string): Promise<GitDiff> {
@@ -166,7 +158,7 @@ export class DiffService {
 
     const cached = this.cache.get(workspaceId);
     if (cached !== undefined && cached.key === key) {
-      // Ensure the watcher exists even on a cache hit (first hit may precede it).
+      // Ensure the monitor exists even on a cache hit (first hit may precede it).
       this.watch(workspaceId);
       return cached.value;
     }
@@ -254,6 +246,7 @@ export class DiffService {
     const targetRef =
       requestedTargetRef ?? this.defaultTargetRef(workspace, branches);
     this.assertTargetRef(targetRef, branches);
+    this.watch(workspaceId);
 
     const [status, base] = await Promise.all([
       this.deps.git.status(wt),
@@ -267,6 +260,7 @@ export class DiffService {
       branches,
       commits,
       uncommittedFileCount: status.files.length,
+      behind: status.behind,
     };
   }
 
@@ -275,6 +269,7 @@ export class DiffService {
     const { wt } = await this.resolveWorktree(query.workspaceId);
     const branches = await this.deps.git.listBranches(wt);
     this.assertTargetRef(query.targetRef, branches);
+    this.watch(query.workspaceId);
 
     if (query.scope.kind === 'uncommitted') {
       const [gitDiff, status] = await Promise.all([
@@ -399,69 +394,109 @@ export class DiffService {
   }
 
   /**
-   * Start (or reuse) a debounced FS watcher for the workspace's worktree; emits
-   * `diff:changed { workspaceId }` after coalescing a burst of changes (spec §5.3).
+   * Start (or reuse) a bounded Git-status monitor for the workspace's worktree; emits
+   * `diff:changed { workspaceId }` when the porcelain signature changes (spec §5.3).
    *
    * The public signature is synchronous (frozen), but resolving the worktree path is
-   * async — so the entry is registered synchronously and chokidar is attached once the
+   * async — so the entry is registered synchronously and polling begins once the
    * workspace resolves. Idempotent: a second call for the same workspace returns the
-   * existing handle. `stop()` closes the watcher and drops the entry.
+   * existing handle. `stop()` cancels the timer and drops the entry.
    */
   watch(workspaceId: string): DiffWatchHandle {
     const existing = this.watchers.get(workspaceId);
-    if (existing !== undefined) return existing.handle;
+    if (existing !== undefined) {
+      existing.lastUsedAt = Date.now();
+      return existing.handle;
+    }
 
-    let watcher: FSWatcher | null = null;
     let stopped = false;
-    let debounce: ReturnType<typeof setTimeout> | null = null;
-
-    const fire = (): void => {
-      if (stopped) return;
-      if (debounce !== null) clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        debounce = null;
-        if (stopped) return;
-        // Recompute lazily next `getDiff`; notify the renderer to refetch.
-        this.invalidate(workspaceId);
-        this.deps.emit('diff:changed', { workspaceId });
-      }, WATCH_DEBOUNCE_MS);
-    };
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let previousSignature: string | null = null;
+    const intervalMs = this.deps.watchIntervalMs ?? WATCH_INTERVAL_MS;
 
     const handle: DiffWatchHandle = {
       stop: () => {
         if (stopped) return;
         stopped = true;
-        if (debounce !== null) {
-          clearTimeout(debounce);
-          debounce = null;
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
         }
-        if (watcher !== null) void watcher.close();
         this.watchers.delete(workspaceId);
       },
     };
 
-    this.watchers.set(workspaceId, { handle });
+    this.watchers.set(workspaceId, { handle, lastUsedAt: Date.now() });
+    this.enforceWatcherLimit(workspaceId);
 
-    // Resolve the worktree path asynchronously, then attach chokidar. If the workspace
-    // is missing/archived (or `stop()` already ran) we leave the inert entry so repeat
-    // `watch()` calls stay idempotent; `stop()` still removes it.
+    // Recursive fs.watch allocates a persistent descriptor per directory and can exhaust
+    // the process limit in large repositories. Poll Git's bounded porcelain status
+    // instead. Self-scheduling after each result prevents overlapping Git processes.
     void this.resolveWorktree(workspaceId)
       .then(({ wt }) => {
         if (stopped) return;
-        watcher = chokidarWatch(wt, {
-          ignored: isIgnoredPath,
-          ignoreInitial: true,
-        });
-        watcher.on('all', fire);
+        const poll = async (): Promise<void> => {
+          if (stopped) return;
+          try {
+            const status = await this.deps.git.status(wt);
+            const signature = await this.statusSignature(wt, status);
+            if (previousSignature !== null && signature !== previousSignature) {
+              this.invalidate(workspaceId);
+              this.deps.emit('diff:changed', { workspaceId });
+            }
+            previousSignature = signature;
+          } catch {
+            // A temporarily unavailable checkout must not become an unhandled rejection.
+            // The next bounded poll retries; archive/shutdown explicitly stops monitors.
+          }
+          if (!stopped) timer = setTimeout(() => void poll(), intervalMs);
+        };
+        void poll();
       })
       .catch(() => {
-        /* worktree unavailable — watcher stays inert until stop() drops the entry. */
+        /* worktree unavailable — monitor stays inert until stop() drops the entry. */
       });
 
     return handle;
   }
 
-  /** Stop every workspace watcher (quit teardown). Safe to call repeatedly. */
+  /** Stop the least-recently-used monitor before the bounded set can grow. */
+  private enforceWatcherLimit(currentWorkspaceId: string): void {
+    if (this.watchers.size <= MAX_ACTIVE_WATCHERS) return;
+    const oldest = [...this.watchers.entries()]
+      .filter(([workspaceId]) => workspaceId !== currentWorkspaceId)
+      .sort(([, left], [, right]) => left.lastUsedAt - right.lastUsedAt)[0];
+    oldest?.[1].handle.stop();
+  }
+
+  /**
+   * Fingerprint porcelain state plus metadata for only Git-reported changed paths.
+   * Porcelain alone stays identical while an already-dirty file is edited; lstat keeps
+   * that case observable without following symlinks or traversing every repository file.
+   */
+  private async statusSignature(
+    wt: string,
+    status: GitStatus,
+  ): Promise<string> {
+    const files = await Promise.all(
+      status.files.map(async (file) => {
+        let metadata = 'missing';
+        try {
+          const { abs } = this.confine(wt, file.path);
+          const info = await lstat(abs);
+          metadata = `${info.size}:${info.mtimeMs}`;
+        } catch {
+          // Deleted paths and a concurrent rename legitimately have no current lstat.
+        }
+        return `${file.status}:${file.staged ? 1 : 0}:${file.path}:${metadata}`;
+      }),
+    );
+    return [status.branch ?? '', status.ahead, status.behind, ...files].join(
+      '|',
+    );
+  }
+
+  /** Stop every workspace monitor (quit teardown). Safe to call repeatedly. */
   stopAll(): void {
     // Snapshot first — `stop()` mutates the map as it removes each entry.
     for (const entry of [...this.watchers.values()]) {
@@ -470,7 +505,7 @@ export class DiffService {
     this.watchers.clear();
   }
 
-  /** Drop the cached diff for a workspace (watcher fire / turn end). */
+  /** Drop the cached diff for a workspace (status change / turn end). */
   invalidate(workspaceId: string): void {
     this.cache.delete(workspaceId);
   }

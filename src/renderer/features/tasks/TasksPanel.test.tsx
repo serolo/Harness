@@ -986,3 +986,63 @@ describe('TasksPanel task:changed subscription', () => {
     });
   });
 });
+
+describe('TasksPanel knowledge:changed subscription', () => {
+  it('refetches visible knowledge pages and proposals for the changed project', async () => {
+    const knowledge = {
+      config: {
+        enabled: true,
+        storage: 'local' as const,
+        proposalMode: 'review_required' as const,
+        injectContext: true,
+        extractAfterTurn: true,
+        search: {
+          enabled: true,
+          provider: 'basic' as const,
+          maxResults: 12,
+          rerank: true,
+        },
+        format: { name: 'okf' as const, version: '0.1' as const },
+      },
+      pages: [],
+      proposals: [],
+    };
+    const { api, listeners } = installApi(TASKS, knowledge);
+    render(
+      <TasksPanel
+        workspaceId="ws1"
+        projectId="project-1"
+        knowledgeReviewRequestId={1}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('knowledge:listProposals', {
+        projectId: 'project-1',
+      }),
+    );
+    const pagesBefore = api.invoke.mock.calls.filter(
+      ([channel]) => channel === 'knowledge:listPages',
+    ).length;
+    const proposalsBefore = api.invoke.mock.calls.filter(
+      ([channel]) => channel === 'knowledge:listProposals',
+    ).length;
+
+    listeners['knowledge:changed']?.forEach((callback) =>
+      callback({ projectId: 'project-1' }),
+    );
+
+    await waitFor(() => {
+      expect(
+        api.invoke.mock.calls.filter(
+          ([channel]) => channel === 'knowledge:listPages',
+        ).length,
+      ).toBeGreaterThan(pagesBefore);
+      expect(
+        api.invoke.mock.calls.filter(
+          ([channel]) => channel === 'knowledge:listProposals',
+        ).length,
+      ).toBeGreaterThan(proposalsBefore);
+    });
+  });
+});

@@ -58,6 +58,16 @@
 - Accepted proposals rebuild `index.md` in the same Git commit. Rejected proposals retain the
   optional reviewer reason in proposal audit state. Proposal operation count and content size are
   bounded at the service boundary, and failed acceptance must restore both files and the Git index.
+- Successful knowledge mutations emit the project-scoped `knowledge:changed` event. Visible
+  knowledge pages, review proposals, selected content, and history refetch from that signal; do not
+  add an unconditional renderer polling loop for app-owned mutations.
 - A reviewed `create` targeting an existing canonical page is consolidated rather than overwritten:
   preserve canonical frontmatter and existing Markdown, merge proposed content into matching
   sections, and deduplicate identical blocks. Reserved bundle files still conflict.
+- Post-turn reconciliation repairs only absent `type` (`Note`) and `status` (`canonical`)
+  in otherwise parseable proposal frontmatter. Explicit invalid types are rejected and authored statuses are preserved; all
+  normalized operations still pass path, size, and secret validation before pending review.
+- Persist and broadcast `knowledge_extraction` separately from retrieval outcomes after the
+  turn stream closes. Report skipped/disabled/no-proposal/proposed/failed states and rejected
+  counts, including partial success. Never expose model content or exception details in this
+  outcome. Curator work is capped by attempted blocks, including invalid blocks.

@@ -365,7 +365,7 @@ export function ChatPanel({
   onRetryWorkspacePr,
   inspectFileRequest,
 }: ChatPanelProps): React.JSX.Element {
-  const { turns, isBusy, sendTurn, interrupt, clear } = useChat(workspaceId);
+  const { turns, sendTurn, interrupt, clear } = useChat(workspaceId);
   const workspace = useWorkspacesStore((state) =>
     state.workspaces.find((candidate) => candidate.id === workspaceId),
   );
@@ -377,6 +377,20 @@ export function ChatPanel({
   const [activeTab, setActiveTab] = useState<ActiveTab | null>(null);
   const [editingContextId, setEditingContextId] = useState<string | null>(null);
   const [contextNameDraft, setContextNameDraft] = useState('');
+  const streamingTurnIds = new Set(
+    turns
+      .filter((turn) => turn.status === 'streaming')
+      .map((turn) => turn.turnId),
+  );
+  const busyManualContextIds = new Set(
+    turns
+      .filter((turn) => turn.status === 'streaming' && turn.contextId != null)
+      .map((turn) => turn.contextId),
+  );
+  const isContextBusy = (context: ChatContext): boolean =>
+    context.id.startsWith('task:')
+      ? context.turnIds.some((turnId) => streamingTurnIds.has(turnId))
+      : busyManualContextIds.has(context.id);
   // File tabs are transient, but the chat context beneath them is workspace-local.
   // Remember it independently so closing a preview or returning to a workspace restores
   // the context the user was actually working in instead of jumping to the first tab.
@@ -773,8 +787,8 @@ export function ChatPanel({
   };
 
   const closeChatContext = async (id: string): Promise<void> => {
-    if (isBusy) return;
-    if (!chatContexts.some((context) => context.id === id)) return;
+    const closingContext = chatContexts.find((context) => context.id === id);
+    if (!closingContext || isContextBusy(closingContext)) return;
     // Task tabs have no `chat_contexts` row — they are reconstructed from `task:list` —
     // so closing one is purely local.
     if (!id.startsWith('task:')) {
@@ -864,6 +878,8 @@ export function ChatPanel({
     activeContext !== undefined && !activeContext.id.startsWith('task:')
       ? activeContext.id
       : undefined;
+  const isActiveContextBusy =
+    activeContext !== undefined && isContextBusy(activeContext);
   if (!workspaceId) {
     return (
       <div
@@ -932,7 +948,7 @@ export function ChatPanel({
                 className="ml-1 rounded-1 p-1 text-fg-3 opacity-0 transition-opacity hover:bg-bg-3 hover:text-fg-1 focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed"
                 aria-label={`Close ${context.label}`}
                 data-testid={`chat-context-close-${index}`}
-                disabled={isBusy}
+                disabled={isContextBusy(context)}
                 onClick={() => void closeChatContext(context.id)}
               >
                 <X className="h-3 w-3" aria-hidden />
@@ -974,7 +990,6 @@ export function ChatPanel({
             className="ml-1 rounded-1 p-1 text-fg-3 transition-colors duration-fast ease-out hover:bg-bg-3 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="New chat"
             data-testid="chat-new"
-            disabled={isBusy}
             onClick={() => void startNewChat()}
           >
             <Plus className="h-4 w-4" aria-hidden />
@@ -1036,7 +1051,7 @@ export function ChatPanel({
             workspace={workspace}
             project={project}
             onOpenFile={openFile}
-            isBusy={isBusy}
+            isBusy={isActiveContextBusy}
             onAnswerQuestion={(answer) =>
               sendTurn(
                 answer,
@@ -1066,7 +1081,7 @@ export function ChatPanel({
           <WorkspaceCreationTerminal workspaceId={workspaceId} />
           <WorkspaceArchiveTerminal workspaceId={workspaceId} />
           <Composer
-            isBusy={isBusy}
+            isBusy={isActiveContextBusy}
             disabled={activeContext === undefined}
             workspaceId={workspaceId}
             contextId={activeContext?.id}
@@ -1092,8 +1107,8 @@ export function ChatPanel({
                 displayPrompt,
               )
             }
-            onInterrupt={interrupt}
-            onClear={clear}
+            onInterrupt={() => interrupt(activeContext?.id)}
+            onClear={() => clear(activeContext?.id)}
           />
         </>
       )}

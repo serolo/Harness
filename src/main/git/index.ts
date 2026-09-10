@@ -208,6 +208,18 @@ function isEbadfSpawnError(err: unknown): boolean {
   return code === 'EBADF' || err.message.includes('EBADF');
 }
 
+function isIndexLockContention(err: unknown): boolean {
+  const candidate = err as { stderr?: unknown; message?: unknown };
+  const text = [candidate.stderr, candidate.message]
+    .filter((value): value is string => typeof value === 'string')
+    .join('\n');
+  return /Unable to create [\s\S]*index\.lock[\s\S]*File exists/i.test(text);
+}
+
+function retryDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function stringEnv(
   env: Record<string, unknown> | undefined,
 ): Record<string, string> {
@@ -1222,7 +1234,12 @@ export class GitService {
     const args = ['-C', worktreePath, 'status', '--porcelain=v1', '-b'];
     let stdout: string;
     try {
-      const result = await gitExeca(args, { cancelSignal: opts.signal });
+      // Status is a read-only monitor operation. Prevent Git's optional index refresh
+      // from briefly creating index.lock and racing user-triggered writes such as Pull.
+      const result = await gitExeca(args, {
+        cancelSignal: opts.signal,
+        env: { GIT_OPTIONAL_LOCKS: '0' },
+      });
       stdout = result.stdout;
     } catch (e) {
       throw toGitError(e, `git ${args.join(' ')}`);
@@ -1707,6 +1724,30 @@ export class GitService {
   }
 
   /**
+   * Update the checked-out branch from its configured upstream without creating a merge
+   * commit. `--ff-only` guarantees this operation either fast-forwards or leaves HEAD
+   * unchanged when the histories diverge.
+   */
+  async pullFastForward(worktreePath: string): Promise<void> {
+    const args = ['-C', worktreePath, 'pull', '--ff-only'];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await gitExeca(args);
+        return;
+      } catch (e) {
+        // A read-only external Git process may hold index.lock for a few milliseconds.
+        // Retry boundedly, but never delete the lock: a persistent lock may belong to a
+        // real commit/rebase and must remain under the user's control.
+        if (attempt < 2 && isIndexLockContention(e)) {
+          await retryDelay(100 * (attempt + 1));
+          continue;
+        }
+        throw toGitError(e, `git ${args.join(' ')}`);
+      }
+    }
+  }
+
+  /**
    * Whether the current branch has a configured upstream tracking ref.
    *
    * Uses `git rev-parse --abbrev-ref --symbolic-full-name @{u}`:
@@ -1740,6 +1781,32 @@ export class GitService {
       }
       // Any other non-zero exit: no upstream configured for this branch.
       return false;
+    }
+  }
+
+  /**
+   * Return the current branch's configured upstream tracking ref (for example
+   * `origin/main`), or `null` when the branch has no upstream. This is live Git state,
+   * unlike the workspace's persisted creation-time base branch.
+   */
+  async upstreamBranch(worktreePath: string): Promise<string | null> {
+    const args = [
+      '-C',
+      worktreePath,
+      'rev-parse',
+      '--abbrev-ref',
+      '--symbolic-full-name',
+      '@{u}',
+    ];
+    try {
+      const result = await gitExeca(args);
+      const upstream = result.stdout.trim();
+      return upstream === '' ? null : upstream;
+    } catch (e) {
+      if ((e as { code?: string }).code === 'ENOENT') {
+        throw toGitError(e, `git ${args.join(' ')}`);
+      }
+      return null;
     }
   }
 

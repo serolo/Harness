@@ -464,6 +464,24 @@ describe('TaskScheduler.onWorkspaceTurnEnd — FIFO drain', () => {
     expect((await repo.get(first.id)).state).toBe('running');
     expect((await repo.get(second.id)).state).toBe('queued'); // still waiting
   });
+
+  it('coalesces simultaneous terminal notifications into one queue drain', async () => {
+    const first = await repo.create({ workspaceId, prompt: 'first' });
+    const second = await repo.create({ workspaceId, prompt: 'second' });
+    await repo.setState(first.id, 'queued');
+    await repo.setState(second.id, 'queued');
+
+    scheduler.onWorkspaceTurnEnd(workspaceId);
+    scheduler.onWorkspaceTurnEnd(workspaceId);
+
+    await vi.waitFor(async () =>
+      expect((await repo.get(first.id)).state).toBe('running'),
+    );
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.calls[0].opts.prompt).toBe('first');
+    expect((await repo.get(first.id)).state).toBe('running');
+    expect((await repo.get(second.id)).state).toBe('queued');
+  });
 });
 
 describe('TaskScheduler — scheduled meta agents', () => {

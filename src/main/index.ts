@@ -1,3 +1,4 @@
+import type { KnowledgeExtractionEvent } from '@shared/harness';
 // Main-process entry + CONVERGENCE point (Task 9, README §3 L84–91).
 //
 // This is the single place that:
@@ -475,9 +476,9 @@ async function createAppContext(): Promise<AppContext> {
   // required (not const) because that closure captures `scheduler` before this assignment.
   // eslint-disable-next-line prefer-const -- forward-referenced by the onTurnEnd closure above its assignment
   let scheduler: TaskScheduler | undefined;
-  // Detached Git snapshots captured before adapters can mutate a worktree. Keying by
-  // workspace keeps this bounded if an adapter fails before emitting a terminal event.
-  const turnBaselines = new Map<string, { turnId: string; sha: string }>();
+  // Detached Git snapshots captured before adapters can mutate a worktree. Concurrent
+  // contexts in one workspace must never overwrite each other's baseline.
+  const turnBaselines = new Map<string, string>();
 
   // The harness supervisor owns live turns + drives status through the turn lifecycle.
   // Phase 4 wires two best-effort hooks: persist the agent's todo set on each
@@ -498,7 +499,7 @@ async function createAppContext(): Promise<AppContext> {
       });
     },
     onTurnStart: async (workspaceId, turnId, opts) => {
-      turnBaselines.delete(workspaceId);
+      turnBaselines.delete(turnId);
       if (opts.mode === 'plan') return;
       const workspace = await workspaces.get(workspaceId);
       if (workspace === null || workspace.worktreePath === null) return;
@@ -508,17 +509,15 @@ async function createAppContext(): Promise<AppContext> {
         workspace.worktreePath,
         `knowledge baseline: turn ${turnId}`,
       );
-      turnBaselines.set(workspaceId, { turnId, sha });
+      turnBaselines.set(turnId, sha);
     },
     onTurnEnd: (workspaceId, turnId) => {
       // Phase 12: drain the workspace's queued scheduled tasks (FIFO, one per turn-end).
       // Fire-and-forget with its own error handling inside the scheduler.
       scheduler?.onWorkspaceTurnEnd(workspaceId);
       void (async () => {
-        const storedBaseline = turnBaselines.get(workspaceId);
-        const baseline =
-          storedBaseline?.turnId === turnId ? storedBaseline.sha : undefined;
-        turnBaselines.delete(workspaceId);
+        const baseline = turnBaselines.get(turnId);
+        turnBaselines.delete(turnId);
         let checkpointSha: string | undefined;
         // Snapshot the worktree under refs/checkpoints/<ws>/<idx> (best-effort).
         try {
@@ -548,6 +547,23 @@ async function createAppContext(): Promise<AppContext> {
             `[turn-end] checks refresh for ${workspaceId} failed: ${String(err)}`,
           );
         }
+        const reportExtraction = async (
+          event: KnowledgeExtractionEvent,
+        ): Promise<void> => {
+          await recorder.record(turnId, event);
+          emit('knowledge:extractionCompleted', { workspaceId, turnId, event });
+        };
+        const reportSkipped = async (
+          status: KnowledgeExtractionEvent['status'],
+          reason?: KnowledgeExtractionEvent['reason'],
+        ): Promise<void> =>
+          reportExtraction({
+            kind: 'knowledge_extraction',
+            status,
+            reason,
+            proposalCount: 0,
+            rejectedCount: 0,
+          });
         try {
           const workspace = await workspaces.get(workspaceId);
           const turns = await recorder.history(workspaceId);
@@ -557,6 +573,11 @@ async function createAppContext(): Promise<AppContext> {
               workspace.projectId,
             );
             if (!knowledgeConfig.enabled || !knowledgeConfig.extractAfterTurn) {
+              await reportSkipped('disabled');
+              return;
+            }
+            if (turn.mode === 'plan') {
+              await reportSkipped('skipped', 'plan');
               return;
             }
             if (
@@ -564,6 +585,7 @@ async function createAppContext(): Promise<AppContext> {
               baseline === undefined ||
               checkpointSha === undefined
             ) {
+              await reportSkipped('failed', 'snapshot');
               return;
             }
             const changedPaths = (
@@ -578,6 +600,7 @@ async function createAppContext(): Promise<AppContext> {
               ),
             );
             if (!hasEligibleRepositoryChanges(turn.mode, changedPaths)) {
+              await reportSkipped('skipped', 'no_changes');
               return;
             }
             const responseText = turn.events
@@ -590,11 +613,18 @@ async function createAppContext(): Promise<AppContext> {
               )
               .map((event) => event.event.delta)
               .join('');
-            const proposals = await knowledge.reconcileTurn({
+            const outcome = await knowledge.reconcileTurnWithOutcome({
               projectId: workspace.projectId,
               workspaceId,
               turnId,
               responseText,
+            });
+            const { proposals, rejectedCount, status } = outcome;
+            await reportExtraction({
+              kind: 'knowledge_extraction',
+              status,
+              rejectedCount,
+              proposalCount: proposals.length,
             });
             if (proposals.length === 0) {
               return;
@@ -612,11 +642,15 @@ async function createAppContext(): Promise<AppContext> {
               projectId: workspace.projectId,
               proposalIds,
             });
+            emit('knowledge:changed', { projectId: workspace.projectId });
           }
-        } catch (err) {
-          logger.error(
-            `[turn-end] knowledge reconciliation for ${workspaceId} failed: ${String(err)}`,
-          );
+        } catch {
+          logger.error('[turn-end] knowledge reconciliation failed');
+          await reportSkipped('failed', 'processing').catch(() => {
+            logger.error(
+              '[turn-end] knowledge extraction outcome could not be persisted',
+            );
+          });
         }
       })();
     },
@@ -1088,11 +1122,11 @@ if (!gotSingleInstanceLock) {
     event.preventDefault();
     const ctx = appContext;
     appContext = undefined; // guard against re-entry when we call app.quit() again
-    // Phase 4: stop every diff FS watcher so chokidar handles don't outlive the app.
+    // Phase 4: stop every diff status monitor so timers don't outlive the app.
     try {
       ctx.diff.stopAll();
     } catch (err) {
-      logger.error(`[shutdown] diff watcher teardown failed: ${String(err)}`);
+      logger.error(`[shutdown] diff monitor teardown failed: ${String(err)}`);
     }
     // Phase 6: stop the settings hot-reload watcher (its own chokidar handle).
     try {
@@ -1124,7 +1158,7 @@ if (!gotSingleInstanceLock) {
         ),
       );
     // Phase 5: detach the per-window focus-refresh listener so it can't fire (or retain
-    // the window) during/after teardown. Mirrors the diff-watcher teardown above.
+    // the window) during/after teardown. Mirrors the diff-monitor teardown above.
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
         win.removeListener('focus', refreshChecksOnFocus);

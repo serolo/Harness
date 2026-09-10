@@ -1,7 +1,4 @@
-import type {
-  CreateWikiProposalInput,
-  WikiOperation,
-} from '@shared/knowledge';
+import type { CreateWikiProposalInput, WikiOperation } from '@shared/knowledge';
 
 const PROPOSAL_OPEN = '<harness_knowledge_proposal>';
 const PROPOSAL_CLOSE = '</harness_knowledge_proposal>';
@@ -24,7 +21,9 @@ function isOperation(value: unknown): value is WikiOperation {
   if (typeof value !== 'object' || value === null) return false;
   const operation = value as Record<string, unknown>;
   if (operation.op === 'move') {
-    return typeof operation.from === 'string' && typeof operation.to === 'string';
+    return (
+      typeof operation.from === 'string' && typeof operation.to === 'string'
+    );
   }
   return (
     (operation.op === 'create' || operation.op === 'update') &&
@@ -45,25 +44,35 @@ export class PostTurnKnowledgeCurator {
   constructor(private readonly log: KnowledgeCuratorLogger) {}
 
   curate(responseText: string): CuratedKnowledgeProposal[] {
+    return this.curateWithOutcome(responseText).proposals;
+  }
+
+  curateWithOutcome(responseText: string): {
+    proposals: CuratedKnowledgeProposal[];
+    rejectedCount: number;
+  } {
     if (responseText.length > MAX_RESPONSE_CHARACTERS) {
       this.log.warn('[knowledge:curator] response exceeded the curation limit');
-      return [];
+      return { proposals: [], rejectedCount: 1 };
     }
 
     const proposals: CuratedKnowledgeProposal[] = [];
+    let rejectedCount = 0;
+    let processed = 0;
     const pattern = new RegExp(
       `${PROPOSAL_OPEN}([\\s\\S]*?)${PROPOSAL_CLOSE}`,
       'g',
     );
     let match: RegExpExecArray | null;
     while (
-      proposals.length < MAX_PROPOSALS &&
+      processed < MAX_PROPOSALS &&
       (match = pattern.exec(responseText)) !== null
     ) {
+      processed += 1;
       try {
-        const parsed = JSON.parse(match[1].trim()) as Partial<
-          CreateWikiProposalInput
-        >;
+        const parsed = JSON.parse(
+          match[1].trim(),
+        ) as Partial<CreateWikiProposalInput>;
         if (
           typeof parsed.title !== 'string' ||
           typeof parsed.summary !== 'string' ||
@@ -72,7 +81,10 @@ export class PostTurnKnowledgeCurator {
           parsed.operations.length > MAX_OPERATIONS ||
           !parsed.operations.every(isOperation)
         ) {
-          this.log.warn('[knowledge:curator] ignored proposal with an invalid shape');
+          rejectedCount += 1;
+          this.log.warn(
+            '[knowledge:curator] ignored proposal with an invalid shape',
+          );
           continue;
         }
         proposals.push({
@@ -81,10 +93,13 @@ export class PostTurnKnowledgeCurator {
           operations: parsed.operations,
         });
       } catch {
+        rejectedCount += 1;
         // Do not include the parser error: model output can contain sensitive content.
         this.log.warn('[knowledge:curator] ignored invalid proposal JSON');
       }
     }
-    return proposals;
+    const opened = responseText.split(PROPOSAL_OPEN).length - 1;
+    rejectedCount += Math.max(0, opened - processed);
+    return { proposals, rejectedCount };
   }
 }

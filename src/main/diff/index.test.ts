@@ -7,7 +7,7 @@
 // commits/comments/buildSendToAgent/watch) from the outside, not from the
 // implementation's structure.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -185,12 +185,26 @@ describe('DiffService.getDiff', () => {
     expect(untracked?.deletions).toBe(0);
   });
 
+  it('starts the workspace watcher for the active Git query', async () => {
+    const watch = vi.spyOn(diffService, 'watch');
+
+    await diffService.getDiffForQuery({
+      workspaceId: workspaceA.id,
+      targetRef: 'main',
+      scope: { kind: 'uncommitted' },
+    });
+
+    expect(watch).toHaveBeenCalledWith(workspaceA.id);
+    watch.mockRestore();
+  });
+
   it('builds the Git menu and scopes changes to the worktree or one commit', async () => {
     const menu = await diffService.menu(workspaceA.id);
     expect(menu.currentBranch).toBe('feature');
     expect(menu.targetRef).toBe('main');
     expect(menu.branches).toEqual(expect.arrayContaining(['feature', 'main']));
     expect(menu.uncommittedFileCount).toBe(2);
+    expect(menu.behind).toBe(0);
     expect(menu.commits[0]?.subject).toBe('rename file');
 
     const uncommitted = await diffService.getDiffForQuery({
@@ -428,5 +442,57 @@ describe('DiffService.watch / stopAll', () => {
     diffService.watch(workspaceB.id);
     expect(() => diffService.stopAll()).not.toThrow();
     expect(() => diffService.stopAll()).not.toThrow();
+  });
+
+  it('bounds monitors by evicting the least-recently-used workspace', () => {
+    const clock = vi.spyOn(Date, 'now');
+    let tick = 0;
+    clock.mockImplementation(() => ++tick);
+    const first = diffService.watch('monitor-1');
+
+    try {
+      diffService.watch('monitor-2');
+      diffService.watch('monitor-3');
+      diffService.watch('monitor-4');
+      diffService.watch('monitor-5');
+
+      expect(diffService.watch('monitor-1')).not.toBe(first);
+    } finally {
+      clock.mockRestore();
+      diffService.stopAll();
+    }
+  });
+
+  it('emits a live refresh from bounded Git status without recursive file watchers', async () => {
+    const statusGit = new GitService();
+    const status = vi.spyOn(statusGit, 'status');
+    const emit = vi.fn();
+    const monitored = new DiffService({
+      git: statusGit,
+      getWorkspace: async (id) => wsRepo.getById(id),
+      emit: (event, payload) => emit(event, payload),
+      comments: new DiffCommentsRepo(db),
+      watchIntervalMs: 20,
+    });
+
+    try {
+      monitored.watch(workspaceA.id);
+      await vi.waitFor(() => expect(status).toHaveBeenCalled(), {
+        timeout: 1_000,
+      });
+      // The path is already dirty before monitoring. Editing it again leaves the
+      // porcelain status/path unchanged, so the monitor must include bounded metadata.
+      writeFileSync(join(repoA, 'dirty.txt'), 'rewritten dirty content\n');
+
+      await vi.waitFor(
+        () =>
+          expect(emit).toHaveBeenCalledWith('diff:changed', {
+            workspaceId: workspaceA.id,
+          }),
+        { timeout: 2_000 },
+      );
+    } finally {
+      monitored.stopAll();
+    }
   });
 });

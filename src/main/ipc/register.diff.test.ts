@@ -162,6 +162,84 @@ describe('diff IPC menu/query handlers', () => {
   });
 });
 
+describe('git:pull', () => {
+  it('fast-forwards the persisted workspace checkout and invalidates the diff', async () => {
+    const pullFastForward = vi.fn(async () => {});
+    const status = vi.fn(async () => ({ clean: true, files: [] }));
+    const invalidate = vi.fn();
+    registerIpc({
+      git: { pullFastForward, status },
+      diff: { invalidate },
+      workspaces: {
+        get: async () => ({
+          id: 'ws1',
+          worktreePath: '/managed/worktree',
+        }),
+      },
+    } as unknown as AppContext);
+
+    await expect(
+      invoke('git:pull', { workspaceId: 'ws1' }),
+    ).resolves.toBeUndefined();
+    expect(pullFastForward).toHaveBeenCalledWith('/managed/worktree');
+    expect(invalidate).toHaveBeenCalledWith('ws1');
+  });
+
+  it('rejects pulling a workspace with uncommitted changes', async () => {
+    const pullFastForward = vi.fn();
+    registerIpc({
+      git: {
+        pullFastForward,
+        status: async () => ({ clean: false, files: [{ path: 'dirty.ts' }] }),
+      },
+      diff: { invalidate: vi.fn() },
+      workspaces: {
+        get: async () => ({
+          id: 'ws1',
+          worktreePath: '/managed/worktree',
+        }),
+      },
+    } as unknown as AppContext);
+
+    await expect(invoke('git:pull', { workspaceId: 'ws1' })).rejects.toThrow(
+      'commit or discard uncommitted changes before pulling',
+    );
+    expect(pullFastForward).not.toHaveBeenCalled();
+  });
+
+  it('rejects a workspace without an available checkout', async () => {
+    registerIpc({
+      git: { pullFastForward: vi.fn(), status: vi.fn() },
+      diff: { invalidate: vi.fn() },
+      workspaces: { get: async () => null },
+    } as unknown as AppContext);
+
+    await expect(
+      invoke('git:pull', { workspaceId: 'missing' }),
+    ).rejects.toThrow('workspace checkout is unavailable');
+  });
+});
+
+describe('git:getUpstream', () => {
+  it('returns live Git upstream state for the persisted workspace checkout', async () => {
+    const upstreamBranch = vi.fn(async () => 'origin/qa/147');
+    registerIpc({
+      git: { upstreamBranch },
+      workspaces: {
+        get: async () => ({
+          id: 'ws1',
+          worktreePath: '/managed/worktree',
+        }),
+      },
+    } as unknown as AppContext);
+
+    await expect(
+      invoke('git:getUpstream', { workspaceId: 'ws1' }),
+    ).resolves.toEqual({ upstream: 'origin/qa/147' });
+    expect(upstreamBranch).toHaveBeenCalledWith('/managed/worktree');
+  });
+});
+
 describe('github:openPrUrl', () => {
   it('opens a validated github.com pull request in the system browser', async () => {
     registerIpc({} as AppContext);

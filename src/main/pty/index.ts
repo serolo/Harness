@@ -175,7 +175,12 @@ export class PtyService {
     kill(): void;
   }> {
     const nodePty = await loadNodePty();
-    const env = childProcessEnv(options.env);
+    // Raw agent turns use the bundled Electron executable as a private Node launcher.
+    // Preserve only its explicit Node-mode flag; without it macOS starts another GUI
+    // Electron application (and Dock icon) for every active turn.
+    const env = childProcessEnv(options.env, {
+      preserveElectronRunAsNode: true,
+    });
     const id = uuidv7();
 
     const proc = nodePty.spawn(options.shell, options.args, {

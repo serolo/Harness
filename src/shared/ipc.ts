@@ -5,6 +5,7 @@
 // Later phases APPEND entries to the Commands / Events / StreamChannels maps.
 // They never reorder or rewrite existing entries.
 
+import type { KnowledgeExtractionEvent } from './harness';
 import type { AppError } from './errors';
 import type { ChecksResult } from './checks';
 import type { GitSshKey } from './git';
@@ -713,6 +714,27 @@ export interface Commands {
     req: TelemetryConsentUpdate;
     res: TelemetryConsent;
   };
+
+  // --- Git upstream synchronization (APPEND-ONLY) ---
+  /** Fast-forward the workspace branch from its configured upstream tracking branch. */
+  'git:pull': { req: { workspaceId: string }; res: void };
+  /** Read the workspace branch's live configured upstream tracking ref. */
+  'git:getUpstream': {
+    req: { workspaceId: string };
+    res: { upstream: string | null };
+  };
+
+  /** Interrupt the active turn owned by one manual chat context. APPEND-ONLY. */
+  'turn:interruptContext': {
+    req: { workspaceId: string; contextId: string };
+    res: void;
+  };
+
+  /** Hide only one manual chat context's persisted turns. APPEND-ONLY. */
+  'chat:clearContext': {
+    req: { workspaceId: string; contextId: string };
+    res: void;
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -790,6 +812,14 @@ export interface Events {
   'metaRun:changed': MetaRunChangeEvent;
   /** Coordinator/child turn metadata for navigation and live run inspection. */
   'metaRun:turnStarted': MetaRunTurnStartedEvent;
+  /** Project knowledge pages, history, or review proposals changed and should refetch. */
+  'knowledge:changed': { projectId: string };
+  /** Durable post-turn result, delivered after the turn stream closes. APPEND-ONLY. */
+  'knowledge:extractionCompleted': {
+    workspaceId: string;
+    turnId: string;
+    event: KnowledgeExtractionEvent;
+  };
 }
 
 export type EventChannel = keyof Events;

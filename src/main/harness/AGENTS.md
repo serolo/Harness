@@ -14,3 +14,6 @@
 - `HarnessSupervisor` closes accepted knowledge traces exactly once on every terminal, stream-end,
   stream-error, or start-failure path. It persists detailed sanitized retrieval events followed by
   one turn-level outcome; an MCP configuration being prepared is never evidence that it was used.
+- Manual chat turns are keyed by `(workspaceId, contextId)` and may run concurrently across tabs.
+  Scheduler/meta turns keep the legacy workspace-exclusive path; workspace status remains `working`
+  until the final live context finishes, and context interrupts must never target a sibling tab.

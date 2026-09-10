@@ -130,6 +130,23 @@ function NewChatWorkspaceContext({
   workspace: Workspace;
   project?: Project;
 }): React.JSX.Element {
+  const [baseBranch, setBaseBranch] = useState(workspace.baseBranch);
+
+  useEffect(() => {
+    let active = true;
+    setBaseBranch(workspace.baseBranch);
+    void invoke('git:getUpstream', { workspaceId: workspace.id })
+      .then(({ upstream }) => {
+        if (active && upstream) setBaseBranch(upstream);
+      })
+      .catch(() => {
+        /* Creation-time base remains a safe fallback when live Git is unavailable. */
+      });
+    return () => {
+      active = false;
+    };
+  }, [workspace.id, workspace.baseBranch]);
+
   const source =
     workspace.prNumber !== null
       ? `PR #${workspace.prNumber}`
@@ -181,9 +198,9 @@ function NewChatWorkspaceContext({
             <dt className="text-xs text-fg-3">Base branch</dt>
             <dd
               className="truncate font-mono text-sm text-fg-2"
-              title={workspace.baseBranch}
+              title={baseBranch}
             >
-              {workspace.baseBranch}
+              {baseBranch}
             </dd>
           </div>
         </div>
@@ -431,6 +448,35 @@ function renderEvent(
               {event.truncated ? ' · truncated to the turn budget' : ''}
             </>
           )}
+        </div>
+      );
+    case 'knowledge_extraction':
+      return (
+        <div
+          key={key}
+          className="mx-2 rounded-2 border border-border-1 bg-surface-card px-3 py-2 text-xs text-fg-2"
+          data-testid="knowledge-extraction-event"
+        >
+          <span className="font-medium text-fg-1">
+            Knowledge consolidation:{' '}
+          </span>
+          {event.status === 'proposed'
+            ? `${event.proposalCount} proposal(s) awaiting review. Approve in Project knowledge to commit.`
+            : event.status === 'failed'
+              ? 'Failed to extract knowledge. No automatic commit was made.'
+              : event.status === 'disabled'
+                ? 'Disabled for this project.'
+                : event.status === 'no_proposals'
+                  ? 'The agent returned no knowledge proposal.'
+                  : event.reason === 'plan'
+                    ? 'Skipped for a planning turn.'
+                    : 'Skipped: no eligible repository changes.'}
+          {event.rejectedCount > 0
+            ? ` ${event.rejectedCount} proposal(s) rejected during validation.`
+            : ''}
+          {event.reason === 'snapshot'
+            ? ' Could not compare the turn’s repository snapshots.'
+            : ''}
         </div>
       );
     case 'knowledge_status':

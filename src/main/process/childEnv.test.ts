@@ -30,6 +30,32 @@ describe('childProcessEnv', () => {
       restoreEnv('PATH', previous.PATH);
     }
   });
+
+  it('preserves only an explicitly supplied Node-mode flag when requested', () => {
+    const previous = process.env.ELECTRON_RUN_AS_NODE;
+    try {
+      process.env.ELECTRON_RUN_AS_NODE = '1';
+
+      expect(
+        childProcessEnv({}, { preserveElectronRunAsNode: true })
+          .ELECTRON_RUN_AS_NODE,
+      ).toBeUndefined();
+      expect(
+        childProcessEnv(
+          { ELECTRON_RUN_AS_NODE: '0' },
+          { preserveElectronRunAsNode: true },
+        ).ELECTRON_RUN_AS_NODE,
+      ).toBeUndefined();
+      expect(
+        childProcessEnv(
+          { ELECTRON_RUN_AS_NODE: '1' },
+          { preserveElectronRunAsNode: true },
+        ).ELECTRON_RUN_AS_NODE,
+      ).toBe('1');
+    } finally {
+      restoreEnv('ELECTRON_RUN_AS_NODE', previous);
+    }
+  });
 });
 
 function restoreEnv(key: string, value: string | undefined): void {

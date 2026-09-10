@@ -130,7 +130,7 @@ export function useDiff(workspaceId: string | null): UseDiff {
   }, [workspaceId, setDiffSet, setComments]);
 
   // The selected target/scope is a complete comparison query. Re-run it whenever a
-  // menu choice changes and whenever the workspace watcher reports new filesystem data.
+  // menu choice changes and whenever the workspace monitor reports new Git state.
   useEffect(() => {
     if (!workspaceId || !menuInfo) return;
     let active = true;
@@ -159,7 +159,7 @@ export function useDiff(workspaceId: string | null): UseDiff {
           if (active) setMenuInfo(res);
         })
         .catch(() => {
-          /* Counts can stay stale until the next successful watcher refresh. */
+          /* Counts can stay stale until the next successful monitor refresh. */
         });
     });
     return () => {

@@ -226,6 +226,39 @@ describe('WorkspaceItem context menu', () => {
     expect(iconShapes.size).toBe(cases.length);
   });
 
+  it.each([
+    [{ state: 'open' }, 'Open'],
+    [{ state: 'open', draft: true }, 'Draft'],
+    [{ state: 'queued' }, 'Queued for merge'],
+    [{ state: 'open', mergeQueueState: 'awaiting_checks' }, 'Queued for merge'],
+    [{ state: 'closed', draft: true }, 'Closed'],
+    [{ state: 'merged', mergeQueueState: 'awaiting_checks' }, 'Merged'],
+    [{ state: 'unexpected-api-state' }, 'Unknown state'],
+  ])('shows the matching PR state tooltip on hover: %s', async (pr, label) => {
+    const invoke = vi.fn(() =>
+      Promise.resolve({
+        number: 42,
+        url: 'https://github.com/acme/repo/pull/42',
+        title: 'Improve workspace list',
+        draft: false,
+        mergeableState: 'unknown',
+        ...pr,
+      }),
+    );
+    (window as unknown as { api: unknown }).api = {
+      invoke,
+      on: vi.fn(),
+      stream: vi.fn(),
+    };
+
+    renderItem({ ...WORKSPACE, prNumber: 42 });
+    const icon = await screen.findByTestId('workspace-pr-icon');
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    fireEvent.pointerMove(icon, { pointerType: 'mouse' });
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(label);
+  });
+
   it('refreshes a mounted row when the live pull request state changes', async () => {
     vi.useFakeTimers();
     let state = 'open';

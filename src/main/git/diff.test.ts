@@ -144,6 +144,16 @@ describe('GitService.diff / status', () => {
     expect(s.files).toHaveLength(0);
   });
 
+  it('reads status without contending for an existing index lock', async () => {
+    const lockPath = join(wt, '.git', 'index.lock');
+    writeFileSync(lockPath, 'held by another git process');
+    try {
+      await expect(git.status(wt)).resolves.toMatchObject({ branch: 'main' });
+    } finally {
+      rmSync(lockPath, { force: true });
+    }
+  });
+
   it('status reports null branch in detached-HEAD state', async () => {
     const detached = join(tmpRoot, 'detached');
     await execa('git', ['init', '-b', 'main', detached]);

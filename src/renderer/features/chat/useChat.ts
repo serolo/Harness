@@ -19,6 +19,22 @@ import { useChatStore, type RenderedTurn } from '@renderer/stores/chat';
 
 /** Stable empty-array reference so the `turns` selector doesn't loop on `?? []`. */
 const EMPTY_TURNS: readonly RenderedTurn[] = [];
+/** Guards late transport closes independently for every manual chat context. */
+const activeSendTokens = new Map<
+  string,
+  { workspaceId: string; token: symbol }
+>();
+
+function sendTokenKey(workspaceId: string, contextId?: string): string {
+  return `${workspaceId}\u0000${contextId ?? ''}`;
+}
+
+function workspaceHasActiveSend(workspaceId: string): boolean {
+  for (const active of activeSendTokens.values()) {
+    if (active.workspaceId === workspaceId) return true;
+  }
+  return false;
+}
 
 /** Map a persisted `ChatHistory` into the store's `RenderedTurn[]`. */
 function historyToTurns(history: ChatHistory): RenderedTurn[] {
@@ -70,8 +86,8 @@ export interface UseChat {
     contextId?: string,
     displayPrompt?: string,
   ) => Promise<void>;
-  interrupt: () => Promise<void>;
-  clear: () => Promise<void>;
+  interrupt: (contextId?: string) => Promise<void>;
+  clear: (contextId?: string) => Promise<void>;
 }
 
 /**
@@ -92,6 +108,7 @@ export function useChat(workspaceId: string | null): UseChat {
   const endTurn = useChatStore((s) => s.endTurn);
   const setBusy = useChatStore((s) => s.setBusy);
   const reset = useChatStore((s) => s.reset);
+  const clearContext = useChatStore((s) => s.clearContext);
 
   // Hydrate the transcript from persisted history on open / workspace change.
   useEffect(() => {
@@ -113,15 +130,27 @@ export function useChat(workspaceId: string | null): UseChat {
     if (!workspaceId) return;
     return onEvent(
       'knowledge:proposalsCreated',
-      ({ workspaceId: eventWorkspaceId, projectId, proposalIds }) => {
+      ({ workspaceId: eventWorkspaceId, turnId, projectId, proposalIds }) => {
         if (eventWorkspaceId !== workspaceId) return;
-        appendEvent(workspaceId, {
-          kind: 'knowledge_proposal',
-          projectId,
-          proposalIds,
-        });
+        appendEvent(
+          workspaceId,
+          {
+            kind: 'knowledge_proposal',
+            projectId,
+            proposalIds,
+          },
+          turnId,
+        );
       },
     );
+  }, [workspaceId, appendEvent]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    return onEvent('knowledge:extractionCompleted', (payload) => {
+      if (payload.workspaceId !== workspaceId) return;
+      appendEvent(workspaceId, payload.event, payload.turnId);
+    });
   }, [workspaceId, appendEvent]);
 
   const sendTurn = useCallback(
@@ -139,7 +168,16 @@ export function useChat(workspaceId: string | null): UseChat {
       if (!workspaceId) return;
       const startedAt = Date.now();
       const pendingTurnId = `pending:${startedAt}:${Math.random()}`;
+      const sendToken = Symbol(workspaceId);
+      const tokenKey = sendTokenKey(workspaceId, contextId);
+      let activeTurnId = pendingTurnId;
       let started = false;
+      let terminal = false;
+      const finishBusy = (): void => {
+        if (activeSendTokens.get(tokenKey)?.token !== sendToken) return;
+        activeSendTokens.delete(tokenKey);
+        setBusy(workspaceId, workspaceHasActiveSend(workspaceId));
+      };
       startTurn(
         workspaceId,
         pendingTurnId,
@@ -155,11 +193,13 @@ export function useChat(workspaceId: string | null): UseChat {
         contextId,
       );
       if (attachments.length > 0) {
-        appendEvent(workspaceId, {
-          kind: 'user_attachments',
-          attachments,
-        });
+        appendEvent(
+          workspaceId,
+          { kind: 'user_attachments', attachments },
+          pendingTurnId,
+        );
       }
+      activeSendTokens.set(tokenKey, { workspaceId, token: sendToken });
       setBusy(workspaceId, true);
       try {
         const turnArg = {
@@ -177,6 +217,7 @@ export function useChat(workspaceId: string | null): UseChat {
         await subscribeStream('turn:start', turnArg, (chunk) => {
           if (chunk.kind === 'started') {
             started = true;
+            activeTurnId = chunk.turnId;
             startTurn(
               workspaceId,
               chunk.turnId,
@@ -187,11 +228,13 @@ export function useChat(workspaceId: string | null): UseChat {
               undefined, // harness
               undefined, // model
               contextId,
+              pendingTurnId,
             );
             return;
           }
           const event: AgentEvent = chunk.event;
           if (event.kind === 'turn_end') {
+            terminal = true;
             const billing =
               harness === undefined
                 ? null
@@ -202,39 +245,102 @@ export function useChat(workspaceId: string | null): UseChat {
               event.usage as Usage,
               billing?.costMicros,
               billing?.pricingKey,
+              activeTurnId,
             );
+            // The semantic turn is finished even if main keeps the transport open for
+            // post-turn work. Restore Send immediately on the terminal event.
+            finishBusy();
           } else if (event.kind === 'error') {
-            appendEvent(workspaceId, event);
-            endTurn(workspaceId, 'error');
+            terminal = true;
+            appendEvent(workspaceId, event, activeTurnId);
+            endTurn(
+              workspaceId,
+              'error',
+              undefined,
+              undefined,
+              undefined,
+              activeTurnId,
+            );
+            finishBusy();
           } else {
-            appendEvent(workspaceId, event);
+            appendEvent(workspaceId, event, activeTurnId);
           }
         });
+        if (!terminal) {
+          // The stream contract promises a terminal event before transport end. Keep
+          // malformed/legacy streams from leaving a context permanently "streaming".
+          terminal = true;
+          appendEvent(
+            workspaceId,
+            {
+              kind: 'error',
+              message: 'turn stream ended without a terminal event',
+            },
+            activeTurnId,
+          );
+          endTurn(
+            workspaceId,
+            'error',
+            undefined,
+            undefined,
+            undefined,
+            activeTurnId,
+          );
+          finishBusy();
+        }
       } catch (err) {
         // Stream-level failure: record a terminal error so the UI recovers.
-        if (!started) startTurn(workspaceId, pendingTurnId, '');
-        appendEvent(workspaceId, {
-          kind: 'error',
-          message: err instanceof Error ? err.message : 'turn failed',
-        });
-        endTurn(workspaceId, 'error');
+        if (!terminal) {
+          if (!started) startTurn(workspaceId, pendingTurnId, '');
+          appendEvent(
+            workspaceId,
+            {
+              kind: 'error',
+              message: err instanceof Error ? err.message : 'turn failed',
+            },
+            activeTurnId,
+          );
+          endTurn(
+            workspaceId,
+            'error',
+            undefined,
+            undefined,
+            undefined,
+            activeTurnId,
+          );
+        }
       } finally {
-        setBusy(workspaceId, false);
+        finishBusy();
       }
     },
     [workspaceId, setBusy, startTurn, appendEvent, endTurn],
   );
 
-  const interrupt = useCallback(async (): Promise<void> => {
-    if (!workspaceId) return;
-    await invoke('turn:interrupt', { workspaceId });
-  }, [workspaceId]);
+  const interrupt = useCallback(
+    async (contextId?: string): Promise<void> => {
+      if (!workspaceId) return;
+      if (contextId === undefined || contextId.startsWith('task:')) {
+        await invoke('turn:interrupt', { workspaceId });
+        return;
+      }
+      await invoke('turn:interruptContext', { workspaceId, contextId });
+    },
+    [workspaceId],
+  );
 
-  const clear = useCallback(async (): Promise<void> => {
-    if (!workspaceId) return;
-    await invoke('chat:clear', { workspaceId });
-    reset(workspaceId);
-  }, [workspaceId, reset]);
+  const clear = useCallback(
+    async (contextId?: string): Promise<void> => {
+      if (!workspaceId) return;
+      if (contextId !== undefined && !contextId.startsWith('task:')) {
+        await invoke('chat:clearContext', { workspaceId, contextId });
+        clearContext(workspaceId, contextId);
+        return;
+      }
+      await invoke('chat:clear', { workspaceId });
+      reset(workspaceId);
+    },
+    [workspaceId, reset, clearContext],
+  );
 
   return { turns, isBusy, sendTurn, interrupt, clear };
 }

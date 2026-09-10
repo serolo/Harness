@@ -33,6 +33,10 @@ demonstrated.
 - Output crosses to the renderer as a stream/event — apply the same backpressure discipline as
   `src/main/ipc/stream.ts`; don't block the event loop pushing large bursts synchronously.
 - Every spawned child MUST be registered for teardown — a leaked PTY survives window close.
+- **Internal Electron-as-Node launchers must retain `ELECTRON_RUN_AS_NODE=1`.** `spawnRaw`
+  deliberately opts into preserving an explicitly supplied literal `1` after the normal child-env
+  sanitization. Removing it launches a separate Electron GUI process and Dock icon for every agent
+  turn on macOS; do not broaden the exception to inherited values or other IPC variables.
 - **`spawnRaw` (Phase 7) is the exception to registration.** It backs the raw-terminal harness
   fallback (`harness/raw-terminal.ts` → Cursor): unlike `spawn` (which drives a `StreamSink` and
   hides the exit code), it returns a handle exposing raw `onData` chunks **and the exit CODE** via

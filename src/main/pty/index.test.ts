@@ -119,4 +119,28 @@ describe('PtyService', () => {
     // After exit the pty is gone from the service map — kill is a safe no-op.
     expect(() => handle.kill()).not.toThrow();
   });
+
+  it('runs the internal Electron PTY launcher in headless Node mode', async () => {
+    const reg = new ProcessRegistry();
+    const pty = new PtyService(reg);
+    const handle = await pty.spawnRaw({
+      cwd: process.cwd(),
+      shell: process.execPath,
+      args: ['-e', "process.stdout.write('node-mode')"],
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    });
+
+    let out = '';
+    let exitCode: number | undefined;
+    handle.onData((chunk) => (out += chunk));
+    handle.onExit((e) => (exitCode = e.exitCode));
+
+    try {
+      await until(() => exitCode !== undefined);
+      expect(out).toContain('node-mode');
+      expect(exitCode).toBe(0);
+    } finally {
+      handle.kill();
+    }
+  });
 });

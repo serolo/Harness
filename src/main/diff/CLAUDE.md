@@ -1,7 +1,7 @@
 # src/main/diff — diff computation + inline review comments (Phase 4)
 
 **Purpose:** `DiffService` computes a workspace's diff (worktree vs `merge-base(HEAD, origin/<base>)`),
-recomputes it on debounced FS events + after each turn, and owns the inline diff-comment lifecycle
+recomputes it on bounded Git-status changes + after each turn, and owns the inline diff-comment lifecycle
 (`open → sent → resolved`). It emits `diff:changed` so the renderer refetches.
 
 ## How it works
@@ -12,8 +12,13 @@ recomputes it on debounced FS events + after each turn, and owns the inline diff
 
 ## Non-obvious behaviour (document-worthy)
 - **Cache key = `(base, HEAD sha, status signature)`.** A single-slot per-workspace cache; `invalidate()`
-  drops it on a watcher fire and on `turn_end` (wired in `main/index.ts`). The watcher and the turn-end
+  drops it on a status change and on `turn_end` (wired in `main/index.ts`). The monitor and the turn-end
   hook are both idempotent, so a double-fire only recomputes — never corrupts.
+- **Every active diff query starts the monitor.** Both the legacy `getDiff` path and the target/scope
+  `menu` / `getDiffForQuery` path call an idempotent, non-overlapping Git-status monitor so edits
+  refresh during a turn. It deliberately avoids recursive `fs.watch`/Chokidar: those allocate one
+  persistent descriptor per directory and can terminate large repositories with `EMFILE`. At most
+  four recently used workspace monitors stay active in one app session.
 - **Untracked files are surfaced manually.** `git diff <base>` only reports *tracked* changes, so `getDiff`
   folds each `status`-reported untracked path in as an `added` `DiffFile` (additions = its line count; a NUL
   byte ⇒ treated as binary ⇒ 0). This is why `getDiff` also runs `git status`.

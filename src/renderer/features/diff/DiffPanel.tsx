@@ -3,7 +3,7 @@
 // the always-visible file list.
 
 import { useEffect, useState } from 'react';
-import { Eye, GitPullRequest } from 'lucide-react';
+import { ArrowDown, Eye, GitPullRequest } from 'lucide-react';
 import type { DiffQuery } from '@shared/review';
 import { Button, PanelTab, PanelTabBar } from '@renderer/components/ui';
 import { invoke } from '@renderer/ipc';
@@ -32,11 +32,13 @@ export function DiffPanel({
   onInspectFile,
 }: DiffPanelProps): React.JSX.Element {
   const [view, setView] = useState<'all' | 'changes'>('changes');
-  const { data: pullRequest } = useWorkspacePr({
+  const [pullingFor, setPullingFor] = useState<string | null>(null);
+  const pullRequestQuery = useWorkspacePr({
     workspaceId,
     branch: workspaceBranch,
     prNumber: workspacePrNumber,
   });
+  const pullRequest = pullRequestQuery.data;
   const {
     diffSet,
     selectedPath,
@@ -72,6 +74,30 @@ export function DiffPanel({
 
   const files = diffSet?.files ?? [];
   const hasChanges = files.length > 0;
+  const behind = menuInfo?.behind ?? 0;
+  const hasUncommittedChanges = (menuInfo?.uncommittedFileCount ?? 0) > 0;
+
+  const pullBranch = async (): Promise<void> => {
+    if (
+      !workspaceId ||
+      behind <= 0 ||
+      hasUncommittedChanges ||
+      pullingFor === workspaceId
+    ) {
+      return;
+    }
+
+    setPullingFor(workspaceId);
+    try {
+      await invoke('git:pull', { workspaceId });
+    } catch {
+      window.alert(
+        'Failed to pull the latest commits from the upstream branch.',
+      );
+    } finally {
+      setPullingFor((current) => (current === workspaceId ? null : current));
+    }
+  };
 
   return (
     <div
@@ -101,6 +127,24 @@ export function DiffPanel({
               >
                 <GitPullRequest className="h-4 w-4" aria-hidden="true" />
                 Open PR
+              </Button>
+            ) : null}
+            {behind > 0 ? (
+              <Button
+                variant="primary"
+                size="sm"
+                className="text-accent-fg"
+                data-testid="git-pull"
+                disabled={pullingFor === workspaceId || hasUncommittedChanges}
+                title={
+                  hasUncommittedChanges
+                    ? 'Commit or discard uncommitted changes before pulling.'
+                    : `Current branch is behind its upstream by ${behind} commit${behind === 1 ? '' : 's'}`
+                }
+                onClick={() => void pullBranch()}
+              >
+                <ArrowDown className="h-4 w-4" aria-hidden="true" />
+                {pullingFor === workspaceId ? 'Pulling…' : 'Pull'}
               </Button>
             ) : null}
             {view === 'changes' ? (

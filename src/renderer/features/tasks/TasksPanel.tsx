@@ -350,6 +350,70 @@ function WorkspaceKnowledgeStatus({
     };
   }, [projectId]);
 
+  useEffect(() => {
+    if (projectId === null || !config?.enabled) return;
+    let active = true;
+    const reload = (): void => {
+      void invoke('knowledge:listPages', { projectId })
+        .then((items) => {
+          if (active) setPages(items);
+        })
+        .catch(() => {
+          if (active) setError(true);
+        });
+
+      if (selectedPage !== null) {
+        void invoke('knowledge:getPage', {
+          projectId,
+          path: selectedPage.path,
+        })
+          .then((page) => {
+            if (active) setSelectedPage(page);
+          })
+          .catch(() => {
+            if (active) setSelectedPage(null);
+          });
+      }
+
+      if (knowledgeView === 'review') {
+        void invoke('knowledge:listProposals', { projectId })
+          .then((items) => {
+            if (active) {
+              setProposals(
+                items.filter(
+                  (proposal) => proposal.status === 'pending_review',
+                ),
+              );
+              setProposalsError(false);
+            }
+          })
+          .catch(() => {
+            if (active) setProposalsError(true);
+          });
+      }
+
+      if (knowledgeView === 'history') {
+        void invoke('knowledge:history', { projectId })
+          .then((items) => {
+            if (active) {
+              setHistory(items);
+              setHistoryError(false);
+            }
+          })
+          .catch(() => {
+            if (active) setHistoryError(true);
+          });
+      }
+    };
+    const unsubscribe = onEvent('knowledge:changed', (event) => {
+      if (event.projectId === projectId) reload();
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [projectId, config?.enabled, knowledgeView, selectedPage?.path]);
+
   const openPage = (path: string): void => {
     if (projectId === null) return;
     void invoke('knowledge:getPage', { projectId, path })

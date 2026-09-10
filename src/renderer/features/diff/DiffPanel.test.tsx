@@ -113,6 +113,9 @@ function installApi(opts: {
   workspacePr?: PrSummary | null;
   workspacePrError?: Error;
   workspacePrOpenError?: Error;
+  behind?: number;
+  uncommittedFileCount?: number;
+  pull?: () => Promise<void>;
 }): ApiStub {
   const invoke = vi.fn((channel: string, req?: unknown) => {
     switch (channel) {
@@ -127,7 +130,8 @@ function installApi(opts: {
           targetRef,
           branches: ['origin/develop', 'origin/main'],
           commits: COMMITS,
-          uncommittedFileCount: 1,
+          uncommittedFileCount: opts.uncommittedFileCount ?? 1,
+          behind: opts.behind ?? 0,
         });
       }
       case 'diff:query':
@@ -203,6 +207,8 @@ function installApi(opts: {
         return opts.workspacePrOpenError
           ? Promise.reject(opts.workspacePrOpenError)
           : Promise.resolve(undefined);
+      case 'git:pull':
+        return opts.pull?.() ?? Promise.resolve(undefined);
       default:
         return Promise.resolve(undefined);
     }
@@ -556,6 +562,88 @@ describe('DiffPanel existing pull request action', () => {
     expect(
       screen.queryByRole('button', { name: 'Open PR' }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('DiffPanel pull action', () => {
+  it('shows Pull when the current branch is behind its upstream', async () => {
+    const api = installApi({
+      workspacePr: {
+        number: 42,
+        url: 'https://github.com/acme/repo/pull/42',
+        title: 'Existing PR on a branch behind origin',
+        draft: false,
+        mergeableState: 'behind',
+        state: 'open',
+      },
+      behind: 14,
+      uncommittedFileCount: 0,
+    });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+
+    const pull = await screen.findByRole('button', { name: 'Pull' });
+    expect(pull).toBeEnabled();
+    expect(pull).toHaveAttribute(
+      'title',
+      'Current branch is behind its upstream by 14 commits',
+    );
+
+    expect(screen.getByRole('button', { name: 'Open PR' })).toBeEnabled();
+    await act(async () => fireEvent.click(pull));
+    expect(api.invoke).toHaveBeenCalledWith('git:pull', {
+      workspaceId: 'ws1',
+    });
+  });
+
+  it('hides Pull when the current branch is up to date', async () => {
+    installApi({
+      workspacePr: null,
+      behind: 0,
+      uncommittedFileCount: 0,
+    });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+
+    await screen.findByTestId('diff-file-src/pending.ts');
+    expect(
+      screen.queryByRole('button', { name: 'Pull' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('disables Pull while the fast-forward is running', async () => {
+    let resolvePull: (() => void) | undefined;
+    const pull = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePull = resolve;
+        }),
+    );
+    installApi({ behind: 1, uncommittedFileCount: 0, pull });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Pull' }));
+
+    expect(screen.getByRole('button', { name: 'Pulling…' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Pulling…' }));
+    expect(pull).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolvePull?.());
+  });
+
+  it('disables Pull while the workspace has uncommitted changes', async () => {
+    const api = installApi({ behind: 3, uncommittedFileCount: 2 });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+
+    const pull = await screen.findByRole('button', { name: 'Pull' });
+    expect(pull).toBeDisabled();
+    expect(pull).toHaveAttribute(
+      'title',
+      'Commit or discard uncommitted changes before pulling.',
+    );
+    fireEvent.click(pull);
+    expect(api.invoke).not.toHaveBeenCalledWith('git:pull', expect.anything());
   });
 });
 

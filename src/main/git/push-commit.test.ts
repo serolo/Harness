@@ -160,6 +160,10 @@ describe('GitService.commit', () => {
     const branch = await git.currentBranch(wt);
     expect(branch).toBe('main');
   });
+
+  it('returns null when the current branch has no configured upstream', async () => {
+    await expect(git.upstreamBranch(wt)).resolves.toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -215,6 +219,7 @@ describe('GitService.push', () => {
       'feature/x@{upstream}',
     );
     expect(upstream).toBe('origin/feature/x');
+    await expect(git.upstreamBranch(wt)).resolves.toBe('origin/feature/x');
   });
 
   it('is branch-only: a local refs/checkpoints/* ref never propagates to origin', async () => {
@@ -280,5 +285,84 @@ describe('GitService.push', () => {
     expect(await git.hasUpstream(wt)).toBe(false);
     await git.push(wt, 'origin', 'feature/x', { setUpstream: true });
     expect(await git.hasUpstream(wt)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pull --ff-only
+// ---------------------------------------------------------------------------
+
+describe('GitService.pullFastForward', () => {
+  let tmpRoot: string;
+  let bareOrigin: string;
+  let local: string;
+  let peer: string;
+
+  beforeEach(async () => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'git-pull-test-'));
+    bareOrigin = join(tmpRoot, 'origin.git');
+    const seed = join(tmpRoot, 'seed');
+    local = join(tmpRoot, 'local');
+    peer = join(tmpRoot, 'peer');
+
+    await execa('git', ['init', '--bare', '-b', 'main', bareOrigin]);
+    await execa('git', ['init', '-b', 'main', seed]);
+    writeFileSync(join(seed, 'base.txt'), 'base\n');
+    await g(seed, 'add', '.');
+    await g(seed, 'commit', '-m', 'base');
+    await g(seed, 'remote', 'add', 'origin', bareOrigin);
+    await g(seed, 'push', '-u', 'origin', 'main');
+    await execa('git', ['clone', bareOrigin, local]);
+    await execa('git', ['clone', bareOrigin, peer]);
+  });
+
+  afterEach(() => {
+    removeTestDirectory(tmpRoot);
+  });
+
+  it('fast-forwards the current branch to its configured upstream', async () => {
+    writeFileSync(join(peer, 'remote.txt'), 'remote\n');
+    await g(peer, 'add', '.');
+    await g(peer, 'commit', '-m', 'remote commit');
+    await g(peer, 'push', 'origin', 'main');
+    const remoteHead = await revParse(bareOrigin, 'refs/heads/main');
+
+    await git.pullFastForward(local);
+
+    expect(await g(local, 'rev-parse', 'HEAD')).toBe(remoteHead);
+    expect(await g(local, 'log', '-1', '--format=%s')).toBe('remote commit');
+  });
+
+  it('retries a transient index lock without deleting it', async () => {
+    writeFileSync(join(peer, 'remote.txt'), 'remote\n');
+    await g(peer, 'add', '.');
+    await g(peer, 'commit', '-m', 'remote commit');
+    await g(peer, 'push', 'origin', 'main');
+
+    const lockPath = join(local, '.git', 'index.lock');
+    writeFileSync(lockPath, 'temporary owner');
+    const release = setTimeout(() => rmSync(lockPath, { force: true }), 50);
+    try {
+      await git.pullFastForward(local);
+      expect(await g(local, 'log', '-1', '--format=%s')).toBe('remote commit');
+    } finally {
+      clearTimeout(release);
+      rmSync(lockPath, { force: true });
+    }
+  });
+
+  it('refuses divergent history without moving the local branch', async () => {
+    writeFileSync(join(local, 'local.txt'), 'local\n');
+    await g(local, 'add', '.');
+    await g(local, 'commit', '-m', 'local commit');
+    const localHead = await g(local, 'rev-parse', 'HEAD');
+
+    writeFileSync(join(peer, 'remote.txt'), 'remote\n');
+    await g(peer, 'add', '.');
+    await g(peer, 'commit', '-m', 'remote commit');
+    await g(peer, 'push', 'origin', 'main');
+
+    await expect(git.pullFastForward(local)).rejects.toThrow();
+    expect(await g(local, 'rev-parse', 'HEAD')).toBe(localHead);
   });
 });

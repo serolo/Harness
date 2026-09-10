@@ -245,4 +245,18 @@ export class TurnsRepo {
       .where('reverted_at', 'is', null)
       .execute();
   }
+
+  /** Hide only turns owned by one durable manual chat context. */
+  async clearContextHistory(
+    workspaceId: string,
+    contextId: string,
+  ): Promise<void> {
+    await this.db
+      .updateTable('turns')
+      .set({ reverted_at: Date.now() })
+      .where('workspace_id', '=', workspaceId)
+      .where('context_id', '=', contextId)
+      .where('reverted_at', 'is', null)
+      .execute();
+  }
 }

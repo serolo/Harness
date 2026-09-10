@@ -12,8 +12,10 @@ export interface WorkspacePrIdentity {
 /**
  * Shared live PR lookup for the selected workspace.
  *
- * A failed background integration request must stay stopped until the user explicitly
- * retries it. Otherwise a network outage produces an endless timeout/refetch loop.
+ * A failed background integration request stops interval polling so a network outage
+ * cannot produce an endless timeout loop. Window focus still retries once: the sidebar
+ * has no retry control, and focusing the app is how it recovers after GitHub auth or
+ * connectivity is restored.
  */
 export function useWorkspacePr({
   workspaceId,
@@ -36,6 +38,6 @@ export function useWorkspacePr({
       if (state === 'closed' || state === 'merged') return false;
       return 60_000;
     },
-    refetchOnWindowFocus: (query) => query.state.error === null,
+    refetchOnWindowFocus: true,
   });
 }

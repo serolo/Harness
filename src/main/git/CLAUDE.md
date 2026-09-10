@@ -21,5 +21,13 @@ phases build against.
   rather than leaking raw git strings upward.
 - Publication callers pass an `AbortSignal` through status/commit/upstream/push. Keep the signal on
   every `gitExeca` call (including PTY fallback) so meta-run timeout/cancel cannot leave a push live.
+- The Git toolbar pull action uses `pullFastForward()` (`git pull --ff-only`) against the configured
+  upstream. Never replace it with an implicit merge or reset: divergence must fail without moving
+  the user's branch.
+- Read-only status polling sets `GIT_OPTIONAL_LOCKS=0` so it cannot contend with Pull/commit for
+  `index.lock`. Pull may retry brief lock contention, but must never delete a lock automatically—a
+  persistent lock can belong to a real Git operation.
+- UI that describes the branch's current relationship to remote Git must use `upstreamBranch()`;
+  `Workspace.baseBranch` is creation-time metadata and can become stale when tracking changes.
 - This app's own checkout may be a **detached worktree** — don't assume `git` commands succeed from
   the app's cwd; operate against explicit workspace paths.

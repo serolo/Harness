@@ -148,3 +148,21 @@ describe('useChatStore scheduled turn isolation', () => {
     ]);
   });
 });
+
+it('routes late extraction to its original turn and deduplicates subscribers', () => {
+  const store = useChatStore.getState();
+  store.startTurn('ws1', 'old', 'session');
+  store.endTurn('ws1', 'completed');
+  store.startTurn('ws1', 'new', 'session');
+  const event: AgentEvent = {
+    kind: 'knowledge_extraction',
+    status: 'failed',
+    proposalCount: 0,
+    rejectedCount: 1,
+  };
+  store.appendEvent('ws1', event, 'old');
+  store.appendEvent('ws1', structuredClone(event), 'old');
+  const turns = useChatStore.getState().byWorkspace.ws1;
+  expect(turns?.[0]?.events).toEqual([event]);
+  expect(turns?.[1]?.events).toEqual([]);
+});

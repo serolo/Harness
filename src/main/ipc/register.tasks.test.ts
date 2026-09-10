@@ -50,6 +50,7 @@ import { openDb, type AppDatabase } from '../db';
 import { ProjectsRepo } from '../db/repos/projects';
 import { WorkspacesRepo } from '../db/repos/workspaces';
 import { ScheduledTasksRepo } from '../db/repos/tasks';
+import { ChatContextsRepo } from '../db/repos/chatContexts';
 import { registerIpc } from './register';
 import { decodeAppErrorMessage } from '@shared/errors';
 import type { AppContext } from '../context';
@@ -63,6 +64,8 @@ let repo: ScheduledTasksRepo;
 let workspaceId: string;
 let recorderClear: ReturnType<typeof vi.fn>;
 let pricingReady: ReturnType<typeof vi.fn>;
+let activeContextIds: Set<string>;
+let appContext: AppContext;
 
 const FAKE_EVENT = { sender: {} } as unknown as IpcMainInvokeEvent;
 
@@ -100,14 +103,17 @@ beforeEach(async () => {
     baseBranch: 'main',
     harness: 'claude_code',
     status: 'idle',
+    worktreePath: '/tmp/repo/demo-paris',
   });
   workspaceId = workspace.id;
   recorderClear = vi.fn(async () => undefined);
   pricingReady = vi.fn(async () => null);
+  activeContextIds = new Set();
 
   capturedHandlers.clear();
 
-  const ctx = {
+  appContext = {
+    db,
     tasks: repo,
     workspaces: {
       get: async (id: string) => (id === workspaceId ? workspace : null),
@@ -117,13 +123,33 @@ beforeEach(async () => {
     },
     recorder: {
       clear: recorderClear,
+      latestSessionId: vi.fn(async () => undefined),
     },
     pricing: {
       ready: pricingReady,
     },
+    harness: {
+      isActive: () => false,
+      isContextActive: (_workspaceId: string, contextId: string) =>
+        activeContextIds.has(contextId),
+    },
+    metaHarness: {
+      assertWorkspaceAvailable: vi.fn(async () => undefined),
+    },
+    turnPreparation: {
+      prepareTurn: vi.fn(async (_workspace, input) => ({
+        ...input,
+        mcpConfig: [],
+        permissionPolicy: {},
+      })),
+      discard: vi.fn(),
+    },
+    telemetry: {
+      capture: vi.fn(),
+    },
   } as unknown as AppContext;
 
-  registerIpc(ctx);
+  registerIpc(appContext);
 });
 
 afterEach(async () => {
@@ -318,6 +344,87 @@ describe('chat:clear — handler registration', () => {
       'invalid_input',
     );
     expect(recorderClear).not.toHaveBeenCalled();
+  });
+});
+
+describe('chat:contexts:close — active turn gating', () => {
+  it('rejects an active context but still closes an idle sibling', async () => {
+    const contexts = new ChatContextsRepo(db);
+    const active = await contexts.create({ workspaceId, label: 'Active' });
+    const idle = await contexts.create({ workspaceId, label: 'Idle' });
+    activeContextIds.add(active.id);
+
+    const activeResult = await invokeCode('chat:contexts:close', {
+      contextId: active.id,
+    });
+    const idleResult = await invokeCode('chat:contexts:close', {
+      contextId: idle.id,
+    });
+
+    expect(activeResult).toBe('conflict');
+    expect(await contexts.get(active.id)).toEqual(active);
+    expect(idleResult).toBe('OK');
+    expect(await contexts.get(idle.id)).toBeNull();
+  });
+});
+
+describe('turn:start — instant terminal framing', () => {
+  it('emits distinct nonempty started turn ids before instant terminal contexts end', async () => {
+    const contexts = new ChatContextsRepo(db);
+    const first = await contexts.create({ workspaceId, label: 'First' });
+    const second = await contexts.create({ workspaceId, label: 'Second' });
+    let turnSequence = 0;
+    const allocated = new Map<string, string>();
+    appContext.harness = {
+      startContextTurn: vi.fn(async (_workspaceId, contextId, _opts, sink) => {
+        allocated.set(contextId, `instant-turn-${++turnSequence}`);
+        sink.push({ kind: 'turn_end' });
+        sink.end();
+        return { sessionId: `session-${contextId}`, interrupt: vi.fn() };
+      }),
+      getContextActiveTurnId: vi.fn((_workspaceId, contextId) =>
+        allocated.get(contextId),
+      ),
+    } as unknown as AppContext['harness'];
+
+    const start = capturedHandlers.get('stream:start') as Handler;
+    const run = async (contextId: string, id: string) => {
+      const sender = {
+        send: vi.fn(),
+        isDestroyed: () => false,
+        once: vi.fn(),
+        removeListener: vi.fn(),
+      };
+      await start({ sender } as unknown as IpcMainInvokeEvent, {
+        channel: 'turn:start',
+        id,
+        arg: {
+          workspaceId,
+          contextId,
+          prompt: 'finish instantly',
+          attachments: [],
+        },
+      });
+      await vi.waitFor(() => expect(sender.send).toHaveBeenCalled());
+      return sender.send.mock.calls
+        .map(([, frame]) => frame)
+        .find(
+          (frame) => frame?.t === 'chunk' && frame.chunk?.kind === 'started',
+        )?.chunk.turnId as string | undefined;
+    };
+
+    const firstTurnId = await run(
+      first.id,
+      '11111111-1111-4111-8111-111111111111',
+    );
+    const secondTurnId = await run(
+      second.id,
+      '22222222-2222-4222-8222-222222222222',
+    );
+
+    expect(firstTurnId).toBeTruthy();
+    expect(secondTurnId).toBeTruthy();
+    expect(firstTurnId).not.toBe(secondTurnId);
   });
 });
 

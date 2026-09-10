@@ -31,7 +31,13 @@ import { invoke } from '@renderer/ipc';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
 import { useWorkspaceArchiveStore } from '@renderer/stores/workspaceArchive';
-import { Button, Checkbox, Dialog, Input } from '@renderer/components/ui';
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  Input,
+  Tooltip,
+} from '@renderer/components/ui';
 import { useWorkspacePr } from '@renderer/features/github/useWorkspacePr';
 import {
   archiveWorkspaceWithConfirmation,
@@ -56,55 +62,67 @@ function PullRequestStateIcon({
   // true in cached GitHub payloads after a PR is closed or merged.
   if (state === 'merged') {
     return (
-      <GitMerge
-        {...common}
-        className="h-5 w-5 shrink-0 text-pr-merged"
-        aria-label={`${common['aria-label']} is merged`}
-      />
+      <Tooltip content="Merged">
+        <GitMerge
+          {...common}
+          className="h-5 w-5 shrink-0 text-pr-merged"
+          aria-label={`${common['aria-label']} is merged`}
+        />
+      </Tooltip>
     );
   }
   if (state === 'closed') {
     return (
-      <GitPullRequestClosed
-        {...common}
-        className="h-5 w-5 shrink-0 text-pr-closed"
-        aria-label={`${common['aria-label']} is closed`}
-      />
+      <Tooltip content="Closed">
+        <GitPullRequestClosed
+          {...common}
+          className="h-5 w-5 shrink-0 text-pr-closed"
+          aria-label={`${common['aria-label']} is closed`}
+        />
+      </Tooltip>
     );
   }
   if (state === 'queued' || queueState !== undefined) {
     return (
-      <GitPullRequestArrow
-        {...common}
-        className="h-5 w-5 shrink-0 text-pr-queued"
-        aria-label={`${common['aria-label']} is queued for merge`}
-      />
+      <Tooltip content="Queued for merge">
+        <GitPullRequestArrow
+          {...common}
+          className="h-5 w-5 shrink-0 text-pr-queued"
+          aria-label={`${common['aria-label']} is queued for merge`}
+        />
+      </Tooltip>
     );
   }
   if (pullRequest.draft) {
     return (
-      <GitPullRequestDraft
-        {...common}
-        className="h-5 w-5 shrink-0 text-pr-draft"
-        aria-label={`${common['aria-label']} is draft`}
-      />
+      <Tooltip content="Draft">
+        <GitPullRequestDraft
+          {...common}
+          className="h-5 w-5 shrink-0 text-pr-draft"
+          aria-label={`${common['aria-label']} is draft`}
+        />
+      </Tooltip>
     );
   }
   if (state !== 'open') {
     return (
-      <CircleQuestionMark
-        {...common}
-        className="h-5 w-5 shrink-0 text-fg-3"
-        aria-label={`${common['aria-label']} has unknown state`}
-      />
+      <Tooltip content="Unknown state">
+        <CircleQuestionMark
+          {...common}
+          className="h-5 w-5 shrink-0 text-fg-3"
+          aria-label={`${common['aria-label']} has unknown state`}
+        />
+      </Tooltip>
     );
   }
   return (
-    <GitPullRequest
-      {...common}
-      className="h-5 w-5 shrink-0 text-pr-open"
-      aria-label={`${common['aria-label']} is open`}
-    />
+    <Tooltip content="Open">
+      <GitPullRequest
+        {...common}
+        className="h-5 w-5 shrink-0 text-pr-open"
+        aria-label={`${common['aria-label']} is open`}
+      />
+    </Tooltip>
   );
 }
 

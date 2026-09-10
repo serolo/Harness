@@ -7,7 +7,11 @@ import { openDb, type AppDatabase } from '../db';
 import { ProjectsRepo } from '../db/repos/projects';
 import { knowledgeDir, setUserDataRoot } from '../paths';
 import { ProjectKnowledgeGateway } from './gateway';
-import { parseOkfMarkdown, WikiService } from './index';
+import {
+  KNOWLEDGE_RECONCILIATION_INSTRUCTION,
+  parseOkfMarkdown,
+  WikiService,
+} from './index';
 import { QmdSearchProvider } from './qmd';
 import { storedZip } from './zipFixture';
 
@@ -262,6 +266,168 @@ describe('OKF project knowledge', () => {
     });
     expect(await service.listProposals(projectId)).toHaveLength(1);
     expect(await service.history(projectId)).toHaveLength(1);
+  });
+
+  it('recovers a hidden proposal missing type through the legacy reconciliation API', async () => {
+    const { service, projectId } = await fixture();
+    const payload = {
+      title: 'Recovered lesson',
+      summary: 'Metadata was omitted by the agent.',
+      operations: [
+        {
+          op: 'create',
+          path: 'notes/recovered.md',
+          content:
+            '---\ntitle: Recovered lesson\n---\n# Lesson\nConfine workspace paths.',
+        },
+      ],
+    };
+    const proposals = await service.reconcileTurn({
+      projectId,
+      workspaceId: 'workspace-1',
+      turnId: 'turn-1',
+      responseText: `<harness_knowledge_proposal>${JSON.stringify(payload)}</harness_knowledge_proposal>`,
+    });
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0].status).toBe('pending_review');
+  });
+
+  it('provides a parseable complete example in the reconciliation instruction', () => {
+    const examples = KNOWLEDGE_RECONCILIATION_INSTRUCTION.split('\n').flatMap(
+      (line) => {
+        try {
+          return [JSON.parse(line)];
+        } catch {
+          return [];
+        }
+      },
+    );
+    expect(examples.length).toBeGreaterThan(0);
+    expect(
+      parseOkfMarkdown(examples[0].operations[0].content).frontmatter,
+    ).toMatchObject({ type: expect.any(String), status: 'canonical' });
+  });
+
+  it.each([
+    ['title: Durable lesson', 'Note', 'canonical'],
+    ['title: Durable lesson\nstatus: draft', 'Note', 'draft'],
+    ['type: Decision\ntitle: Durable lesson', 'Decision', 'canonical'],
+  ])(
+    'repairs absent post-turn metadata without accepting the proposal: %s',
+    async (metadata, type, status) => {
+      const { service, projectId } = await fixture();
+      await service.initializeProject(projectId);
+      const before = await service.history(projectId);
+      const payload = {
+        title: 'Durable lesson',
+        summary: 'Records a discovered invariant.',
+        operations: [
+          {
+            op: 'create',
+            path: 'notes/lesson.md',
+            content: `---\n${metadata}\n---\n# Lesson\nKeep workspace paths confined.\n`,
+          },
+        ],
+      };
+      const outcome = await service.reconcileTurnWithOutcome({
+        projectId,
+        workspaceId: 'workspace-1',
+        turnId: 'turn-1',
+        responseText: `<harness_knowledge_proposal>${JSON.stringify(payload)}</harness_knowledge_proposal>`,
+      });
+      expect(outcome).toMatchObject({ status: 'proposed', rejectedCount: 0 });
+      expect(outcome.proposals).toHaveLength(1);
+      expect(outcome.proposals[0]).toMatchObject({
+        status: 'pending_review',
+        workspaceId: 'workspace-1',
+        turnId: 'turn-1',
+      });
+      const operation = outcome.proposals[0].operations[0];
+      expect(operation.op).toBe('create');
+      if (operation.op === 'move')
+        throw new Error('Expected Markdown operation');
+      expect(parseOkfMarkdown(operation.content).frontmatter).toMatchObject({
+        type,
+        status,
+      });
+      expect(await service.listProposals(projectId)).toHaveLength(1);
+      expect(await service.history(projectId)).toEqual(before);
+      const project = await new ProjectsRepo(db!).getById(projectId);
+      await expect(
+        readFile(
+          join(knowledgeDir(project!.directoryName), 'notes/lesson.md'),
+          'utf8',
+        ),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it.each([
+    ['no blocks', 'Completed the change.', 'no_proposals', 0],
+    [
+      'invalid JSON',
+      '<harness_knowledge_proposal>{broken</harness_knowledge_proposal>',
+      'failed',
+      1,
+    ],
+    [
+      'explicit empty type',
+      `<harness_knowledge_proposal>${JSON.stringify({ title: 'Bad type', summary: 'Invalid explicit metadata.', operations: [{ op: 'create', path: 'notes/invalid.md', content: '---\ntype: ""\n---\n# Invalid' }] })}</harness_knowledge_proposal>`,
+      'failed',
+      1,
+    ],
+  ])(
+    'reports %s distinctly',
+    async (_name, responseText, status, rejectedCount) => {
+      const { service, projectId } = await fixture();
+      expect(
+        await service.reconcileTurnWithOutcome({
+          projectId,
+          workspaceId: 'workspace-1',
+          turnId: 'turn-1',
+          responseText,
+        }),
+      ).toEqual({ status, rejectedCount, proposals: [] });
+      expect(await service.listProposals(projectId)).toEqual([]);
+    },
+  );
+
+  it('keeps a valid proposal while reporting another rejected block', async () => {
+    const { service, projectId } = await fixture();
+    const payload = {
+      title: 'Good lesson',
+      summary: 'A valid discovery.',
+      operations: [
+        {
+          op: 'create',
+          path: 'notes/good.md',
+          content: '---\ntype: Note\nstatus: canonical\n---\n# Good',
+        },
+      ],
+    };
+    const outcome = await service.reconcileTurnWithOutcome({
+      projectId,
+      workspaceId: 'workspace-1',
+      turnId: 'turn-1',
+      responseText: `<harness_knowledge_proposal>{broken</harness_knowledge_proposal><harness_knowledge_proposal>${JSON.stringify(payload)}</harness_knowledge_proposal>`,
+    });
+    expect(outcome).toMatchObject({ status: 'proposed', rejectedCount: 1 });
+    expect(outcome.proposals).toHaveLength(1);
+  });
+
+  it('reports disabled extraction without saving proposals', async () => {
+    const { service, projectId } = await fixture({
+      settings: '[knowledge]\nenabled = true\nextract_after_turn = false\n',
+    });
+    expect(
+      await service.reconcileTurnWithOutcome({
+        projectId,
+        workspaceId: 'workspace-1',
+        turnId: 'turn-1',
+        responseText:
+          '<harness_knowledge_proposal>{broken</harness_knowledge_proposal>',
+      }),
+    ).toEqual({ status: 'disabled', rejectedCount: 0, proposals: [] });
   });
 
   it('retains an optional reviewer reason when rejecting a proposal', async () => {

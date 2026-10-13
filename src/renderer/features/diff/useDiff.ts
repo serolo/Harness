@@ -10,7 +10,7 @@
 // streams into the SAME shared chat transcript the ChatPanel renders (mirrors the
 // plan's "reuse useChat" instruction rather than re-implementing turn streaming here).
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   DiffComment,
   DiffMenuInfo,
@@ -21,6 +21,7 @@ import type {
 } from '@shared/review';
 import { invoke, onEvent } from '@renderer/ipc';
 import { useDiffStore } from '@renderer/stores/diff';
+import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useChat } from '@renderer/features/chat/useChat';
 
 /** Stable empty references so store selectors don't loop on `?? []`. */
@@ -62,6 +63,7 @@ export function useDiff(workspaceId: string | null): UseDiff {
   const [scope, setScopeState] = useState<DiffScope>({
     kind: 'uncommitted',
   });
+  const targetRequestId = useRef(0);
   const diffSet = useDiffStore((s) =>
     workspaceId ? (s.diffSetByWorkspace[workspaceId] ?? null) : null,
   );
@@ -89,6 +91,7 @@ export function useDiff(workspaceId: string | null): UseDiff {
   const markCommentResolved = useDiffStore((s) => s.markCommentResolved);
   const removeCommentAction = useDiffStore((s) => s.removeComment);
   const setReviewPending = useDiffStore((s) => s.setReviewPending);
+  const upsertWorkspace = useWorkspacesStore((s) => s.upsertWorkspace);
 
   const { sendTurn } = useChat(workspaceId);
 
@@ -211,13 +214,56 @@ export function useDiff(workspaceId: string | null): UseDiff {
   const setTargetRef = useCallback(
     async (targetRef: string): Promise<void> => {
       if (!workspaceId) return;
-      const next = await invoke('diff:menu', { workspaceId, targetRef });
+      if (targetRef === menuInfo?.targetRef) return;
+
+      const requestId = ++targetRequestId.current;
+      const previousMenuInfo = menuInfo;
       clearFileDiffs(workspaceId);
       setSelectedPathAction(workspaceId, null);
-      setScopeState({ kind: 'uncommitted' });
-      setMenuInfo(next);
+      setScopeState({ kind: 'all' });
+      // Reflect the choice immediately. The explicit query effect can compare against
+      // any allowlisted ref without waiting for the Git-config + DB write below.
+      setMenuInfo((current) =>
+        current
+          ? {
+              ...current,
+              targetRef,
+              commits: [],
+              comparisonBehind: 0,
+            }
+          : current,
+      );
+
+      let workspace;
+      try {
+        workspace = await invoke('git:setBaseBranch', {
+          workspaceId,
+          targetRef,
+        });
+      } catch (error) {
+        if (targetRequestId.current === requestId) {
+          setMenuInfo(previousMenuInfo);
+        }
+        throw error;
+      }
+      upsertWorkspace(workspace);
+
+      if (targetRequestId.current !== requestId) return;
+      try {
+        const next = await invoke('diff:menu', { workspaceId, targetRef });
+        if (targetRequestId.current === requestId) setMenuInfo(next);
+      } catch {
+        // The base/upstream change already succeeded. Keep the optimistic target;
+        // the next status event will refresh the optional counts and commit metadata.
+      }
     },
-    [workspaceId, clearFileDiffs, setSelectedPathAction],
+    [
+      workspaceId,
+      menuInfo,
+      clearFileDiffs,
+      setSelectedPathAction,
+      upsertWorkspace,
+    ],
   );
 
   const setScope = useCallback(

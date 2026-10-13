@@ -212,6 +212,7 @@ function installApi(opts: {
         ? Promise.reject(opts.revealError)
         : Promise.resolve(undefined);
     }
+    if (channel === 'file:copyPath') return Promise.resolve(undefined);
     if (channel === 'attachment:imagePreview') {
       const { turnId, attachmentIndex } = req as {
         turnId: string;
@@ -727,7 +728,7 @@ describe('ChatPanel reconstruction', () => {
 
     fireEvent.click(screen.getByTestId('composer-model'));
     fireEvent.click(
-      await screen.findByTestId('composer-model-option-claude-sonnet-5-1m'),
+      await screen.findByTestId('composer-model-option-claude-sonnet-5'),
     );
     expect(
       screen.getByTestId('composer-model-switch-notice'),
@@ -1186,6 +1187,67 @@ describe('ChatPanel reconstruction', () => {
     expect(
       await screen.findByText(/Tell me \(a\/b\/c\/d\)/),
     ).toBeInTheDocument();
+    expect(screen.queryByTestId('plan-approval')).not.toBeInTheDocument();
+  });
+
+  it('does not offer plan approval when the final plan-mode response says work is still pending', async () => {
+    installApi({
+      history: {
+        turns: [
+          {
+            id: 't-pending-agent',
+            workspaceId: 'ws1',
+            idx: 0,
+            status: 'completed',
+            sessionId: 'sess-pending-agent',
+            mode: 'plan',
+            startedAt: 1,
+            endedAt: 2,
+            inputTokens: null,
+            outputTokens: null,
+            contextId: 'ctx-ws1-1',
+            events: [
+              {
+                id: 'partial-plan-file',
+                turnId: 't-pending-agent',
+                kind: 'file_edit',
+                ts: 1,
+                event: {
+                  kind: 'file_edit',
+                  path: '/Users/test/.claude/plans/partial.md',
+                  op: 'create',
+                },
+              },
+              {
+                id: 'draft-plan',
+                turnId: 't-pending-agent',
+                kind: 'text',
+                ts: 2,
+                event: {
+                  kind: 'text',
+                  delta: '## Backend plan\n\n1. Investigate the slow query.',
+                },
+              },
+              {
+                id: 'pending-status',
+                turnId: 't-pending-agent',
+                kind: 'text',
+                ts: 3,
+                event: {
+                  kind: 'text',
+                  delta:
+                    'Mobile-specific plan is in too. One more agent (observability) still running.',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByText(/One more agent/)).toBeInTheDocument();
     expect(screen.queryByTestId('plan-approval')).not.toBeInTheDocument();
   });
 
@@ -1673,6 +1735,57 @@ describe('ChatPanel reconstruction', () => {
     );
   });
 
+  it('offers Finder and absolute/relative path actions beside the displayed file name', async () => {
+    const path = 'src/renderer/features/chat/ChatPanel.tsx';
+    const api = installApi({ files: { [path]: 'export const file = true;' } });
+    render(
+      <ChatPanel
+        workspaceId="ws1"
+        inspectFileRequest={{ id: 75, workspaceId: 'ws1', path }}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: `File actions for ${path}`,
+      }),
+    );
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: 'Open in Finder' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: 'Copy absolute path' }),
+    );
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('file:copyPath', {
+        source: 'workspace',
+        workspaceId: 'ws1',
+        path,
+        format: 'absolute',
+      }),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Copied absolute path',
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: `File actions for ${path}` }),
+    );
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: 'Copy relative path' }),
+    );
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('file:copyPath', {
+        source: 'workspace',
+        workspaceId: 'ws1',
+        path,
+        format: 'relative',
+      }),
+    );
+  });
+
   it('uses the Git panel comparison when opening a file in diff mode', async () => {
     const path = 'src/pending.ts';
     const api = installApi({
@@ -1772,6 +1885,20 @@ describe('ChatPanel reconstruction', () => {
       expect(api.invoke).toHaveBeenCalledWith('file:revealInFinder', {
         source: 'plan',
         path,
+      }),
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: `File actions for ${path}` }),
+    );
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: 'Copy relative path' }),
+    );
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('file:copyPath', {
+        source: 'plan',
+        path,
+        format: 'relative',
       }),
     );
   });
@@ -2015,12 +2142,95 @@ describe('ChatPanel reconstruction', () => {
           prompt: 'Start a separate task',
           sessionId: null,
           harness: 'codex',
-          model: 'codex-gpt-5-6-terra',
+          model: 'gpt-5.6-terra',
         }),
         expect.any(Function),
         expect.objectContaining({ id: expect.any(String) }),
       ),
     );
+  });
+
+  it('names an Untitled tab from its first message and restores the persisted label', async () => {
+    const stream = vi.fn(
+      (
+        _channel: string,
+        _arg: unknown,
+        onChunk: (chunk: TurnStreamChunk) => void,
+      ) => {
+        onChunk({
+          kind: 'started',
+          turnId: 'first-message-turn',
+          sessionId: 'first-message-session',
+          mode: 'default',
+        });
+        onChunk({ kind: 'event', event: { kind: 'turn_end' } });
+        return Promise.resolve();
+      },
+    );
+    const api = installApi({ stream });
+    const { rerender } = render(<ChatPanel workspaceId="ws1" />);
+
+    expect(await screen.findByTestId('chat-tab')).toHaveTextContent('Untitled');
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: {
+        value: 'Investigate mobile trips performance across backend services',
+      },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-tab')).toHaveTextContent(
+        'Investigate mobile trips performance…',
+      ),
+    );
+    expect(api.invoke).toHaveBeenCalledWith('chat:contexts:rename', {
+      contextId: expect.any(String),
+      label: 'Investigate mobile trips performance…',
+    });
+
+    rerender(<ChatPanel workspaceId="ws2" />);
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-tab')).toHaveTextContent('Untitled'),
+    );
+    rerender(<ChatPanel workspaceId="ws1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-tab')).toHaveTextContent(
+        'Investigate mobile trips performance…',
+      ),
+    );
+  });
+
+  it('does not replace an explicit tab name when the first message is sent', async () => {
+    const api = installApi({});
+    render(<ChatPanel workspaceId="ws1" />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Rename Untitled' }),
+    );
+    const nameInput = screen.getByTestId('chat-context-name-input');
+    fireEvent.change(nameInput, { target: { value: 'API cleanup' } });
+    fireEvent.keyDown(nameInput, { key: 'Enter' });
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-tab')).toHaveTextContent('API cleanup'),
+    );
+
+    fireEvent.change(screen.getByTestId('composer-input'), {
+      target: { value: 'Investigate mobile trips performance' },
+    });
+    fireEvent.click(screen.getByTestId('composer-send'));
+
+    await waitFor(() => expect(api.stream).toHaveBeenCalled());
+    expect(screen.getByTestId('chat-tab')).toHaveTextContent('API cleanup');
+    expect(
+      api.invoke.mock.calls.filter(
+        ([channel]) => channel === 'chat:contexts:rename',
+      ),
+    ).toEqual([
+      [
+        'chat:contexts:rename',
+        { contextId: expect.any(String), label: 'API cleanup' },
+      ],
+    ]);
   });
 
   it('preserves a separate unsent draft for each manual chat context', async () => {
@@ -2400,7 +2610,9 @@ describe('ChatPanel manual tab persistence (regression)', () => {
     expect(tab1).toHaveAttribute('aria-selected', 'false');
 
     // Tab 1's history is intact and NOT merged with tab 2's.
-    fireEvent.click(within(tab1).getByRole('button', { name: 'Untitled' }));
+    fireEvent.click(
+      within(tab1).getByRole('button', { name: 'First tab message' }),
+    );
     expect(
       await screen.findByText('Reply to First tab message'),
     ).toBeInTheDocument();
@@ -2409,7 +2621,9 @@ describe('ChatPanel manual tab persistence (regression)', () => {
     ).not.toBeInTheDocument();
 
     // Tab 2's history is intact and NOT merged with tab 1's.
-    fireEvent.click(within(tab2).getByRole('button', { name: 'Untitled' }));
+    fireEvent.click(
+      within(tab2).getByRole('button', { name: 'Second tab message' }),
+    );
     expect(
       await screen.findByText('Reply to Second tab message'),
     ).toBeInTheDocument();
@@ -2647,13 +2861,24 @@ describe('ChatPanel streaming', () => {
       /\d+\.\ds/,
     );
     expect(screen.queryByText('streaming…')).not.toBeInTheDocument();
+    vi.useFakeTimers();
     fireEvent.click(stop);
-    await waitFor(() =>
-      expect(api.invoke).toHaveBeenCalledWith('turn:interruptContext', {
-        workspaceId: 'ws1',
-        contextId: 'ctx-ws1-1',
-      }),
+    expect(api.invoke).toHaveBeenCalledWith('turn:interruptContext', {
+      workspaceId: 'ws1',
+      contextId: 'ctx-ws1-1',
+    });
+    expect(screen.getByRole('button', { name: 'Stopping' })).toHaveTextContent(
+      'Stopping…',
     );
+    act(() => vi.advanceTimersByTime(5_000));
+    const forceStop = screen.getByTestId('composer-force-interrupt');
+    expect(forceStop).toHaveTextContent('Force stop');
+    fireEvent.click(forceStop);
+    expect(api.invoke).toHaveBeenCalledWith('turn:forceInterruptContext', {
+      workspaceId: 'ws1',
+      contextId: 'ctx-ws1-1',
+    });
+    vi.useRealTimers();
 
     // Clean up the pending stream promise.
     await act(async () => {
@@ -2809,7 +3034,7 @@ describe('ChatPanel streaming', () => {
 
     fireEvent.click(
       within(screen.getByTestId('chat-tab')).getByRole('button', {
-        name: 'Untitled',
+        name: 'first request',
       }),
     );
     expect(await screen.findByText('reply from first')).toBeInTheDocument();
@@ -2864,7 +3089,7 @@ describe('ChatPanel streaming', () => {
 
     fireEvent.click(
       within(screen.getByTestId('chat-tab')).getByRole('button', {
-        name: 'Untitled',
+        name: 'first request',
       }),
     );
     fireEvent.click(await screen.findByTestId('composer-interrupt'));
@@ -2881,7 +3106,7 @@ describe('ChatPanel streaming', () => {
 
     fireEvent.click(
       within(screen.getByTestId('chat-context-tab')).getByRole('button', {
-        name: 'Untitled',
+        name: 'second request',
       }),
     );
     expect(screen.getByTestId('composer-interrupt')).toBeInTheDocument();
@@ -3293,7 +3518,7 @@ describe('ChatPanel streaming', () => {
 
     fireEvent.click(
       within(screen.getByTestId('chat-tab')).getByRole('button', {
-        name: 'Untitled',
+        name: 'keep running',
       }),
     );
     expect(screen.getByTestId('composer-interrupt')).toBeInTheDocument();
@@ -3337,11 +3562,8 @@ describe('ChatPanel streaming', () => {
       screen.getByTestId('composer-model-option-claude-fable-5'),
     ).toHaveTextContent('Fable 5');
     expect(
-      screen.getByTestId('composer-model-option-claude-opus-4-8-1m'),
-    ).toHaveTextContent('Opus 4.8 1M');
-    expect(
-      screen.getByTestId('composer-model-option-claude-opus-5'),
-    ).toHaveTextContent('New');
+      screen.getByTestId('composer-model-option-claude-opus-4-8'),
+    ).toHaveTextContent('Opus 4.8');
     expect(
       screen.queryByTestId('composer-model-opencode'),
     ).not.toBeInTheDocument();
@@ -3353,7 +3575,7 @@ describe('ChatPanel streaming', () => {
     render(<ChatPanel workspaceId="ws1" />);
     fireEvent.click(await screen.findByTestId('composer-model'));
     fireEvent.click(
-      await screen.findByTestId('composer-model-option-claude-opus-4-8-1m'),
+      await screen.findByTestId('composer-model-option-claude-opus-4-8'),
     );
     fireEvent.change(screen.getByTestId('composer-input'), {
       target: { value: 'Which model are you using?' },
@@ -3366,7 +3588,7 @@ describe('ChatPanel streaming', () => {
         expect.objectContaining({
           workspaceId: 'ws1',
           harness: 'claude_code',
-          model: 'claude-opus-4-8[1m]',
+          model: 'claude-opus-4-8',
         }),
         expect.any(Function),
         expect.anything(),
@@ -3637,7 +3859,11 @@ describe('ChatPanel streaming', () => {
         displayPrompt: '/fix-checks rerun CI',
       }),
     );
-    expect(screen.getByText('/fix-checks rerun CI')).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('transcript')).getByText(
+        '/fix-checks rerun CI',
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Fix checks')).not.toBeInTheDocument();
   });
 

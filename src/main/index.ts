@@ -491,6 +491,15 @@ async function createAppContext(): Promise<AppContext> {
     setStatus: (id, status) => workspaces.setStatus(id, status),
     emit,
     notifications,
+    getWatchdogTimeouts: (mode) => {
+      const agent = settings.get().agent;
+      return {
+        idleMs: agent.idleWatchdogMinutes * 60_000,
+        ...(mode === 'plan'
+          ? { totalMs: agent.planTurnWatchdogMinutes * 60_000 }
+          : {}),
+      };
+    },
     onTodoUpdate: (workspaceId, todoList) => {
       void todos.replaceAgentTodos(workspaceId, todoList).catch((err) => {
         logger.error(

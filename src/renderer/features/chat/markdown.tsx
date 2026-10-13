@@ -11,6 +11,7 @@
 // variant when richer code display is wanted.
 
 import React from 'react';
+import { invoke } from '@renderer/ipc';
 import { FileReferencePill } from './FileReferencePill';
 
 export interface MarkdownProps {
@@ -269,8 +270,14 @@ function renderInline(
               key={key}
               href={href}
               className="text-link underline hover:text-link-hover"
-              target="_blank"
-              rel="noreferrer"
+              onClick={(event) => {
+                // Electron owns navigation: keep agent-authored links out of an in-app
+                // BrowserWindow and let main validate before asking the OS to open them.
+                event.preventDefault();
+                void invoke('external:openUrl', { url: href }).catch(
+                  () => undefined,
+                );
+              }}
             >
               {linkMatch[1]}
             </a>

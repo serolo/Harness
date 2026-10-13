@@ -107,6 +107,44 @@ describe('ProcessRegistry', () => {
 });
 
 describe('treeKillEscalate', () => {
+  it('force-kills a parent and child that both ignore SIGTERM within the hard deadline', async () => {
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "process.on('SIGTERM', () => {})",
+      "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 30000)\"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })",
+      "process.stdout.write(String(child.pid) + '\\n')",
+      'setInterval(() => {}, 30000)',
+    ].join(';');
+    const parent = spawn(process.execPath, ['-e', script], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    const parentPid = parent.pid as number;
+    const childPid = await new Promise<number>((resolve, reject) => {
+      let output = '';
+      const timer = setTimeout(
+        () => reject(new Error('child pid timeout')),
+        2_000,
+      );
+      parent.stdout?.on('data', (chunk: Buffer) => {
+        output += chunk.toString();
+        const parsed = Number.parseInt(output, 10);
+        if (Number.isFinite(parsed)) {
+          clearTimeout(timer);
+          resolve(parsed);
+        }
+      });
+    });
+
+    const started = Date.now();
+    await treeKillEscalate(parentPid, 150);
+    await until(() => !isAlive(parentPid) && !isAlive(childPid));
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(isAlive(parentPid)).toBe(false);
+    expect(isAlive(childPid)).toBe(false);
+  });
+
   it('kills a real child process TREE when stopWorkspace runs', async () => {
     // A parent Node process that also spawns a child → a 2-level tree on every OS.
     const child = spawn(

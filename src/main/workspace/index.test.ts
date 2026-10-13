@@ -108,6 +108,8 @@ function makeSettings(setupScript: string): EffectiveSettings {
       reviewPrompt: 'review',
       prPrompt: 'pr',
       harnessImpl: 'auto',
+      idleWatchdogMinutes: 10,
+      planTurnWatchdogMinutes: 60,
     },
     git: {
       branchPrefix: 'agent',
@@ -524,6 +526,60 @@ describe('WorkspaceManager.create', () => {
     await expect(
       manager.create({ projectId, location: 'project' }),
     ).rejects.toMatchObject({ code: 'conflict' });
+  });
+});
+
+describe('WorkspaceManager.setBaseBranch', () => {
+  it('updates the Git upstream and persisted base without moving HEAD', async () => {
+    const manager = buildManager('echo ok');
+    const workspace = await manager.create({
+      projectId,
+      name: 'review-target',
+      branch: 'agent/review-target',
+    });
+    const headBefore = await execa('git', ['rev-parse', 'HEAD'], {
+      cwd: workspace.worktreePath!,
+    });
+    await execa('git', ['remote', 'add', 'origin', sourceRepoPath], {
+      cwd: sourceRepoPath,
+    });
+    await execa('git', ['update-ref', 'refs/remotes/origin/qa/150', 'main'], {
+      cwd: sourceRepoPath,
+    });
+
+    const updated = await manager.setBaseBranch(workspace.id, 'origin/qa/150');
+
+    expect(updated.baseBranch).toBe('origin/qa/150');
+    await expect(
+      execa(
+        'git',
+        ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+        { cwd: workspace.worktreePath! },
+      ).then((result) => result.stdout.trim()),
+    ).resolves.toBe('origin/qa/150');
+    await expect(
+      execa('git', ['rev-parse', 'HEAD'], {
+        cwd: workspace.worktreePath!,
+      }).then((result) => result.stdout.trim()),
+    ).resolves.toBe(headBefore.stdout.trim());
+    expect(emitSpy).toHaveBeenCalledWith('workspace:updated', {
+      workspace: expect.objectContaining({
+        id: workspace.id,
+        baseBranch: 'origin/qa/150',
+      }),
+    });
+  });
+
+  it('rejects a target outside Git branch refs without changing persistence', async () => {
+    const manager = buildManager('echo ok');
+    const workspace = await manager.create({ projectId });
+
+    await expect(
+      manager.setBaseBranch(workspace.id, '--upload-pack=unsafe'),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+    await expect(manager.get(workspace.id)).resolves.toMatchObject({
+      baseBranch: workspace.baseBranch,
+    });
   });
 });
 

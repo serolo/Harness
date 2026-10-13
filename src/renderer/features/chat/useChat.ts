@@ -87,6 +87,7 @@ export interface UseChat {
     displayPrompt?: string,
   ) => Promise<void>;
   interrupt: (contextId?: string) => Promise<void>;
+  forceInterrupt: (contextId?: string) => Promise<void>;
   clear: (contextId?: string) => Promise<void>;
 }
 
@@ -328,6 +329,18 @@ export function useChat(workspaceId: string | null): UseChat {
     [workspaceId],
   );
 
+  const forceInterrupt = useCallback(
+    async (contextId?: string): Promise<void> => {
+      if (!workspaceId) return;
+      if (contextId === undefined || contextId.startsWith('task:')) {
+        await invoke('turn:forceInterrupt', { workspaceId });
+        return;
+      }
+      await invoke('turn:forceInterruptContext', { workspaceId, contextId });
+    },
+    [workspaceId],
+  );
+
   const clear = useCallback(
     async (contextId?: string): Promise<void> => {
       if (!workspaceId) return;
@@ -342,5 +355,5 @@ export function useChat(workspaceId: string | null): UseChat {
     [workspaceId, reset, clearContext],
   );
 
-  return { turns, isBusy, sendTurn, interrupt, clear };
+  return { turns, isBusy, sendTurn, interrupt, forceInterrupt, clear };
 }

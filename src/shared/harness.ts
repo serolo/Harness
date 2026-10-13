@@ -3,8 +3,8 @@
 // FROZEN: README §6.3 — supersedes spec §4.1 (push-based sink).
 // README §6.3 and spec §4.1 disagree on the Harness shape. README §6.3 WINS and
 // is copied verbatim below: startTurn is push-based (takes a StreamSink), adds
-// capabilities() + detect(), mcpConfig is REQUIRED, and TurnHandle carries only
-// { sessionId; interrupt() } — there is NO pull-based `events: AsyncIterable`.
+// capabilities() + detect(), mcpConfig is REQUIRED, and TurnHandle is push-based with
+// an append-only optional force interrupt — there is NO pull-based `events: AsyncIterable`.
 // Do not merge the two shapes; Phase 2 builds against this one.
 
 import type { StreamSink } from './ipc';
@@ -65,11 +65,15 @@ export interface StartTurnOpts {
   knowledgeStatus?: KnowledgeTurnStatusEvent;
   /** Exact meta-skill revisions injected into this internal turn. APPEND-ONLY. */
   metaSkills?: { slug: string; digest: string }[];
+  /** Main-process workspace identity used only for process registration. APPEND-ONLY. */
+  workspaceId?: string;
 }
 
 export interface TurnHandle {
   sessionId: string;
   interrupt(): Promise<void>;
+  /** Immediately SIGKILL the complete agent process tree. APPEND-ONLY. */
+  forceInterrupt?(): Promise<void>;
 }
 
 export type AgentEvent =

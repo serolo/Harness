@@ -1811,6 +1811,37 @@ export class GitService {
   }
 
   /**
+   * Make an existing, caller-validated ref the checked-out branch's upstream.
+   * This changes branch configuration only; it never checks out, merges, or resets.
+   */
+  async setUpstreamBranch(
+    worktreePath: string,
+    targetRef: string,
+  ): Promise<void> {
+    const args = [
+      '-C',
+      worktreePath,
+      'branch',
+      `--set-upstream-to=${targetRef}`,
+    ];
+    try {
+      await gitExeca(args);
+    } catch (e) {
+      throw toGitError(e, `git ${args.join(' ')}`);
+    }
+  }
+
+  /** Remove the checked-out branch's configured upstream without moving HEAD. */
+  async unsetUpstreamBranch(worktreePath: string): Promise<void> {
+    const args = ['-C', worktreePath, 'branch', '--unset-upstream'];
+    try {
+      await gitExeca(args);
+    } catch (e) {
+      throw toGitError(e, `git ${args.join(' ')}`);
+    }
+  }
+
+  /**
    * The current branch name for a worktree.
    * `git -C <worktreePath> rev-parse --abbrev-ref HEAD`.
    *

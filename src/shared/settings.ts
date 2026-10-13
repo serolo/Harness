@@ -68,6 +68,10 @@ export interface AgentSettings {
   prPrompt: string;
   /** Which harness IMPLEMENTATION backs the `claude_code` id (`auto` CLI vs `mock`). */
   harnessImpl: 'auto' | 'mock';
+  /** Stop a turn after this many minutes without a progress event. APPEND-ONLY. */
+  idleWatchdogMinutes: number;
+  /** Stop planning turns after this total number of minutes. APPEND-ONLY. */
+  planTurnWatchdogMinutes: number;
 }
 
 /** `[notifications]` — native turn notifications (spec §5.8, Phase 2). */

@@ -681,6 +681,44 @@ function inlinePlanContent(events: AgentEvent[]): string {
     .trim();
 }
 
+function finalPlanText(events: AgentEvent[]): string {
+  for (const event of events.slice().reverse()) {
+    if (event.kind !== 'text') continue;
+    const text = visibleModelText(event.delta).trim();
+    if (text !== '') return text;
+  }
+  return '';
+}
+
+/**
+ * A completed provider turn is only a transport fact. Claude may report a successful
+ * result while background agents are still running, so approval needs positive evidence
+ * that the final response is the plan (or that a saved plan artifact exists).
+ */
+function hasPlanEvidence(events: AgentEvent[]): boolean {
+  const finalText = finalPlanText(events);
+  const tail = finalText.slice(-600);
+  const reportsPendingWork =
+    /\b(?:agents?|tasks?|analysis|research|work)\b[^.!?\n]{0,80}\b(?:still|currently)\s+(?:running|pending|in progress)\b/i.test(
+      tail,
+    ) ||
+    /\bwaiting\s+(?:on|for)\s+(?:the\s+)?(?:other|remaining|final|last|one|two|three|\d+)\s+(?:agents?|tasks?|results?|responses?)\b/i.test(
+      tail,
+    ) ||
+    /\b(?:one|two|three|\d+)\s+more\s+(?:agents?|tasks?|steps?|results?)\b/i.test(
+      tail,
+    );
+  if (reportsPendingWork) return false;
+  if (savedPlanPath(events) !== null) return true;
+  if (finalText === '') return false;
+
+  const namesPlan = /\bplan\b/i.test(finalText);
+  const hasPlanStructure =
+    /^#{1,6}\s+\S/m.test(finalText) ||
+    /^\s*(?:[-*]|\d+[.)])\s+\S/m.test(finalText);
+  return namesPlan && hasPlanStructure;
+}
+
 function PlanReady({
   events,
   onApprove,
@@ -1027,9 +1065,7 @@ export function Transcript({
               turn.status === 'completed' &&
               !turn.events.some(isQuestionEvent) &&
               !endsWithUserResponseRequest(turn.events) &&
-              turn.events.some(
-                (event) => event.kind === 'text' && event.delta.trim() !== '',
-              ) &&
+              hasPlanEvidence(turn.events) &&
               onApprovePlan &&
               onHandoffPlan ? (
                 <PlanReady

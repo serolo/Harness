@@ -9,7 +9,7 @@
 import { APPEARANCE_THEMES, COMPLETION_SOUNDS } from '@shared/settings';
 
 /** The control a settings row renders. */
-export type FieldKind = 'text' | 'select' | 'boolean';
+export type FieldKind = 'text' | 'number' | 'select' | 'boolean';
 
 /** One editable setting: where it lives + how to edit it. */
 export interface FieldDef {
@@ -24,6 +24,8 @@ export interface FieldDef {
   optionLabels?: Readonly<Record<string, string>>;
   /** Optional one-line hint under the label. */
   hint?: string;
+  min?: number;
+  max?: number;
 }
 
 /** A titled group of fields. */
@@ -85,6 +87,22 @@ export const SETTINGS_SECTIONS: readonly SectionDef[] = [
         kind: 'select',
         options: ['auto', 'mock'],
         hint: 'auto = real CLI · mock = scripted harness',
+      },
+      {
+        keyPath: 'agent.idleWatchdogMinutes',
+        label: 'Idle watchdog (minutes)',
+        kind: 'number',
+        min: 1,
+        max: 1440,
+        hint: 'Stop a turn when the agent produces no progress for this long.',
+      },
+      {
+        keyPath: 'agent.planTurnWatchdogMinutes',
+        label: 'Planning limit (minutes)',
+        kind: 'number',
+        min: 1,
+        max: 1440,
+        hint: 'Maximum total wall-clock time for a planning turn.',
       },
     ],
   },

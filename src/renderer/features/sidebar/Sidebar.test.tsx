@@ -12,6 +12,7 @@ import { Sidebar } from './Sidebar';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useWorkspaceCreationStore } from '@renderer/stores/workspaceCreation';
 import { useUiStore } from '@renderer/stores/ui';
+import type { PrSummary } from '@shared/github';
 import type { Project, Workspace } from '@shared/models';
 
 interface ApiStub {
@@ -26,28 +27,36 @@ function installApi(
   projects: Project[],
   workspaces: Workspace[],
   workspaceListPending = false,
+  workspacePrs: Record<string, PrSummary | null> = {},
 ): { fireEvent: (event: string, payload: unknown) => void } {
   const callbacks: Record<string, OnCallback[]> = {};
-  const invoke = vi.fn((channel: string, req?: { projectId?: string }) => {
-    if (channel === 'project:list') return Promise.resolve(projects);
-    if (channel === 'workspace:list') {
-      if (workspaceListPending) return new Promise(() => {});
-      return Promise.resolve(
-        workspaces.filter(
-          (workspace) => workspace.projectId === req?.projectId,
-        ),
-      );
-    }
-    if (channel === 'workspace:suggestNames') {
-      return Promise.resolve({
-        workspaceName: 'paris',
-        worktreeName: 'paris',
-        branchName: 'paris',
-      });
-    }
-    if (channel === 'app:ping') return Promise.resolve('ok');
-    return Promise.resolve(undefined);
-  });
+  const invoke = vi.fn(
+    (channel: string, req?: { projectId?: string; workspaceId?: string }) => {
+      if (channel === 'project:list') return Promise.resolve(projects);
+      if (channel === 'workspace:list') {
+        if (workspaceListPending) return new Promise(() => {});
+        return Promise.resolve(
+          workspaces.filter(
+            (workspace) => workspace.projectId === req?.projectId,
+          ),
+        );
+      }
+      if (channel === 'github:getWorkspacePr') {
+        return Promise.resolve(
+          req?.workspaceId ? (workspacePrs[req.workspaceId] ?? null) : null,
+        );
+      }
+      if (channel === 'workspace:suggestNames') {
+        return Promise.resolve({
+          workspaceName: 'paris',
+          worktreeName: 'paris',
+          branchName: 'paris',
+        });
+      }
+      if (channel === 'app:ping') return Promise.resolve('ok');
+      return Promise.resolve(undefined);
+    },
+  );
   const on = vi.fn((event: string, cb: OnCallback) => {
     (callbacks[event] ??= []).push(cb);
     return () => {
@@ -220,6 +229,103 @@ describe('Sidebar project tree', () => {
       'ws-pinned',
       'ws-first',
     ]);
+  });
+
+  it('sorts by pin override, active pull request, then newest creation date', async () => {
+    const pinnedClosed = {
+      ...workspace('ws-pinned', PROJECT_ONE.id, 'pinned-closed'),
+      isPinned: true,
+      prNumber: 90,
+      createdAt: 100,
+    };
+    const openNewest = {
+      ...workspace('ws-open', PROJECT_ONE.id, 'open-newest'),
+      // A null persisted number proves branch-discovered PRs affect the ordering.
+      prNumber: null,
+      createdAt: 900,
+    };
+    const queued = {
+      ...workspace('ws-queued', PROJECT_ONE.id, 'queued'),
+      prNumber: 92,
+      createdAt: 800,
+    };
+    const draft = {
+      ...workspace('ws-draft', PROJECT_ONE.id, 'draft'),
+      prNumber: 93,
+      createdAt: 700,
+    };
+    const closedNewest = {
+      ...workspace('ws-closed', PROJECT_ONE.id, 'closed-newest'),
+      prNumber: 94,
+      createdAt: 1_000,
+    };
+    const withoutPr = {
+      ...workspace('ws-no-pr', PROJECT_ONE.id, 'without-pr'),
+      createdAt: 600,
+    };
+    const pr = (
+      number: number,
+      state: string,
+      extra: Partial<PrSummary> = {},
+    ): PrSummary => ({
+      number,
+      url: `https://github.com/x/y/pull/${number}`,
+      title: `PR ${number}`,
+      draft: false,
+      mergeableState: 'clean',
+      state,
+      ...extra,
+    });
+
+    installApi(
+      [PROJECT_ONE],
+      [withoutPr, draft, closedNewest, queued, openNewest, pinnedClosed],
+      false,
+      {
+        'ws-pinned': pr(90, 'closed'),
+        'ws-open': pr(91, 'open'),
+        'ws-queued': pr(92, 'queued', { mergeQueueState: 'queued' }),
+        'ws-draft': pr(93, 'open', { draft: true }),
+        'ws-closed': pr(94, 'closed'),
+      },
+    );
+    renderSidebar();
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByTestId('workspace-item')
+          .map((row) => row.getAttribute('data-workspace-id')),
+      ).toEqual([
+        'ws-pinned',
+        'ws-open',
+        'ws-queued',
+        'ws-draft',
+        'ws-closed',
+        'ws-no-pr',
+      ]),
+    );
+  });
+
+  it('uses descending workspace id as a deterministic tie-breaker for equal dates', async () => {
+    const zulu = {
+      ...workspace('ws-zulu', PROJECT_ONE.id, 'zulu'),
+      createdAt: 500,
+    };
+    const alpha = {
+      ...workspace('ws-alpha', PROJECT_ONE.id, 'alpha'),
+      createdAt: 500,
+    };
+    installApi([PROJECT_ONE], [alpha, zulu]);
+    renderSidebar();
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByTestId('workspace-item')
+          .map((row) => row.getAttribute('data-workspace-id')),
+      ).toEqual(['ws-zulu', 'ws-alpha']),
+    );
   });
 
   it('offers a new-workspace action on every project', async () => {

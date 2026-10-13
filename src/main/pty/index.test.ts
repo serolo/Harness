@@ -99,13 +99,14 @@ describe('PtyService', () => {
             args: ['-c', 'printf raw-out; exit 3'],
           };
     const handle = await pty.spawnRaw({
+      workspaceId: 'w',
       cwd: process.cwd(),
       ...rawCommand,
     });
     expect(typeof handle.ptyId).toBe('string');
-    // Parity with the other agent adapters: a raw agent turn is NOT registered in the
-    // shared ProcessRegistry (supervisor-owned teardown), unlike a terminal-tab `spawn`.
-    expect(reg.list()).toEqual([]);
+    expect(reg.list('w')).toEqual([
+      expect.objectContaining({ id: handle.ptyId, kind: 'agent' }),
+    ]);
 
     let out = '';
     let exitCode: number | undefined;
@@ -115,6 +116,7 @@ describe('PtyService', () => {
     await until(() => exitCode !== undefined);
     expect(out).toContain('raw-out'); // raw bytes forwarded (not ANSI-stripped)
     expect(exitCode).toBe(3); // the exit CODE reached onExit
+    expect(reg.list('w')).toEqual([]);
 
     // After exit the pty is gone from the service map — kill is a safe no-op.
     expect(() => handle.kill()).not.toThrow();
@@ -124,6 +126,7 @@ describe('PtyService', () => {
     const reg = new ProcessRegistry();
     const pty = new PtyService(reg);
     const handle = await pty.spawnRaw({
+      workspaceId: 'w',
       cwd: process.cwd(),
       shell: process.execPath,
       args: ['-e', "process.stdout.write('node-mode')"],

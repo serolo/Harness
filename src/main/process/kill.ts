@@ -67,3 +67,28 @@ export function treeKillEscalate(pid: number, graceMs = 5000): Promise<void> {
     setTimeout(poll, POLL_INTERVAL_MS).unref();
   });
 }
+
+/**
+ * Immediately force-kill the process tree rooted at `pid`. This is the explicit
+ * second-stage action exposed by the UI after the graceful stop window expires.
+ * Like {@link treeKillEscalate}, it is bounded and never rejects.
+ */
+export function treeKillForce(
+  pid: number,
+  hardTimeoutMs = HARD_TIMEOUT_MS,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const deadline = Date.now() + hardTimeoutMs;
+    const ignore = (): void => {};
+    treeKill(pid, 'SIGKILL', ignore);
+
+    const poll = (): void => {
+      if (!isAlive(pid) || Date.now() >= deadline) {
+        resolve();
+        return;
+      }
+      setTimeout(poll, POLL_INTERVAL_MS).unref();
+    };
+    setTimeout(poll, POLL_INTERVAL_MS).unref();
+  });
+}

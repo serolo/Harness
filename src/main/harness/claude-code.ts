@@ -179,6 +179,7 @@ export class ClaudeCodeHarness implements Harness {
     );
 
     let sessionId = opts.sessionId ?? '';
+    let pendingTerminal: AgentEvent | undefined;
     let terminalEmitted = false;
     let textEmitted = false;
     let settled = false;
@@ -210,6 +211,12 @@ export class ClaudeCodeHarness implements Harness {
         sink.end();
       }
 
+      function emitTerminal(fallback: AgentEvent): void {
+        if (terminalEmitted) return;
+        terminalEmitted = true;
+        sink.push(pendingTerminal ?? fallback);
+      }
+
       /** Feed parsed objects through the normalization table into the sink. */
       function consume(objects: unknown[]): void {
         for (const obj of objects) {
@@ -228,7 +235,12 @@ export class ClaudeCodeHarness implements Harness {
                 result.event.kind === 'turn_end' ||
                 result.event.kind === 'error'
               ) {
-                terminalEmitted = true;
+                // Claude can emit a successful `result` while background agents are
+                // still running, then continue streaming their output and a later
+                // result. The process exit is the actual transport boundary; retain
+                // only the latest terminal candidate until then.
+                pendingTerminal = result.event;
+                continue;
               }
               if (result.event.kind === 'text') {
                 textEmitted = true;
@@ -253,33 +265,28 @@ export class ClaudeCodeHarness implements Harness {
 
       child.on('error', (err: Error) => {
         // spawn failure (e.g. `claude` not on PATH) — surface as a terminal error.
-        if (!terminalEmitted) {
-          sink.push({
-            kind: 'error',
-            message: formatSpawnFailure(command, args, opts.workspaceDir, err),
-          });
-          terminalEmitted = true;
-        }
+        emitTerminal({
+          kind: 'error',
+          message: formatSpawnFailure(command, args, opts.workspaceDir, err),
+        });
         resolveHandle();
         endStream();
       });
 
       child.on('close', (code: number | null, signal: string | null) => {
         consume(splitter.flush());
-        if (!terminalEmitted) {
-          // Synthesize a terminal event so the turn never hangs (interrupt or crash).
-          if (signal !== null || (code !== null && code !== 0)) {
-            sink.push({
-              kind: signal !== null ? 'turn_end' : 'error',
-              ...(signal !== null
-                ? {}
-                : { message: `claude exited with code ${code ?? 'unknown'}` }),
-            } as AgentEvent);
-          } else {
-            sink.push({ kind: 'turn_end' });
-          }
-          terminalEmitted = true;
-        }
+        // Synthesize only when Claude supplied no result. A SIGINT is an intentional
+        // interrupt and remains a clean terminal event for supervisor status mapping.
+        emitTerminal(
+          signal !== null
+            ? { kind: 'turn_end' }
+            : code !== null && code !== 0
+              ? {
+                  kind: 'error',
+                  message: `claude exited with code ${code ?? 'unknown'}`,
+                }
+              : { kind: 'turn_end' },
+        );
         resolveHandle();
         endStream();
       });
@@ -307,6 +314,7 @@ export class ClaudeCodeHarness implements Harness {
         stderrPath,
       });
       handle = await this.rawPtySpawner!.spawn({
+        workspaceId: opts.workspaceId ?? opts.workspaceDir,
         cwd: opts.workspaceDir,
         shell: launch.shell,
         args: launch.args,
@@ -329,6 +337,7 @@ export class ClaudeCodeHarness implements Harness {
     );
 
     let sessionId = opts.sessionId ?? '';
+    let pendingTerminal: AgentEvent | undefined;
     let terminalEmitted = false;
     let textEmitted = false;
     let settled = false;
@@ -342,7 +351,12 @@ export class ClaudeCodeHarness implements Harness {
       poller = setInterval(readCapturedStdout, 50);
 
       const interrupt = async (): Promise<void> => {
-        handle.kill();
+        await handle.kill();
+        cleanupMcp();
+      };
+
+      const forceInterrupt = async (): Promise<void> => {
+        await (handle.forceKill?.() ?? handle.kill());
         cleanupMcp();
       };
 
@@ -350,7 +364,7 @@ export class ClaudeCodeHarness implements Harness {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ sessionId, interrupt });
+        resolve({ sessionId, interrupt, forceInterrupt });
       }
 
       function endStream(): void {
@@ -363,6 +377,12 @@ export class ClaudeCodeHarness implements Harness {
         sink.end();
         rmSync(captureDir, { recursive: true, force: true });
         cleanupMcp();
+      }
+
+      function emitTerminal(fallback: AgentEvent): void {
+        if (terminalEmitted) return;
+        terminalEmitted = true;
+        sink.push(pendingTerminal ?? fallback);
       }
 
       function consume(objects: unknown[]): void {
@@ -382,7 +402,8 @@ export class ClaudeCodeHarness implements Harness {
                 result.event.kind === 'turn_end' ||
                 result.event.kind === 'error'
               ) {
-                terminalEmitted = true;
+                pendingTerminal = result.event;
+                continue;
               }
               if (result.event.kind === 'text') {
                 textEmitted = true;
@@ -409,17 +430,14 @@ export class ClaudeCodeHarness implements Harness {
             `[harness:claude_code] stderr (${stderrBytes} bytes) for cwd=${opts.workspaceDir}`,
           );
         }
-        if (!terminalEmitted) {
-          if (exitCode !== 0) {
-            sink.push({
-              kind: 'error',
-              message: `claude exited with code ${exitCode}`,
-            });
-          } else {
-            sink.push({ kind: 'turn_end' });
-          }
-          terminalEmitted = true;
-        }
+        emitTerminal(
+          exitCode !== 0
+            ? {
+                kind: 'error',
+                message: `claude exited with code ${exitCode}`,
+              }
+            : { kind: 'turn_end' },
+        );
         resolveHandle();
         endStream();
       });

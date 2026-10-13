@@ -16,13 +16,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const capturedHandlers = new Map<string, unknown>();
-const { openExternal, showItemInFolder, createThumbnailFromPath } = vi.hoisted(
-  () => ({
+const { openExternal, showItemInFolder, createThumbnailFromPath, writeText } =
+  vi.hoisted(() => ({
     openExternal: vi.fn(),
     showItemInFolder: vi.fn(),
     createThumbnailFromPath: vi.fn(),
-  }),
-);
+    writeText: vi.fn(),
+  }));
 vi.mock('electron', () => {
   const noop = (): void => {};
   const app = new Proxy(
@@ -45,6 +45,7 @@ vi.mock('electron', () => {
       removeAllListeners: noop,
     },
     MessageChannelMain: class {},
+    clipboard: { writeText },
     nativeImage: { createThumbnailFromPath },
     shell: { openExternal, showItemInFolder },
   };
@@ -73,6 +74,7 @@ beforeEach(() => {
   openExternal.mockResolvedValue(undefined);
   showItemInFolder.mockReset();
   createThumbnailFromPath.mockReset();
+  writeText.mockReset();
 });
 
 afterEach(() => {
@@ -240,6 +242,46 @@ describe('git:getUpstream', () => {
   });
 });
 
+describe('git:setBaseBranch', () => {
+  it('routes a validated target through the workspace owner and invalidates the diff', async () => {
+    const workspace = {
+      id: 'ws1',
+      baseBranch: 'origin/qa/150',
+    };
+    const setBaseBranch = vi.fn(async () => workspace);
+    const invalidate = vi.fn();
+    registerIpc({
+      workspaces: { setBaseBranch },
+      diff: { invalidate },
+    } as unknown as AppContext);
+
+    await expect(
+      invoke('git:setBaseBranch', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/qa/150',
+      }),
+    ).resolves.toBe(workspace);
+    expect(setBaseBranch).toHaveBeenCalledWith('ws1', 'origin/qa/150');
+    expect(invalidate).toHaveBeenCalledWith('ws1');
+  });
+
+  it('rejects malformed refs before calling the workspace service', async () => {
+    const setBaseBranch = vi.fn();
+    registerIpc({
+      workspaces: { setBaseBranch },
+      diff: { invalidate: vi.fn() },
+    } as unknown as AppContext);
+
+    await expect(
+      invoke('git:setBaseBranch', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/main\nunsafe',
+      }),
+    ).rejects.toThrow('targetRef is invalid');
+    expect(setBaseBranch).not.toHaveBeenCalled();
+  });
+});
+
 describe('github:openPrUrl', () => {
   it('opens a validated github.com pull request in the system browser', async () => {
     registerIpc({} as AppContext);
@@ -264,6 +306,38 @@ describe('github:openPrUrl', () => {
     registerIpc({} as AppContext);
 
     await expect(invoke('github:openPrUrl', { url })).rejects.toThrow();
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+});
+
+describe('external:openUrl', () => {
+  it.each([
+    'https://example.com/docs?topic=links',
+    'http://localhost:3000/help',
+    'mailto:support@example.com',
+  ])(
+    'opens a validated external URL in the system application: %s',
+    async (url) => {
+      registerIpc({} as AppContext);
+
+      await expect(
+        invoke('external:openUrl', { url }),
+      ).resolves.toBeUndefined();
+      expect(openExternal).toHaveBeenCalledWith(url);
+    },
+  );
+
+  it.each([
+    'javascript:alert(1)',
+    'data:text/html,unsafe',
+    'file:///tmp/secret',
+    'https://user:password@example.com/private',
+    'https://example.com/line\nbreak',
+    'not a URL',
+  ])('rejects an unsafe external URL: %s', async (url) => {
+    registerIpc({} as AppContext);
+
+    await expect(invoke('external:openUrl', { url })).rejects.toThrow();
     expect(openExternal).not.toHaveBeenCalled();
   });
 });
@@ -358,6 +432,68 @@ describe('file:revealInFinder', () => {
         ).rejects.toThrow();
         expect(showItemInFolder).not.toHaveBeenCalled();
       }
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('file:copyPath', () => {
+  it('copies validated absolute and relative workspace paths', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'harness-copy-path-'));
+    const workspaceRoot = join(fixtureRoot, 'workspace');
+    await mkdir(join(workspaceRoot, 'src'), { recursive: true });
+    const filePath = join(workspaceRoot, 'src', 'index.ts');
+    await writeFile(filePath, 'export {};\n');
+
+    try {
+      registerIpc({
+        workspaces: {
+          get: async () => ({ id: 'ws1', worktreePath: workspaceRoot }),
+        },
+      } as unknown as AppContext);
+
+      await invoke('file:copyPath', {
+        source: 'workspace',
+        workspaceId: 'ws1',
+        path: 'src/index.ts',
+        format: 'absolute',
+      });
+      expect(writeText).toHaveBeenLastCalledWith(await realpath(filePath));
+
+      await invoke('file:copyPath', {
+        source: 'workspace',
+        workspaceId: 'ws1',
+        path: 'src/index.ts',
+        format: 'relative',
+      });
+      expect(writeText).toHaveBeenLastCalledWith('src/index.ts');
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects paths outside the workspace before writing to the clipboard', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'harness-copy-path-'));
+    const workspaceRoot = join(fixtureRoot, 'workspace');
+    await mkdir(workspaceRoot);
+
+    try {
+      registerIpc({
+        workspaces: {
+          get: async () => ({ id: 'ws1', worktreePath: workspaceRoot }),
+        },
+      } as unknown as AppContext);
+
+      await expect(
+        invoke('file:copyPath', {
+          source: 'workspace',
+          workspaceId: 'ws1',
+          path: '../outside.ts',
+          format: 'absolute',
+        }),
+      ).rejects.toThrow();
+      expect(writeText).not.toHaveBeenCalled();
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });
     }

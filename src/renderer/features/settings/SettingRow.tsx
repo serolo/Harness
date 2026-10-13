@@ -117,6 +117,23 @@ function FieldControl({
     );
   }
 
+  if (field.kind === 'number') {
+    return (
+      <Input
+        type="number"
+        className="w-full"
+        min={field.min}
+        max={field.max}
+        data-testid={testId}
+        value={typeof value === 'number' ? value : ''}
+        onChange={(e) => {
+          const next = e.target.valueAsNumber;
+          if (Number.isFinite(next)) onSet(field.keyPath, next);
+        }}
+      />
+    );
+  }
+
   return (
     <TextControl
       testId={testId}

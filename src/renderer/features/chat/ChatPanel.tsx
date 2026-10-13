@@ -11,7 +11,7 @@ import type { ScheduledTask } from '@shared/tasks';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { useChat } from './useChat';
-import { FileReferencePill } from './FileReferencePill';
+import { FilePathMenu } from './FilePathMenu';
 import { Markdown } from './markdown';
 import { WorkspaceCreationTerminal } from './WorkspaceCreationTerminal';
 import { WorkspaceArchiveTerminal } from './WorkspaceArchiveTerminal';
@@ -82,6 +82,17 @@ function labelForTask(prompt: string): string {
   const singleLine = prompt.replace(/\s+/g, ' ').trim();
   if (singleLine.length <= 36) return `Task: ${singleLine || 'Untitled'}`;
   return `Task: ${singleLine.slice(0, 33)}…`;
+}
+
+function labelForFirstMessage(prompt: string): string | null {
+  const singleLine = prompt.replace(/\s+/g, ' ').trim();
+  if (singleLine === '') return null;
+  if (singleLine.length <= 40) return singleLine;
+  const prefix = singleLine.slice(0, 39).trimEnd();
+  const wordBoundary = prefix.lastIndexOf(' ');
+  const readablePrefix =
+    wordBoundary >= 24 ? prefix.slice(0, wordBoundary) : prefix;
+  return `${readablePrefix}…`;
 }
 
 function diffQueryKey(
@@ -217,12 +228,13 @@ function FileViewer({
   file,
   onModeChange,
   onRevealFile,
+  onCopyPath,
 }: {
   file: FileTab;
   onModeChange: (mode: FileTab['mode']) => void;
   onRevealFile: () => Promise<void>;
+  onCopyPath: (format: 'absolute' | 'relative') => Promise<void>;
 }): React.JSX.Element {
-  const [revealError, setRevealError] = useState<string | null>(null);
   const isMarkdown = /\.(?:md|markdown)$/i.test(file.path);
   const lines = (file.content ?? '').split('\n');
   if (lines.at(-1) === '') lines.pop();
@@ -230,13 +242,6 @@ function FileViewer({
   const copyFile = (): void => {
     if (file.content === null) return;
     void navigator.clipboard?.writeText(file.content);
-  };
-
-  const revealFile = (): void => {
-    setRevealError(null);
-    void onRevealFile().catch((error: unknown) => {
-      setRevealError(error instanceof Error ? error.message : String(error));
-    });
   };
 
   return (
@@ -247,17 +252,11 @@ function FileViewer({
       <div className="flex h-full min-h-0 flex-col bg-surface-app">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-1 px-5 py-3">
           <div className="min-w-0">
-            <FileReferencePill
+            <FilePathMenu
               path={file.path}
-              label={file.path}
-              onOpenFile={revealFile}
-              actionLabel={`Reveal ${file.path} in file manager`}
+              onOpenInFinder={onRevealFile}
+              onCopyPath={onCopyPath}
             />
-            {revealError ? (
-              <p className="mt-1 truncate text-xs text-danger" role="alert">
-                {revealError}
-              </p>
-            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <button
@@ -365,7 +364,8 @@ export function ChatPanel({
   onRetryWorkspacePr,
   inspectFileRequest,
 }: ChatPanelProps): React.JSX.Element {
-  const { turns, sendTurn, interrupt, clear } = useChat(workspaceId);
+  const { turns, sendTurn, interrupt, forceInterrupt, clear } =
+    useChat(workspaceId);
   const workspace = useWorkspacesStore((state) =>
     state.workspaces.find((candidate) => candidate.id === workspaceId),
   );
@@ -880,6 +880,32 @@ export function ChatPanel({
       : undefined;
   const isActiveContextBusy =
     activeContext !== undefined && isContextBusy(activeContext);
+  const nameContextFromFirstMessage = (message: string): void => {
+    if (
+      activeContext === undefined ||
+      activeContext.id.startsWith('task:') ||
+      activeContext.label !== 'Untitled' ||
+      contextTurns.length !== 0
+    ) {
+      return;
+    }
+    const label = labelForFirstMessage(message);
+    if (label === null) return;
+    const contextId = activeContext.id;
+    void invoke('chat:contexts:rename', { contextId, label })
+      .then(() => {
+        setChatContexts((contexts) =>
+          contexts.map((context) =>
+            context.id === contextId && context.label === 'Untitled'
+              ? { ...context, label }
+              : context,
+          ),
+        );
+      })
+      .catch(() => {
+        // Keep the durable label as the source of truth when persistence fails.
+      });
+  };
   if (!workspaceId) {
     return (
       <div
@@ -1042,6 +1068,20 @@ export function ChatPanel({
                   path: activeFile.path,
                 })
           }
+          onCopyPath={(format) =>
+            activeFile.source === 'plan'
+              ? invoke('file:copyPath', {
+                  source: 'plan',
+                  path: activeFile.path,
+                  format,
+                })
+              : invoke('file:copyPath', {
+                  source: 'workspace',
+                  workspaceId: workspaceId!,
+                  path: activeFile.path,
+                  format,
+                })
+          }
         />
       ) : (
         <>
@@ -1094,8 +1134,9 @@ export function ChatPanel({
               model,
               effort,
               displayPrompt,
-            ) =>
-              sendTurn(
+            ) => {
+              nameContextFromFirstMessage(displayPrompt ?? prompt);
+              return sendTurn(
                 prompt,
                 attachments,
                 mode,
@@ -1105,9 +1146,10 @@ export function ChatPanel({
                 effort,
                 activeContextId,
                 displayPrompt,
-              )
-            }
+              );
+            }}
             onInterrupt={() => interrupt(activeContext?.id)}
+            onForceInterrupt={() => forceInterrupt(activeContext?.id)}
             onClear={() => clear(activeContext?.id)}
           />
         </>

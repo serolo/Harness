@@ -23,7 +23,7 @@ import { ProjectsRepo } from '../db/repos/projects';
 import { WorkspacesRepo } from '../db/repos/workspaces';
 import { DiffCommentsRepo } from '../db/repos/comments';
 import { GitService } from '../git';
-import { DiffService } from './index';
+import { DiffService, type DiffServiceDeps } from './index';
 
 /** Run a git command with a fixed test identity so commits succeed. */
 async function g(cwd: string, ...args: string[]): Promise<string> {
@@ -49,6 +49,7 @@ let diffService: DiffService;
 let wsRepo: WorkspacesRepo;
 let workspaceA: Workspace;
 let workspaceB: Workspace;
+let workspaceWithRemoteBase: Workspace;
 
 beforeAll(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'diff-svc-test-'));
@@ -124,8 +125,17 @@ beforeAll(async () => {
     status: 'idle',
     worktreePath: repoB,
   });
+  workspaceWithRemoteBase = await wsRepo.create({
+    projectId: project.id,
+    name: 'lyon',
+    branch: 'feature',
+    baseBranch: 'origin/qa/149',
+    harness: 'claude_code',
+    status: 'idle',
+    worktreePath: repoA,
+  });
 
-  diffService = new DiffService({
+  const deps: DiffServiceDeps = {
     git,
     getWorkspace: async (id) => wsRepo.getById(id),
     emit: () => {
@@ -133,7 +143,8 @@ beforeAll(async () => {
        * excluded from this suite (see watch/stopAll below). */
     },
     comments: new DiffCommentsRepo(db),
-  });
+  };
+  diffService = new DiffService(deps);
 });
 
 afterAll(async () => {
@@ -239,6 +250,74 @@ describe('DiffService.getDiff', () => {
     );
     expect(file.oldContent).toBe('line1\nline2\nline3\n');
     expect(file.newContent).toContain('line2 modified');
+  });
+
+  it('defaults the target to the live upstream shown as the workspace base branch', async () => {
+    await g(repoA, 'remote', 'add', 'origin', repoA);
+    await g(repoA, 'update-ref', 'refs/remotes/origin/qa/149', 'main');
+    await g(repoA, 'branch', '--set-upstream-to=origin/qa/149', 'feature');
+
+    try {
+      const menu = await diffService.menu(workspaceA.id);
+
+      expect(menu.targetRef).toBe('origin/qa/149');
+    } finally {
+      await g(repoA, 'branch', '--unset-upstream', 'feature');
+      await g(repoA, 'remote', 'remove', 'origin');
+    }
+  });
+
+  it('falls back to a stored origin base when no live upstream is configured', async () => {
+    await g(repoA, 'update-ref', 'refs/remotes/origin/qa/149', 'main');
+
+    try {
+      const menu = await diffService.menu(workspaceWithRemoteBase.id);
+
+      expect(menu.targetRef).toBe('origin/qa/149');
+    } finally {
+      diffService.watch(workspaceWithRemoteBase.id).stop();
+      await g(repoA, 'update-ref', '-d', 'refs/remotes/origin/qa/149');
+    }
+  });
+
+  it('prefers the remote form of a local workspace base branch', async () => {
+    await g(repoA, 'update-ref', 'refs/remotes/origin/main', 'main');
+
+    try {
+      const menu = await diffService.menu(workspaceA.id);
+
+      expect(menu.targetRef).toBe('origin/main');
+    } finally {
+      await g(repoA, 'update-ref', '-d', 'refs/remotes/origin/main');
+    }
+  });
+
+  it('recomputes comparison status against the selected target ref', async () => {
+    const targetSha = await g(
+      repoA,
+      'commit-tree',
+      'main^{tree}',
+      '-p',
+      'main',
+      '-m',
+      'remote target advances',
+    );
+    await g(repoA, 'update-ref', 'refs/remotes/origin/release-next', targetSha);
+
+    try {
+      const mainMenu = await diffService.menu(workspaceA.id, 'main');
+      const targetMenu = await diffService.menu(
+        workspaceA.id,
+        'origin/release-next',
+      );
+
+      expect(mainMenu.comparisonBehind).toBe(0);
+      expect(targetMenu.comparisonBehind).toBe(1);
+      // Pull remains tied to the configured upstream, not the review target.
+      expect(targetMenu.behind).toBe(0);
+    } finally {
+      await g(repoA, 'update-ref', '-d', 'refs/remotes/origin/release-next');
+    }
   });
 
   it('returns content and an added-file hunk for an untracked uncommitted file', async () => {
@@ -467,13 +546,14 @@ describe('DiffService.watch / stopAll', () => {
     const statusGit = new GitService();
     const status = vi.spyOn(statusGit, 'status');
     const emit = vi.fn();
-    const monitored = new DiffService({
+    const monitoredDeps: DiffServiceDeps = {
       git: statusGit,
       getWorkspace: async (id) => wsRepo.getById(id),
       emit: (event, payload) => emit(event, payload),
       comments: new DiffCommentsRepo(db),
       watchIntervalMs: 20,
-    });
+    };
+    const monitored = new DiffService(monitoredDeps);
 
     try {
       monitored.watch(workspaceA.id);

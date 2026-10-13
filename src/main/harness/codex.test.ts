@@ -389,6 +389,22 @@ describe('Codex adapter — buildArgs', () => {
     ]);
   });
 
+  it('passes the selected model on fresh and resumed turns', () => {
+    for (const sessionId of [undefined, 'codex-sess-1']) {
+      const args = buildArgs(opts({ model: 'gpt-6.1-sol', sessionId }));
+      const i = args.indexOf('--model');
+
+      expect(args.slice(i, i + 2)).toEqual(['--model', 'gpt-6.1-sol']);
+    }
+  });
+
+  it('translates model ids persisted by the former Codex catalogue', () => {
+    const args = buildArgs(opts({ model: 'codex-gpt-5-6-terra' }));
+    const i = args.indexOf('--model');
+
+    expect(args.slice(i, i + 2)).toEqual(['--model', 'gpt-5.6-terra']);
+  });
+
   it('passes MCP servers through Codex-native config overrides', () => {
     const servers: McpServerConfig[] = [
       {

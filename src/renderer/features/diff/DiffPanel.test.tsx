@@ -27,6 +27,7 @@ import type {
 } from '@shared/review';
 import type { TurnStreamChunk } from '@shared/ipc';
 import type { PrSummary } from '@shared/github';
+import type { Workspace } from '@shared/models';
 
 // Monaco cannot render in jsdom — stub the DiffEditor as a plain div so DiffView
 // mounts without pulling in the real editor.
@@ -103,6 +104,28 @@ const CHECKPOINTS: Checkpoint[] = [
   },
 ];
 
+function workspaceWithBase(baseBranch: string): Workspace {
+  return {
+    id: 'ws1',
+    projectId: 'project1',
+    name: 'Montpellier',
+    branch: 'agent/montpellier',
+    baseBranch,
+    worktreePath: '/managed/worktree',
+    status: 'idle',
+    sourceKind: null,
+    sourceRef: null,
+    harness: 'claude_code',
+    port: null,
+    createdAt: 1,
+    archivedAt: null,
+    prNumber: null,
+    location: 'worktree',
+    isUnread: false,
+    isPinned: false,
+  };
+}
+
 let createdComment: DiffComment | null = null;
 
 function installApi(opts: {
@@ -113,6 +136,9 @@ function installApi(opts: {
   workspacePr?: PrSummary | null;
   workspacePrError?: Error;
   workspacePrOpenError?: Error;
+  branches?: string[];
+  comparisonBehind?: number;
+  setBaseBranchError?: Error;
   behind?: number;
   uncommittedFileCount?: number;
   pull?: () => Promise<void>;
@@ -128,10 +154,11 @@ function installApi(opts: {
         return Promise.resolve({
           currentBranch: 'agent/montpellier',
           targetRef,
-          branches: ['origin/develop', 'origin/main'],
+          branches: opts.branches ?? ['origin/develop', 'origin/main'],
           commits: COMMITS,
           uncommittedFileCount: opts.uncommittedFileCount ?? 1,
           behind: opts.behind ?? 0,
+          comparisonBehind: opts.comparisonBehind ?? 0,
         });
       }
       case 'diff:query':
@@ -209,6 +236,12 @@ function installApi(opts: {
           : Promise.resolve(undefined);
       case 'git:pull':
         return opts.pull?.() ?? Promise.resolve(undefined);
+      case 'git:setBaseBranch':
+        return opts.setBaseBranchError
+          ? Promise.reject(opts.setBaseBranchError)
+          : Promise.resolve(
+              workspaceWithBase((req as { targetRef: string }).targetRef),
+            );
       default:
         return Promise.resolve(undefined);
     }
@@ -337,11 +370,12 @@ describe('DiffPanel file list + diff view', () => {
     });
   });
 
-  it('changes the target branch and scopes the list to uncommitted or the latest commit', async () => {
+  it('changes the persisted base/upstream and immediately compares all changes against it', async () => {
     const api = installApi({});
 
     renderDiffPanel({ workspaceId: 'ws1' });
     await screen.findByTestId('diff-file-src/pending.ts');
+    api.invoke.mockClear();
 
     fireEvent.click(screen.getByTestId('git-more'));
     fireEvent.click(screen.getByTestId('git-target-branch'));
@@ -357,15 +391,87 @@ describe('DiffPanel file list + diff view', () => {
       expect(api.invoke).toHaveBeenCalledWith('diff:query', {
         workspaceId: 'ws1',
         targetRef: 'origin/develop',
-        scope: { kind: 'uncommitted' },
+        scope: { kind: 'all' },
       }),
     );
+    expect(
+      await screen.findByTestId('diff-file-src/foo.ts'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('diff-file-src/pending.ts'),
+    ).not.toBeInTheDocument();
+    expect(api.invoke).toHaveBeenCalledWith('git:setBaseBranch', {
+      workspaceId: 'ws1',
+      targetRef: 'origin/develop',
+    });
+    expect(api.invoke.mock.calls.map(([channel]) => channel)).toEqual([
+      'git:setBaseBranch',
+      'diff:query',
+      'diff:menu',
+    ]);
+  });
+
+  it('restores the previous target and shows an error when changing the base fails', async () => {
+    installApi({ setBaseBranchError: new Error('git rejected target') });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+    await screen.findByTestId('diff-file-src/pending.ts');
+    fireEvent.click(screen.getByTestId('git-more'));
+    fireEvent.click(screen.getByTestId('git-target-branch'));
+    fireEvent.click(screen.getByTestId('git-target-option-origin/develop'));
+
+    expect(await screen.findByTestId('git-target-error')).toHaveTextContent(
+      'Could not change the target branch.',
+    );
+    expect(screen.getByTestId('git-target-branch')).toHaveTextContent(
+      'origin/main',
+    );
+  });
+
+  it('searches target branches case-insensitively and reports an empty result', async () => {
+    installApi({
+      branches: ['feature/payments', 'origin/main', 'origin/qa/150'],
+      comparisonBehind: 2,
+    });
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+    await screen.findByTestId('diff-file-src/pending.ts');
+
+    fireEvent.click(screen.getByTestId('git-more'));
+    fireEvent.click(screen.getByTestId('git-target-branch'));
+
+    const search = screen.getByRole('searchbox', { name: 'Search branches' });
+    expect(search).toHaveFocus();
+    expect(screen.getByTestId('git-target-status')).toHaveTextContent(
+      'Current branch is 2 commits behind this target.',
+    );
+
+    fireEvent.change(search, { target: { value: 'QA/150' } });
+    expect(
+      screen.getByTestId('git-target-option-origin/qa/150'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('git-target-option-origin/main'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: 'does-not-exist' } });
+    expect(screen.getByTestId('git-target-no-results')).toHaveTextContent(
+      'No branches found.',
+    );
+  });
+
+  it('allows all, uncommitted, or one-commit scopes for the selected target', async () => {
+    const api = installApi({});
+
+    renderDiffPanel({ workspaceId: 'ws1' });
+    await screen.findByTestId('diff-file-src/pending.ts');
+
     fireEvent.click(screen.getByTestId('git-more'));
     fireEvent.click(screen.getByTestId('git-scope-all'));
     await waitFor(() =>
       expect(api.invoke).toHaveBeenCalledWith('diff:query', {
         workspaceId: 'ws1',
-        targetRef: 'origin/develop',
+        targetRef: 'origin/main',
         scope: { kind: 'all' },
       }),
     );
@@ -374,11 +480,24 @@ describe('DiffPanel file list + diff view', () => {
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('git-more'));
+    fireEvent.click(screen.getByTestId('git-scope-uncommitted'));
+    await waitFor(() =>
+      expect(api.invoke).toHaveBeenCalledWith('diff:query', {
+        workspaceId: 'ws1',
+        targetRef: 'origin/main',
+        scope: { kind: 'uncommitted' },
+      }),
+    );
+    expect(
+      await screen.findByTestId('diff-file-src/pending.ts'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('git-more'));
     fireEvent.click(screen.getByTestId(`git-scope-commit-${COMMITS[0].sha}`));
     await waitFor(() =>
       expect(api.invoke).toHaveBeenCalledWith('diff:query', {
         workspaceId: 'ws1',
-        targetRef: 'origin/develop',
+        targetRef: 'origin/main',
         scope: { kind: 'commit', sha: COMMITS[0].sha },
       }),
     );

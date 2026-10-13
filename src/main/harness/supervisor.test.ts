@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 
 import type {
   AgentEvent,
@@ -32,7 +33,9 @@ import { ChatContextsRepo } from '../db/repos/chatContexts';
 import { TurnRecorder } from './turns';
 import { MockHarness } from './mock';
 import { HarnessSupervisor } from './supervisor';
+import type { TurnWatchdogTimeouts } from './supervisor';
 import type { NotificationService } from './notifications';
+import { treeKillEscalate } from '../process/kill';
 
 let tmpDir: string;
 let db: AppDatabase | undefined;
@@ -80,6 +83,8 @@ interface Harness2 {
 async function makeHarness(
   handle: AppDatabase,
   mock: Harness,
+  getWatchdogTimeouts?: (mode: StartTurnOpts['mode']) => TurnWatchdogTimeouts,
+  stopHardDeadlineMs?: number,
 ): Promise<Harness2> {
   const workspace = await seedWorkspace(handle);
   const recorder = new TurnRecorder({
@@ -99,6 +104,8 @@ async function makeHarness(
       emitCalls.push({ event, payload });
     },
     notifications: notify as unknown as NotificationService,
+    getWatchdogTimeouts,
+    stopHardDeadlineMs,
   });
   supervisor.register(mock);
   return { supervisor, recorder, statusCalls, emitCalls, notify, workspace };
@@ -895,6 +902,121 @@ describe('HarnessSupervisor turn lifecycle', () => {
     const turns = await h.recorder.history(h.workspace.id);
     expect(turns[0].status).toBe('interrupted');
     expect(h.supervisor.isActive(h.workspace.id)).toBe(false);
+  });
+
+  it('Stop clears busy after force-killing a parent and child that ignore SIGTERM', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    let activeSink: StreamSink<AgentEvent> | undefined;
+    let parentPid = 0;
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (_opts, sink) => {
+        activeSink = sink;
+        const script = [
+          "const { spawn } = require('node:child_process')",
+          "process.on('SIGTERM', () => {})",
+          "spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 30000)\"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })",
+          'setInterval(() => {}, 30000)',
+        ].join(';');
+        const parent = spawn(process.execPath, ['-e', script], {
+          stdio: 'ignore',
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        });
+        parentPid = parent.pid as number;
+        return {
+          sessionId: 'tree-stop',
+          interrupt: async () => {
+            await treeKillEscalate(parentPid, 150);
+            activeSink?.push({ kind: 'turn_end' });
+            activeSink?.end();
+          },
+        };
+      },
+    };
+    const h = await makeHarness(db, adapter);
+    const collected = collectSink();
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, collected.sink);
+    expect(h.supervisor.isActive(h.workspace.id)).toBe(true);
+
+    const started = Date.now();
+    await h.supervisor.interrupt(h.workspace.id);
+    await collected.done;
+    await waitUntil(() => !h.supervisor.isActive(h.workspace.id), 2_000);
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(h.supervisor.isActive(h.workspace.id)).toBe(false);
+  });
+
+  it('idle watchdog stops a silent turn and clears busy with a bounded error', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    let activeSink: StreamSink<AgentEvent> | undefined;
+    const interrupt = vi.fn(async () => {
+      activeSink?.push({ kind: 'turn_end' });
+      activeSink?.end();
+    });
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async (_opts, sink) => {
+        activeSink = sink;
+        return { sessionId: 'silent', interrupt };
+      },
+    };
+    const h = await makeHarness(db, adapter, () => ({ idleMs: 25 }));
+    const collected = collectSink();
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, collected.sink);
+
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(interrupt).toHaveBeenCalledOnce();
+    expect(h.supervisor.isActive(h.workspace.id)).toBe(false);
+    expect(collected.events).toContainEqual({
+      kind: 'error',
+      message: 'Agent produced no progress before the configured idle limit.',
+    });
+  });
+
+  it('clears busy at the hard deadline when a stopped provider never emits an exit', async () => {
+    db = openDb(join(tmpDir, 'test.db'));
+    const interrupt = vi.fn(async () => undefined);
+    const adapter: Harness = {
+      id: 'claude_code',
+      capabilities: () => ({
+        supportsResume: true,
+        supportsMcp: true,
+        supportsPlanMode: true,
+        rawTerminalFallback: false,
+      }),
+      detect: async () => ({ installed: true, authenticated: true }),
+      startTurn: async () => ({ sessionId: 'wedged', interrupt }),
+    };
+    const h = await makeHarness(db, adapter, undefined, 25);
+    const collected = collectSink();
+    await h.supervisor.startTurn(h.workspace.id, baseOpts, collected.sink);
+
+    await h.supervisor.interrupt(h.workspace.id);
+    await collected.done;
+    await waitForFinalized(h.recorder, h.workspace.id);
+
+    expect(interrupt).toHaveBeenCalledOnce();
+    expect(h.supervisor.isActive(h.workspace.id)).toBe(false);
+    expect((await h.recorder.history(h.workspace.id))[0]?.status).toBe(
+      'interrupted',
+    );
   });
 
   it('delivers an interrupt requested while the adapter is still starting', async () => {

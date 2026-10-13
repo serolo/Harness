@@ -79,6 +79,7 @@ export interface ComposerProps {
     displayPrompt?: string,
   ) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
+  onForceInterrupt?: () => void | Promise<void>;
   onClear?: () => void | Promise<void>;
 }
 
@@ -611,6 +612,7 @@ export function Composer({
   disabled,
   onSend,
   onInterrupt,
+  onForceInterrupt,
   onClear,
 }: ComposerProps): React.JSX.Element {
   const [text, setText] = useState('');
@@ -634,9 +636,32 @@ export function Composer({
   const [effort, setEffort] = useState<EffortOption>(CLAUDE_EFFORT_OPTIONS[2]);
   const [plusOpen, setPlusOpen] = useState(false);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [stopPhase, setStopPhase] = useState<'idle' | 'stopping' | 'force'>(
+    'idle',
+  );
   const [plusPanel, setPlusPanel] = useState<'root' | 'issue' | 'workspaces'>(
     'root',
   );
+
+  useEffect(() => {
+    if (!isBusy) setStopPhase('idle');
+  }, [isBusy]);
+
+  useEffect(() => {
+    if (stopPhase !== 'stopping' || !isBusy) return;
+    const timer = window.setTimeout(() => setStopPhase('force'), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [isBusy, stopPhase]);
+
+  const stop = (): void => {
+    if (stopPhase === 'force') {
+      void (onForceInterrupt?.() ?? onInterrupt());
+      return;
+    }
+    if (stopPhase !== 'idle') return;
+    setStopPhase('stopping');
+    void onInterrupt();
+  };
   const [issueOptions, setIssueOptions] = useState<ComposerIssue[]>([]);
   const [selectedHarness, setSelectedHarness] = useState<HarnessId | undefined>(
     undefined,
@@ -684,6 +709,11 @@ export function Composer({
   );
   const workspaces = useWorkspacesStore((s) => s.workspaces);
   const takePendingPrompt = useComposerStore((s) => s.takePendingPrompt);
+  const pendingPrompt = useComposerStore((state) =>
+    selectedWorkspaceId === null
+      ? undefined
+      : state.pendingPromptByWorkspace[selectedWorkspaceId],
+  );
   const loadHarnesses = useHarnessStore((s) => s.load);
   const harnessInfoById = useHarnessStore((s) => s.infoById);
 
@@ -760,6 +790,20 @@ export function Composer({
       setText(pending);
     }
   }, [contextId, selectedWorkspaceId, takePendingPrompt]);
+
+  // Cross-feature prompt hand-offs can also target the workspace already on screen
+  // (for example, Skills -> Create with agent). Observe the pending value so the
+  // composer updates immediately instead of waiting for a workspace/tab switch.
+  useEffect(() => {
+    if (selectedWorkspaceId === null || pendingPrompt === undefined) return;
+    const next = takePendingPrompt(selectedWorkspaceId);
+    if (next === undefined || next === '') return;
+    setText(next);
+    setCaret(next.length);
+    window.requestAnimationFrame(() =>
+      composerRef.current?.querySelector('textarea')?.focus(),
+    );
+  }, [pendingPrompt, selectedWorkspaceId, takePendingPrompt]);
 
   useEffect(() => {
     void loadHarnesses();
@@ -1951,17 +1995,45 @@ export function Composer({
                   </div>
                 ) : null}
               </div>
-              <Tooltip content={isBusy ? 'Stop response' : 'Send message'}>
+              <Tooltip
+                content={
+                  isBusy
+                    ? stopPhase === 'force'
+                      ? 'Force stop process tree'
+                      : 'Stop response'
+                    : 'Send message'
+                }
+              >
                 {isBusy ? (
                   <button
                     type="button"
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2 bg-danger text-white transition-colors duration-fast ease-out hover:bg-danger-hover"
-                    data-testid="composer-interrupt"
-                    onClick={() => void onInterrupt()}
-                    aria-label="Stop"
-                    title="Stop"
+                    className="flex h-10 min-w-10 shrink-0 items-center justify-center gap-2 rounded-2 bg-danger px-3 text-sm font-medium text-white transition-colors duration-fast ease-out hover:bg-danger-hover disabled:cursor-wait disabled:opacity-75"
+                    data-testid={
+                      stopPhase === 'force'
+                        ? 'composer-force-interrupt'
+                        : 'composer-interrupt'
+                    }
+                    onClick={stop}
+                    disabled={stopPhase === 'stopping'}
+                    aria-label={
+                      stopPhase === 'force'
+                        ? 'Force stop'
+                        : stopPhase === 'stopping'
+                          ? 'Stopping'
+                          : 'Stop'
+                    }
+                    title={stopPhase === 'force' ? 'Force stop' : 'Stop'}
                   >
-                    <span className="h-3 w-3 rounded-[2px] bg-white" />
+                    {stopPhase === 'idle' ? (
+                      <span className="h-3 w-3 rounded-[2px] bg-white" />
+                    ) : stopPhase === 'stopping' ? (
+                      <>
+                        <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                        Stopping…
+                      </>
+                    ) : (
+                      'Force stop'
+                    )}
                   </button>
                 ) : (
                   <button

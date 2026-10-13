@@ -143,4 +143,6 @@ export interface DiffMenuInfo {
   uncommittedFileCount: number;
   /** Commits the current branch is behind its configured upstream tracking branch. */
   behind: number;
+  /** Commits the selected target ref is ahead of the current branch. APPEND-ONLY. */
+  comparisonBehind?: number;
 }

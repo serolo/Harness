@@ -4,7 +4,13 @@
 // stubbed `window.api` (the only main-process access point), mirroring ChatPanel.test.tsx.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import React from 'react';
 
 import type { HarnessId } from '@shared/harness';
@@ -12,6 +18,7 @@ import type { HarnessInfo } from '@shared/ipc';
 import type { Workspace } from '@shared/models';
 import { useHarnessStore } from './harness';
 import { useWorkspacesStore } from './workspaces';
+import { useComposerStore } from './composer';
 import { Composer } from '@renderer/features/chat/Composer';
 import {
   DEFAULT_MODEL_PREFERENCES,
@@ -123,6 +130,7 @@ beforeEach(() => {
     selectedWorkspaceId: null,
     selectedProjectId: null,
   });
+  useComposerStore.setState({ pendingPromptByWorkspace: {} });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -399,6 +407,27 @@ describe('Composer plan-mode gate (capability-driven, per selected workspace)', 
     );
     expect(screen.queryByTestId('attachment-bar')).not.toBeInTheDocument();
     expect(api.invoke).toHaveBeenCalledWith('workspace:pickFile', undefined);
+  });
+
+  it('accepts a cross-feature prompt for the workspace already on screen', async () => {
+    await renderComposerFor('claude_code');
+    const input = (await screen.findByTestId(
+      'composer-input',
+    )) as HTMLTextAreaElement;
+    expect(input.value).toBe('');
+
+    act(() => {
+      useComposerStore
+        .getState()
+        .setPendingPrompt('ws1', 'Create the release-checklist skill.');
+    });
+
+    await waitFor(() =>
+      expect(input.value).toBe('Create the release-checklist skill.'),
+    );
+    expect(
+      useComposerStore.getState().pendingPromptByWorkspace.ws1,
+    ).toBeUndefined();
   });
 
   it('adds multiple dropped files and ignores duplicate paths', async () => {

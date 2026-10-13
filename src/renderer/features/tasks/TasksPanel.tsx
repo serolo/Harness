@@ -24,6 +24,7 @@ import { TaskForm, type TaskFormValues } from './TaskForm';
 import { KnowledgeFolderBrowser } from '../knowledge/KnowledgeFolderBrowser';
 import { Markdown } from '../chat/markdown';
 import { AgentsPanel } from '../agents/AgentsPanel';
+import { SkillsPanel } from '../skills/SkillsPanel';
 
 export interface TasksPanelProps {
   workspaceId: string | null;
@@ -50,9 +51,9 @@ export function TasksPanel({
     string,
     string
   > | null>(null);
-  const [activeTab, setActiveTab] = useState<'tasks' | 'agents' | 'knowledge'>(
-    'tasks',
-  );
+  const [activeTab, setActiveTab] = useState<
+    'tasks' | 'agents' | 'skills' | 'knowledge'
+  >('tasks');
   const [expandedKnowledgeFolders, setExpandedKnowledgeFolders] = useState<
     Set<string>
   >(() => new Set());
@@ -187,6 +188,13 @@ export function TasksPanel({
           Agents
         </PanelTab>
         <PanelTab
+          active={activeTab === 'skills'}
+          testId="workspace-tab-skills"
+          onClick={() => setActiveTab('skills')}
+        >
+          Skills
+        </PanelTab>
+        <PanelTab
           active={activeTab === 'knowledge'}
           testId="workspace-tab-knowledge"
           onClick={() => setActiveTab('knowledge')}
@@ -197,6 +205,8 @@ export function TasksPanel({
 
       {activeTab === 'agents' ? (
         <AgentsPanel projectId={projectId} workspaceId={workspaceId} />
+      ) : activeTab === 'skills' ? (
+        <SkillsPanel workspaceId={workspaceId} />
       ) : activeTab === 'knowledge' ? (
         <WorkspaceKnowledgeStatus
           projectId={projectId}

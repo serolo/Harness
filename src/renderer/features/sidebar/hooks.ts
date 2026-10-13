@@ -2,7 +2,7 @@
 //
 // `useProjects`        — fetches the project list via `project:list`.
 // `useWorkspaces`      — fetches one project's workspaces via `workspace:list`.
-// `useWorkspaceEvents` — mounts a single effect that subscribes to all three
+// `useWorkspaceEvents` — mounts a single effect that subscribes to workspace
 //                        `workspace:*` broadcast events and keeps BOTH the TanStack
 //                        query cache and the Zustand store up-to-date. Mirrors the
 //                        active-guard + cleanup pattern from IpcHealth.tsx.
@@ -55,11 +55,12 @@ export function useWorkspaces(
 // ---------------------------------------------------------------------------
 
 /**
- * Mounts a single effect that subscribes to all three workspace broadcast events
+ * Mounts a single effect that subscribes to workspace broadcast events
  * and keeps the TanStack query cache + Zustand store in sync.
  *
  * - `workspace:created`  → upsert into the `['workspaces', projectId]` cache and
  *                          the Zustand store (so the new item appears immediately).
+ * - `workspace:updated`  → replace the mutable workspace DTO in both caches.
  * - `workspace:status`   → update just the status field in-place in the cache and
  *                          store (avoids a full refetch for every status tick).
  * - `workspace:archived` → set status to `'archived'` and retain/null the path
@@ -130,6 +131,12 @@ export function useWorkspaceEvents(): void {
       upsertWorkspace(workspace);
     });
 
+    const unsubUpdated = onEvent('workspace:updated', ({ workspace }) => {
+      if (!active) return;
+      upsertInCache(workspace);
+      upsertWorkspace(workspace);
+    });
+
     const unsubStatus = onEvent(
       'workspace:status',
       ({ workspaceId, status }) => {
@@ -162,6 +169,7 @@ export function useWorkspaceEvents(): void {
     return () => {
       active = false;
       unsubCreated();
+      unsubUpdated();
       unsubStatus();
       unsubArchived();
     };

@@ -243,14 +243,21 @@ export class DiffService {
   ): Promise<DiffMenuInfo> {
     const { wt, workspace } = await this.resolveWorktree(workspaceId);
     const branches = await this.deps.git.listBranches(wt);
-    const targetRef =
-      requestedTargetRef ?? this.defaultTargetRef(workspace, branches);
+    let targetRef = requestedTargetRef;
+    if (targetRef === undefined) {
+      const upstream = await this.deps.git.upstreamBranch(wt);
+      targetRef =
+        upstream !== null && branches.includes(upstream)
+          ? upstream
+          : this.defaultTargetRef(workspace.baseBranch, branches);
+    }
     this.assertTargetRef(targetRef, branches);
     this.watch(workspaceId);
 
-    const [status, base] = await Promise.all([
+    const [status, base, comparison] = await Promise.all([
       this.deps.git.status(wt),
       this.deps.git.mergeBase(wt, 'HEAD', targetRef),
+      this.deps.git.headInfo(wt, targetRef),
     ]);
     const commits = await this.commitsFromBase(wt, base);
 
@@ -261,6 +268,7 @@ export class DiffService {
       commits,
       uncommittedFileCount: status.files.length,
       behind: status.behind,
+      comparisonBehind: comparison.behind,
     };
   }
 
@@ -650,12 +658,19 @@ export class DiffService {
   // Private helpers
   // -------------------------------------------------------------------------
 
-  /** Prefer the remote-tracking base when it exists, then the local base branch. */
-  private defaultTargetRef(workspace: Workspace, branches: string[]): string {
-    const remote = `origin/${workspace.baseBranch}`;
+  /** Resolve creation-time base metadata to an exact ref from Git's allowlist. */
+  private defaultTargetRef(baseBranch: string, branches: string[]): string {
+    // A workspace created from a remote branch persists the full ref (for example
+    // `origin/qa/149`). Preserve it exactly instead of accidentally comparing against
+    // the owning project's default branch.
+    if (baseBranch.startsWith('origin/') && branches.includes(baseBranch)) {
+      return baseBranch;
+    }
+
+    const remote = `origin/${baseBranch}`;
     if (branches.includes(remote)) return remote;
-    if (branches.includes(workspace.baseBranch)) return workspace.baseBranch;
-    return branches[0] ?? workspace.baseBranch;
+    if (branches.includes(baseBranch)) return baseBranch;
+    return branches[0] ?? baseBranch;
   }
 
   /** Only refs discovered from `for-each-ref` may reach a query git command. */

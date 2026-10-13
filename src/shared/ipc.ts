@@ -735,6 +735,40 @@ export interface Commands {
     req: { workspaceId: string; contextId: string };
     res: void;
   };
+
+  /** Open a validated web or email URL in the operating system's default application. */
+  'external:openUrl': { req: { url: string }; res: void };
+
+  /** Copy a validated displayed file path without exposing workspace roots to the renderer. */
+  'file:copyPath': {
+    req:
+      | {
+          source: 'workspace';
+          workspaceId: string;
+          path: string;
+          format: 'absolute' | 'relative';
+        }
+      | {
+          source: 'plan';
+          path: string;
+          format: 'absolute' | 'relative';
+        };
+    res: void;
+  };
+
+  /** Immediately SIGKILL the active workspace turn's complete process tree. APPEND-ONLY. */
+  'turn:forceInterrupt': { req: { workspaceId: string }; res: void };
+  /** Immediately SIGKILL one manual context turn's complete process tree. APPEND-ONLY. */
+  'turn:forceInterruptContext': {
+    req: { workspaceId: string; contextId: string };
+    res: void;
+  };
+
+  /** Change the workspace's persisted base and Git upstream to an allowlisted ref. APPEND-ONLY. */
+  'git:setBaseBranch': {
+    req: { workspaceId: string; targetRef: string };
+    res: Workspace;
+  };
 }
 
 export type CommandChannel = keyof Commands;
@@ -820,6 +854,8 @@ export interface Events {
     turnId: string;
     event: KnowledgeExtractionEvent;
   };
+  /** A workspace's mutable metadata changed and caches should replace the DTO. APPEND-ONLY. */
+  'workspace:updated': { workspace: Workspace };
 }
 
 export type EventChannel = keyof Events;

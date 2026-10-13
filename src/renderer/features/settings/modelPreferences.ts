@@ -38,8 +38,12 @@ export function readModelPreferences(): ModelPreferences {
 
 function migrateClaudeModel(model: string): string {
   // Older builds stored provider-qualified IDs. Keep the exact model/version while
-  // removing only the provider prefix understood by the UI catalogue.
-  return model.replace(/^anthropic\/(?=claude-)/i, '');
+  // removing the provider prefix understood by the UI catalogue. Extended-context
+  // variants were removed from the curated list; preserve their base model choice.
+  return model
+    .replace(/^anthropic\/(?=claude-)/i, '')
+    .replace(/^(claude-[A-Za-z0-9-]+)-1m$/i, '$1')
+    .replace(/^(claude-[A-Za-z0-9-]+)\[1m\]$/i, '$1');
 }
 
 export function writeModelPreferences(preferences: ModelPreferences): void {

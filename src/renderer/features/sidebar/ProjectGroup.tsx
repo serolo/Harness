@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronRight, FolderGit2, Plus } from 'lucide-react';
 import type { Project } from '@shared/models';
 import { useWorkspacesStore } from '@renderer/stores/workspaces';
 import { useWorkspaces } from './hooks';
 import { WorkspaceItem } from './WorkspaceItem';
+import { compareProjectWorkspaces } from './workspaceOrdering';
 
 export interface ProjectGroupProps {
   project: Project;
@@ -18,14 +19,20 @@ export function ProjectGroup({
   onNewWorkspace,
 }: ProjectGroupProps): React.JSX.Element {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const [openPrByWorkspace, setOpenPrByWorkspace] = useState<
+    Record<string, boolean>
+  >({});
   const { data, isLoading } = useWorkspaces(project.id);
   const workspaces = data ?? [];
-  const visibleWorkspaces = workspaces
-    .filter((workspace) => workspace.status !== 'archived')
-    .sort(
-      (left, right) =>
-        Number(Boolean(right.isPinned)) - Number(Boolean(left.isPinned)),
-    );
+  const visibleWorkspaces = useMemo(
+    () =>
+      workspaces
+        .filter((workspace) => workspace.status !== 'archived')
+        .sort((left, right) =>
+          compareProjectWorkspaces(left, right, openPrByWorkspace),
+        ),
+    [openPrByWorkspace, workspaces],
+  );
   const selectedWorkspaceId = useWorkspacesStore((s) => s.selectedWorkspaceId);
   const selectWorkspace = useWorkspacesStore((s) => s.selectWorkspace);
   const selectProject = useWorkspacesStore((s) => s.selectProject);
@@ -49,6 +56,16 @@ export function ProjectGroup({
     selectProject(project.id);
     selectWorkspace(workspaceId);
   }
+
+  const updateOpenPrState = useCallback(
+    (workspaceId: string, isOpen: boolean): void => {
+      setOpenPrByWorkspace((current) => {
+        if (current[workspaceId] === isOpen) return current;
+        return { ...current, [workspaceId]: isOpen };
+      });
+    },
+    [],
+  );
 
   return (
     <section data-testid="project-group" data-project-id={project.id}>
@@ -105,6 +122,7 @@ export function ProjectGroup({
                   workspace={workspace}
                   isSelected={workspace.id === selectedWorkspaceId}
                   onSelect={selectSession}
+                  onPullRequestOpenChange={updateOpenPrState}
                 />
               ))}
             </ul>

@@ -14,6 +14,16 @@ recomputes it on bounded Git-status changes + after each turn, and owns the inli
 - **Cache key = `(base, HEAD sha, status signature)`.** A single-slot per-workspace cache; `invalidate()`
   drops it on a status change and on `turn_end` (wired in `main/index.ts`). The monitor and the turn-end
   hook are both idempotent, so a double-fire only recomputes — never corrupts.
+- **The menu default matches the base branch shown in the chat context.** Prefer the current branch's
+  live Git upstream (for example `origin/qa/149`), then fall back to the workspace's creation-time base
+  metadata. Preserve stored remote refs exactly; for an unqualified base such as `main`, prefer
+  `origin/main` and then the local ref. Changing the target in the renderer resets the scope to **All
+  changes**, updates the branch's Git upstream plus persisted workspace base, and refreshes the
+  comparison immediately. The operation changes branch configuration only; it never checks out,
+  pulls, merges, resets, or moves HEAD.
+- **Target status is computed against the selected ref.** `DiffMenuInfo.behind` remains the frozen
+  configured-upstream count used by the Pull action; the appended `comparisonBehind` value comes from
+  `headInfo(wt, targetRef)`, so changing the comparison target also changes its status relationship.
 - **Every active diff query starts the monitor.** Both the legacy `getDiff` path and the target/scope
   `menu` / `getDiffForQuery` path call an idempotent, non-overlapping Git-status monitor so edits
   refresh during a turn. It deliberately avoids recursive `fs.watch`/Chokidar: those allocate one

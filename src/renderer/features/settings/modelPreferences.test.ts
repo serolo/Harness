@@ -7,7 +7,7 @@ import {
 afterEach(() => window.localStorage.clear());
 
 describe('model preferences migration', () => {
-  it('preserves exact versioned Claude model ids', () => {
+  it('maps retired extended-context choices to their base models', () => {
     window.localStorage.setItem(
       'harness:model-preferences',
       JSON.stringify({
@@ -18,8 +18,8 @@ describe('model preferences migration', () => {
     );
 
     expect(readModelPreferences()).toMatchObject({
-      defaultModel: 'claude-opus-4-8-1m',
-      reviewModel: 'claude-sonnet-5-1m',
+      defaultModel: 'claude-opus-4-8',
+      reviewModel: 'claude-sonnet-5',
     });
   });
 
@@ -34,8 +34,22 @@ describe('model preferences migration', () => {
     );
 
     expect(readModelPreferences()).toMatchObject({
-      defaultModel: 'claude-opus-4-8-1m',
+      defaultModel: 'claude-opus-4-8',
       reviewModel: 'claude-haiku-4-5',
+    });
+  });
+
+  it('maps the runtime extended-context spelling to its base model', () => {
+    window.localStorage.setItem(
+      'harness:model-preferences',
+      JSON.stringify({
+        ...DEFAULT_MODEL_PREFERENCES,
+        defaultModel: 'claude-opus-4-8[1m]',
+      }),
+    );
+
+    expect(readModelPreferences()).toMatchObject({
+      defaultModel: 'claude-opus-4-8',
     });
   });
 });

@@ -431,4 +431,51 @@ describe('Claude Code adapter — PTY JSON stream fallback', () => {
       { kind: 'turn_end' },
     ]);
   });
+
+  it('waits for process exit when a successful result is followed by background-agent output', async () => {
+    const fake = fakeSpawner();
+    const harness = new ClaudeCodeHarness(fake.spawner);
+    const rec = recordingSink();
+
+    const handlePromise = harness.startTurn(opts([]), rec.sink);
+    await vi.waitFor(() => expect(fake.spawnOptions()).toBeDefined());
+
+    appendCapturedStdout(
+      fake,
+      '{"type":"system","subtype":"init","session_id":"sess-background"}\r\n',
+    );
+    await handlePromise;
+    appendCapturedStdout(
+      fake,
+      '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"One agent is still running."}]},"session_id":"sess-background"}\r\n',
+    );
+    appendCapturedStdout(
+      fake,
+      '{"type":"result","subtype":"success","session_id":"sess-background","usage":{"input_tokens":100,"output_tokens":1},"is_error":false}\r\n',
+    );
+
+    await vi.waitFor(() =>
+      expect(rec.events).toEqual([
+        { kind: 'text', delta: 'One agent is still running.' },
+      ]),
+    );
+    expect(rec.endCount()).toBe(0);
+
+    appendCapturedStdout(
+      fake,
+      '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## Final plan\\n\\n1. Ship the fix."}]},"session_id":"sess-background"}\r\n',
+    );
+    appendCapturedStdout(
+      fake,
+      '{"type":"result","subtype":"success","session_id":"sess-background","usage":{"input_tokens":150,"output_tokens":20},"is_error":false}\r\n',
+    );
+    fake.exit(0);
+
+    expect(rec.events).toEqual([
+      { kind: 'text', delta: 'One agent is still running.' },
+      { kind: 'text', delta: '## Final plan\n\n1. Ship the fix.' },
+      { kind: 'turn_end', usage: { inputTokens: 150, outputTokens: 20 } },
+    ]);
+    expect(rec.endCount()).toBe(1);
+  });
 });

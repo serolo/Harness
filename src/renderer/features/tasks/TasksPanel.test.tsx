@@ -376,6 +376,23 @@ describe('TasksPanel rendering', () => {
     });
   });
 
+  it('opens the neighboring Skills tab and loads both provider catalogues', async () => {
+    const { api } = installApi(TASKS);
+    render(<TasksPanel workspaceId="ws1" projectId="project-1" />);
+
+    fireEvent.click(screen.getByTestId('workspace-tab-skills'));
+
+    expect(await screen.findByTestId('skills-panel')).toBeInTheDocument();
+    expect(api.invoke).toHaveBeenCalledWith('slash:list', {
+      workspaceId: 'ws1',
+      harness: 'claude_code',
+    });
+    expect(api.invoke).toHaveBeenCalledWith('slash:list', {
+      workspaceId: 'ws1',
+      harness: 'codex',
+    });
+  });
+
   it('explains how to enable knowledge when it is unavailable', async () => {
     installApi(TASKS, {
       config: {
@@ -893,7 +910,7 @@ describe('TasksPanel create form', () => {
         expect.objectContaining({
           workspaceId: 'ws1',
           prompt: 'run the suite',
-          model: 'codex-gpt-5-6-terra',
+          model: 'gpt-5.6-terra',
           harnessOverride: 'codex',
         }),
       ),
@@ -913,7 +930,7 @@ describe('TasksPanel create form', () => {
     expect(menu).toHaveClass('fixed', 'max-h-[calc(100vh-32px)]');
   });
 
-  it('uses Chat catalogue normalization for Claude extended-context models', async () => {
+  it('uses the exact Claude model selected from the Chat catalogue', async () => {
     const { api } = installApi([]);
     render(<TasksPanel workspaceId="ws1" />);
 
@@ -922,14 +939,14 @@ describe('TasksPanel create form', () => {
       target: { value: 'review everything' },
     });
     fireEvent.click(screen.getByTestId('task-model-select'));
-    fireEvent.click(screen.getByTestId('task-model-option-claude-opus-4-8-1m'));
+    fireEvent.click(screen.getByTestId('task-model-option-claude-opus-4-8'));
     fireEvent.click(screen.getByTestId('task-form-submit'));
 
     await waitFor(() =>
       expect(api.invoke).toHaveBeenCalledWith(
         'task:create',
         expect.objectContaining({
-          model: 'claude-opus-4-8[1m]',
+          model: 'claude-opus-4-8',
           harnessOverride: 'claude_code',
         }),
       ),

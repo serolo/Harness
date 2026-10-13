@@ -16,8 +16,8 @@
 // `setStatus` (never a direct DB write). Per-turn DB writes are serialized on a promise
 // chain so event order is preserved even though `sink.push` is a synchronous callback.
 //
-// INTEGRATION(phase-3): agent children are tracked in this supervisor's own registry;
-// fold them into the shared `ProcessRegistry` when Phase 3 implements it (Risk R2).
+// Raw agent PTYs are also registered in the shared ProcessRegistry. This supervisor
+// retains the turn registry because it owns transcript finalization and busy state.
 
 import type {
   AgentEvent,
@@ -93,6 +93,8 @@ interface LiveTurn {
   handle?: TurnHandle;
   /** Set when the user (or quit) requested an interrupt — maps the terminal to `interrupted`. */
   interrupted: boolean;
+  /** Any graceful stop request, including watchdogs, pending handle readiness. */
+  stopRequested: boolean;
   /** True once the provider handle has received the interrupt request. */
   interruptDelivered: boolean;
   /** Workspace name captured for secret-free notifications. */
@@ -104,6 +106,24 @@ interface LiveTurn {
   resolveHandleReady: () => void;
   /** Terminal delivery is one-shot; providers occasionally emit trailing noise. */
   terminalSeen: boolean;
+  /** Watchdog timers are owned by the live turn and cleared on every terminal path. */
+  idleWatchdog?: ReturnType<typeof setTimeout>;
+  totalWatchdog?: ReturnType<typeof setTimeout>;
+  stopDeadline?: ReturnType<typeof setTimeout>;
+  /** Idle limit snapshotted from settings at turn start. */
+  idleWatchdogMs?: number;
+  /** Replaces the provider terminal event when a bounded-execution watchdog fired. */
+  watchdogMessage?: string;
+  /** A force request can arrive while the provider handle is still starting. */
+  forceInterruptRequested: boolean;
+  forceInterruptDelivered: boolean;
+  /** Synthesizes a terminal boundary if a provider never reports process exit. */
+  completeStop?: () => void;
+}
+
+export interface TurnWatchdogTimeouts {
+  idleMs: number;
+  totalMs?: number;
 }
 
 export interface HarnessSupervisorDeps {
@@ -127,6 +147,10 @@ export interface HarnessSupervisorDeps {
   /** Fired at the end of finalize (after status flip) so Phase-4 can snapshot a checkpoint +
    *  recompute the diff off the finalize path (best-effort — must not throw). */
   onTurnEnd?: (workspaceId: string, turnId: string) => void;
+  /** Snapshot configurable execution limits when each turn starts. */
+  getWatchdogTimeouts?: (mode: StartTurnOpts['mode']) => TurnWatchdogTimeouts;
+  /** Test seam for the stop hard deadline; production defaults to 10.5 seconds. */
+  stopHardDeadlineMs?: number;
 }
 
 export class HarnessSupervisor {
@@ -311,12 +335,15 @@ export class HarnessSupervisor {
       contextId,
       turnId,
       interrupted: false,
+      stopRequested: false,
       interruptDelivered: false,
       workspaceName: workspace.name,
       writeChain: Promise.resolve(),
       handleReady: Promise.resolve(),
       resolveHandleReady: () => undefined,
       terminalSeen: false,
+      forceInterruptRequested: false,
+      forceInterruptDelivered: false,
     };
     live.handleReady = new Promise<void>((resolve) => {
       live.resolveHandleReady = resolve;
@@ -366,18 +393,29 @@ export class HarnessSupervisor {
     const wrapped: StreamSink<AgentEvent> = {
       push: (event) => {
         if (live.terminalSeen) return;
-        if (event.kind === 'turn_end' || event.kind === 'error') {
+        const terminal = event.kind === 'turn_end' || event.kind === 'error';
+        const effectiveEvent: AgentEvent =
+          terminal && live.watchdogMessage !== undefined
+            ? { kind: 'error', message: live.watchdogMessage }
+            : event;
+        if (terminal) {
           for (const traceEvent of closeKnowledge()) {
             wrapped.push(traceEvent);
           }
+        } else {
+          this.resetIdleWatchdog(live);
         }
 
         const safeEvent: AgentEvent =
-          event.kind === 'error'
-            ? { ...event, message: sanitizeErrorMessage(event.message) }
-            : event;
+          effectiveEvent.kind === 'error'
+            ? {
+                ...effectiveEvent,
+                message: sanitizeErrorMessage(effectiveEvent.message),
+              }
+            : effectiveEvent;
         if (safeEvent.kind === 'turn_end' || safeEvent.kind === 'error') {
           live.terminalSeen = true;
+          this.clearWatchdogs(live);
         }
         // Provider metadata belongs in persistence, not in the visible transcript.
         if (safeEvent.kind !== 'model_info') {
@@ -420,6 +458,7 @@ export class HarnessSupervisor {
           wrapped.push(traceEvent);
         }
         live.terminalSeen = true;
+        this.clearWatchdogs(live);
         const current = this.registry.get(registryKey);
         if (current === live) {
           this.registry.delete(registryKey);
@@ -435,6 +474,11 @@ export class HarnessSupervisor {
         }
         sink.error(new AppError('harness', safeMessage));
       },
+    };
+    live.completeStop = () => {
+      if (live.terminalSeen) return;
+      wrapped.push({ kind: 'turn_end' });
+      wrapped.end();
     };
 
     let handle: TurnHandle;
@@ -471,8 +515,10 @@ export class HarnessSupervisor {
             : { retrieval: opts.knowledgeRetrieval }),
         });
       }
-      handle = await adapter.startTurn(opts, wrapped);
+      this.armWatchdogs(live, opts.mode);
+      handle = await adapter.startTurn({ ...opts, workspaceId }, wrapped);
     } catch (err) {
+      this.clearWatchdogs(live);
       live.resolveHandleReady();
       for (const traceEvent of closeKnowledge()) {
         live.writeChain = live.writeChain.then(() =>
@@ -503,9 +549,17 @@ export class HarnessSupervisor {
     // An interrupt can arrive while the adapter is still starting. Remembering only the
     // flag is insufficient: once the handle exists, immediately deliver the pending
     // interrupt so a late-spawning child cannot outlive its deadline or cancellation.
-    if (live.interrupted && !live.interruptDelivered) {
+    if (
+      live.stopRequested &&
+      !live.forceInterruptRequested &&
+      !live.interruptDelivered
+    ) {
       live.interruptDelivered = true;
       await handle.interrupt();
+    }
+    if (live.forceInterruptRequested && !live.forceInterruptDelivered) {
+      live.forceInterruptDelivered = true;
+      await (handle.forceInterrupt?.() ?? handle.interrupt());
     }
     if (handle.sessionId) {
       try {
@@ -528,11 +582,14 @@ export class HarnessSupervisor {
   async interrupt(workspaceId: string): Promise<void> {
     const live = this.registry.get(this.registryKey(workspaceId));
     if (!live) return;
-    live.interrupted = true;
-    if (live.handle && !live.interruptDelivered) {
-      live.interruptDelivered = true;
-      await live.handle.interrupt();
-    }
+    await this.stopLive(live, false, true);
+  }
+
+  /** Immediately force-stop the complete process tree for the workspace turn. */
+  async forceInterrupt(workspaceId: string): Promise<void> {
+    const live = this.registry.get(this.registryKey(workspaceId));
+    if (!live) return;
+    await this.stopLive(live, true, true);
   }
 
   /** True when a turn is currently streaming for the workspace. */
@@ -552,11 +609,17 @@ export class HarnessSupervisor {
   ): Promise<void> {
     const live = this.registry.get(this.registryKey(workspaceId, contextId));
     if (!live) return;
-    live.interrupted = true;
-    if (live.handle && !live.interruptDelivered) {
-      live.interruptDelivered = true;
-      await live.handle.interrupt();
-    }
+    await this.stopLive(live, false, true);
+  }
+
+  /** Immediately force-stop the complete process tree for one manual chat context. */
+  async forceInterruptContext(
+    workspaceId: string,
+    contextId: string,
+  ): Promise<void> {
+    const live = this.registry.get(this.registryKey(workspaceId, contextId));
+    if (!live) return;
+    await this.stopLive(live, true, true);
   }
 
   /** True when this manual chat context owns an in-flight turn. */
@@ -593,6 +656,7 @@ export class HarnessSupervisor {
     const live = [...this.registry.values()];
     await Promise.allSettled(
       live.map(async (t) => {
+        this.clearWatchdogs(t);
         t.interrupted = true;
         if (!t.handle) {
           await Promise.race([
@@ -609,6 +673,71 @@ export class HarnessSupervisor {
     this.registry.clear();
     this.starting.clear();
     this.startedTurnIds.clear();
+  }
+
+  private async stopLive(
+    live: LiveTurn,
+    force: boolean,
+    markInterrupted: boolean,
+  ): Promise<void> {
+    live.stopRequested = true;
+    this.armStopDeadline(live, force);
+    if (markInterrupted) live.interrupted = true;
+    if (force) live.forceInterruptRequested = true;
+    if (!live.handle) return;
+    if (force) {
+      if (live.forceInterruptDelivered) return;
+      live.forceInterruptDelivered = true;
+      await (live.handle.forceInterrupt?.() ?? live.handle.interrupt());
+      return;
+    }
+    if (live.interruptDelivered) return;
+    live.interruptDelivered = true;
+    await live.handle.interrupt();
+  }
+
+  private armWatchdogs(live: LiveTurn, mode: StartTurnOpts['mode']): void {
+    const limits = this.deps.getWatchdogTimeouts?.(mode);
+    if (!limits) return;
+    live.idleWatchdogMs = limits.idleMs;
+    this.resetIdleWatchdog(live, limits.idleMs);
+    if (limits.totalMs !== undefined && limits.totalMs > 0) {
+      live.totalWatchdog = setTimeout(() => {
+        live.watchdogMessage =
+          'Planning turn exceeded its configured total time limit.';
+        void this.stopLive(live, false, false);
+      }, limits.totalMs);
+      live.totalWatchdog.unref?.();
+    }
+  }
+
+  private resetIdleWatchdog(live: LiveTurn, timeoutMs?: number): void {
+    if (live.idleWatchdog !== undefined) clearTimeout(live.idleWatchdog);
+    const configured = timeoutMs ?? live.idleWatchdogMs;
+    if (configured === undefined || configured <= 0) return;
+    live.idleWatchdog = setTimeout(() => {
+      live.watchdogMessage =
+        'Agent produced no progress before the configured idle limit.';
+      void this.stopLive(live, false, false);
+    }, configured);
+    live.idleWatchdog.unref?.();
+  }
+
+  private clearWatchdogs(live: LiveTurn): void {
+    if (live.idleWatchdog !== undefined) clearTimeout(live.idleWatchdog);
+    if (live.totalWatchdog !== undefined) clearTimeout(live.totalWatchdog);
+    if (live.stopDeadline !== undefined) clearTimeout(live.stopDeadline);
+    live.idleWatchdog = undefined;
+    live.totalWatchdog = undefined;
+    live.stopDeadline = undefined;
+  }
+
+  private armStopDeadline(live: LiveTurn, force: boolean): void {
+    if (live.stopDeadline !== undefined) clearTimeout(live.stopDeadline);
+    const configured = this.deps.stopHardDeadlineMs ?? 10_500;
+    const timeoutMs = force ? Math.min(configured, 5_500) : configured;
+    live.stopDeadline = setTimeout(() => live.completeStop?.(), timeoutMs);
+    live.stopDeadline.unref?.();
   }
 
   /**

@@ -49,6 +49,8 @@ const EFFECTIVE: EffectiveSettings = {
     reviewPrompt: 'review',
     prPrompt: 'pr',
     harnessImpl: 'auto',
+    idleWatchdogMinutes: 10,
+    planTurnWatchdogMinutes: 60,
   },
   git: {
     branchPrefix: 'agent',

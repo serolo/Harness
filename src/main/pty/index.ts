@@ -20,6 +20,7 @@ import type { StreamSink } from '@shared/ipc';
 import { logger } from '../logging';
 import type { ProcessRegistry } from '../process';
 import { childProcessEnv } from '../process/childEnv';
+import { treeKillEscalate, treeKillForce } from '../process/kill';
 import { defaultTerminalShell } from '../process/platform';
 
 /** Options for spawning a PTY (spec §5.2 — env includes PORT/APP_PORT + ws vars). */
@@ -152,27 +153,23 @@ export class PtyService {
    * returned shape structurally matches `RawPtyHandle` so `index.ts` can pass this
    * service straight into a `RawPtySpawner` with no adapter glue.
    *
-   * TEARDOWN (parity with the other agent adapters): a raw agent turn is NOT registered
-   * in the shared `ProcessRegistry` — just like `claude-code`/`codex`'s `child_process`
-   * children, it is owned by the `HarnessSupervisor` and killed via its
-   * `quitAll`→`interrupt`→`kill` path (the supervisor's deferred-R2 note). Folding agent
-   * children into `ProcessRegistry` is a single, separate change for all adapters. The
-   * `StartTurnOpts` that reaches here carries no `workspaceId`, so `options.workspaceId`
-   * is accepted but unused.
+   * Raw agent turns are registered as `agent` handles and stopped through the same
+   * bounded process-tree escalation path as every other managed child.
    */
   async spawnRaw(options: {
     cwd: string;
     shell: string;
     args: string[];
     env?: Record<string, string>;
-    workspaceId?: string;
+    workspaceId: string;
     cols?: number;
     rows?: number;
   }): Promise<{
     ptyId: string;
     onData(listener: (chunk: string) => void): void;
     onExit(listener: (e: { exitCode: number }) => void): void;
-    kill(): void;
+    kill(): Promise<void>;
+    forceKill(): Promise<void>;
   }> {
     const nodePty = await loadNodePty();
     // Raw agent turns use the bundled Electron executable as a private Node launcher.
@@ -192,12 +189,20 @@ export class PtyService {
     });
 
     this.ptys.set(id, proc);
+    this.registry.register({
+      id,
+      workspaceId: options.workspaceId,
+      kind: 'agent',
+      pid: proc.pid,
+      stop: () => treeKillEscalate(proc.pid),
+    });
 
     // A single onExit does the map cleanup AND forwards the exit code to the caller's
     // listener (registered via the returned handle). kill and natural exit converge here.
     let exitListener: ((e: { exitCode: number }) => void) | undefined;
     proc.onExit(({ exitCode }) => {
       this.ptys.delete(id);
+      this.registry.unregister(id);
       exitListener?.({ exitCode });
     });
 
@@ -207,7 +212,8 @@ export class PtyService {
       onExit: (listener) => {
         exitListener = listener;
       },
-      kill: () => this.kill(id),
+      kill: () => treeKillEscalate(proc.pid),
+      forceKill: () => treeKillForce(proc.pid),
     };
   }
 

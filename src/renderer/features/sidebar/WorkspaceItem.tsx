@@ -11,7 +11,7 @@
 //
 // Archived rows render dimmed. The selected row is highlighted.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Archive,
@@ -45,6 +45,7 @@ import {
 } from '@renderer/features/workspace/actions';
 import { StatusBadge } from './StatusBadge';
 import { WorkspaceContextMenu } from './WorkspaceContextMenu';
+import { isActivePullRequest } from './workspaceOrdering';
 
 function PullRequestStateIcon({
   pullRequest,
@@ -152,6 +153,8 @@ export interface WorkspaceItemProps {
   workspace: Workspace;
   isSelected: boolean;
   onSelect: (id: string) => void;
+  /** Reports confirmed live PR state so the project list can reorder reactively. */
+  onPullRequestOpenChange?: (workspaceId: string, isOpen: boolean) => void;
 }
 
 /**
@@ -162,6 +165,7 @@ export function WorkspaceItem({
   workspace,
   isSelected,
   onSelect,
+  onPullRequestOpenChange,
 }: WorkspaceItemProps): React.JSX.Element {
   const queryClient = useQueryClient();
   const upsertWorkspace = useWorkspacesStore((state) => state.upsertWorkspace);
@@ -182,6 +186,10 @@ export function WorkspaceItem({
     prNumber: workspace.prNumber,
     poll: isSelected,
   });
+  useEffect(() => {
+    if (pullRequest === undefined) return;
+    onPullRequestOpenChange?.(workspace.id, isActivePullRequest(pullRequest));
+  }, [onPullRequestOpenChange, pullRequest, workspace.id]);
   const [contextPoint, setContextPoint] = useState<{
     x: number;
     y: number;

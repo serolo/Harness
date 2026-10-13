@@ -20,6 +20,7 @@
 
 import {
   app,
+  clipboard,
   dialog,
   BrowserWindow,
   ipcMain,
@@ -342,6 +343,58 @@ async function resolveClaudePlanPath(path: unknown): Promise<string> {
     );
   }
   return realTarget;
+}
+
+interface DisplayedFilePath {
+  absolutePath: string;
+  relativePath: string;
+}
+
+/** Resolve only file references that the chat viewer is already allowed to display. */
+async function resolveDisplayedFilePath(
+  ctx: AppContext,
+  req: unknown,
+): Promise<DisplayedFilePath> {
+  if (req === null || typeof req !== 'object') {
+    throw new AppError('invalid_input', 'invalid displayed file request');
+  }
+  const input = req as Record<string, unknown>;
+  let absolutePath: string;
+  let relativePath: string;
+
+  if (input.source === 'workspace') {
+    assertWorkspaceId(input.workspaceId);
+    assertWorkspaceFilePath(input.path);
+    if (isAbsolute(input.path) || input.path.length > 4096) {
+      throw new AppError(
+        'invalid_input',
+        'workspace file path must be relative',
+      );
+    }
+    const workspace = await ctx.workspaces.get(input.workspaceId);
+    if (workspace === null || workspace.worktreePath === null) {
+      throw new AppError('not_found', 'workspace checkout is unavailable');
+    }
+    absolutePath = await resolveRealWorkspacePath(
+      workspace.worktreePath,
+      input.path,
+    );
+    relativePath = input.path;
+  } else if (input.source === 'plan') {
+    if (typeof input.path !== 'string' || input.path.length > 4096) {
+      throw new AppError('invalid_input', 'invalid plan path');
+    }
+    absolutePath = await resolveClaudePlanPath(input.path);
+    const planRoot = await realpath(resolve(homedir(), '.claude', 'plans'));
+    relativePath = relative(planRoot, absolutePath);
+  } else {
+    throw new AppError('invalid_input', 'invalid file source');
+  }
+
+  if (!(await stat(absolutePath)).isFile()) {
+    throw new AppError('invalid_input', 'path is not a file');
+  }
+  return { absolutePath, relativePath };
 }
 
 function workspaceRelativePath(worktreePath: string, filePath: string): string {
@@ -1970,6 +2023,24 @@ export function registerIpc(ctx: AppContext): void {
     await ctx.harness.interruptContext(req.workspaceId, req.contextId);
   });
 
+  handle('turn:forceInterrupt', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    await ctx.harness.forceInterrupt(req.workspaceId);
+  });
+
+  handle('turn:forceInterruptContext', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    assertChatContextId(req.contextId);
+    const context = await new ChatContextsRepo(ctx.db).get(req.contextId);
+    if (!context || context.workspaceId !== req.workspaceId) {
+      throw new AppError('not_found', 'chat context not found', {
+        workspaceId: req.workspaceId,
+        contextId: req.contextId,
+      });
+    }
+    await ctx.harness.forceInterruptContext(req.workspaceId, req.contextId);
+  });
+
   // chat:history — reconstruct the full transcript. Fetching it also clears a
   // `needs_attention` workspace back to `idle` (D4: implicit "viewed" semantics).
   handle('chat:history', async (req) => {
@@ -2218,39 +2289,24 @@ export function registerIpc(ctx: AppContext): void {
   // file:revealInFinder — reveal only files already confined to a workspace or the
   // Claude plans directory. The renderer never supplies an authoritative root.
   handle('file:revealInFinder', async (req) => {
-    if (req === null || typeof req !== 'object') {
-      throw new AppError('invalid_input', 'invalid file reveal request');
-    }
-    let absolutePath: string;
-    if (req.source === 'workspace') {
-      assertWorkspaceId(req.workspaceId);
-      assertWorkspaceFilePath(req.path);
-      if (isAbsolute(req.path) || req.path.length > 4096) {
-        throw new AppError(
-          'invalid_input',
-          'workspace file path must be relative',
-        );
-      }
-      const workspace = await ctx.workspaces.get(req.workspaceId);
-      if (workspace === null || workspace.worktreePath === null) {
-        throw new AppError('not_found', 'workspace checkout is unavailable');
-      }
-      absolutePath = await resolveRealWorkspacePath(
-        workspace.worktreePath,
-        req.path,
-      );
-    } else if (req.source === 'plan') {
-      if (typeof req.path !== 'string' || req.path.length > 4096) {
-        throw new AppError('invalid_input', 'invalid plan path');
-      }
-      absolutePath = await resolveClaudePlanPath(req.path);
-    } else {
-      throw new AppError('invalid_input', 'invalid file source');
-    }
-    if (!(await stat(absolutePath)).isFile()) {
-      throw new AppError('invalid_input', 'path is not a file');
-    }
+    const { absolutePath } = await resolveDisplayedFilePath(ctx, req);
     shell.showItemInFolder(absolutePath);
+  });
+
+  // file:copyPath — main resolves and copies the path so workspace roots never need to
+  // cross into the sandboxed renderer merely to support a clipboard action.
+  handle('file:copyPath', async (req) => {
+    if (
+      req === null ||
+      typeof req !== 'object' ||
+      (req.format !== 'absolute' && req.format !== 'relative')
+    ) {
+      throw new AppError('invalid_input', 'invalid file path format');
+    }
+    const paths = await resolveDisplayedFilePath(ctx, req);
+    clipboard.writeText(
+      req.format === 'absolute' ? paths.absolutePath : paths.relativePath,
+    );
   });
 
   // plan:read — narrowly scoped read-only access for Claude's saved plan handoff.
@@ -2499,6 +2555,31 @@ export function registerIpc(ctx: AppContext): void {
     return {
       upstream: await ctx.git.upstreamBranch(workspace.worktreePath),
     };
+  });
+
+  // git:setBaseBranch — target refs are validated against Git's own branch allowlist
+  // inside WorkspaceManager before either Git config or persistence is changed.
+  handle('git:setBaseBranch', async (req) => {
+    assertWorkspaceId(req.workspaceId);
+    if (
+      typeof req.targetRef !== 'string' ||
+      req.targetRef === '' ||
+      req.targetRef.length > 4096 ||
+      /[\p{Cc}\p{Cf}]/u.test(req.targetRef)
+    ) {
+      throw new AppError('invalid_input', 'targetRef is invalid');
+    }
+    const workspace = await ctx.workspaces.setBaseBranch(
+      req.workspaceId,
+      req.targetRef,
+    );
+    ctx.diff.invalidate(req.workspaceId);
+    emitAll(
+      BrowserWindow.getAllWindows().map((window) => window.webContents),
+      'diff:changed',
+      { workspaceId: req.workspaceId },
+    );
+    return workspace;
   });
 
   // diff:query — explicit target/scope comparison used by the Git menu.
@@ -3504,6 +3585,36 @@ export function registerIpc(ctx: AppContext): void {
       throw new AppError(
         'invalid_input',
         'pull request URL must be an HTTPS github.com pull request',
+      );
+    }
+    await shell.openExternal(url.toString());
+  });
+
+  handle('external:openUrl', async (req) => {
+    if (
+      typeof req?.url !== 'string' ||
+      req.url === '' ||
+      req.url.length > 8_192 ||
+      /[\p{Cc}\p{Cf}]/u.test(req.url)
+    ) {
+      throw new AppError('invalid_input', 'external URL is invalid');
+    }
+    let url: URL;
+    try {
+      url = new URL(req.url);
+    } catch {
+      throw new AppError('invalid_input', 'external URL is invalid');
+    }
+    if (
+      (url.protocol !== 'https:' &&
+        url.protocol !== 'http:' &&
+        url.protocol !== 'mailto:') ||
+      url.username !== '' ||
+      url.password !== ''
+    ) {
+      throw new AppError(
+        'invalid_input',
+        'external URL must use http, https, or mailto without credentials',
       );
     }
     await shell.openExternal(url.toString());

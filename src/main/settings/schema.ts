@@ -157,6 +157,10 @@ const agentSchema = z
      * (`AGENTAPP_MOCK_HARNESS=1`, `AGENTAPP_E2E=1`) force `mock` at construction time.
      */
     harnessImpl: z.enum(['auto', 'mock']).default('auto'),
+    /** Minutes without an agent event before bounded teardown starts. */
+    idleWatchdogMinutes: z.number().int().min(1).max(1_440).default(10),
+    /** Total wall-clock cap for plan-mode turns. */
+    planTurnWatchdogMinutes: z.number().int().min(1).max(1_440).default(60),
   })
   .default({});
 

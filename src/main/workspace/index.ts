@@ -1,9 +1,8 @@
 // WorkspaceManager — workspace lifecycle (create/archive/restore), city-name +
 // port allocation, and the SINGLE owner of workspace status transitions
 // (README §6.4: any subsystem transitions status ONLY via `setStatus()`, which
-// also emits the `workspace:status` event). `archive`/`restore` are the two
-// documented exceptions that emit their OWN events (`workspace:archived`, and
-// `restore` ends by routing through `setStatus`).
+// also emits the `workspace:status` event). Metadata/base updates and archive/restore
+// emit their own typed events; restore ends by routing through `setStatus`.
 //
 // Collaborators are INJECTED via the constructor `deps` (wired in
 // `src/main/index.ts`, Task 6) so this module stays testable and keeps native
@@ -509,6 +508,81 @@ export class WorkspaceManager {
   /** Fetch a single workspace DTO by id, or `null` if it does not exist. */
   async get(id: string): Promise<Workspace | null> {
     return this.deps.repos.workspaces.getById(id);
+  }
+
+  /**
+   * Change the review base and the live Git upstream as one user-visible operation.
+   * The target must come from Git's branch allowlist; HEAD and worktree files never move.
+   */
+  async setBaseBranch(id: string, targetRef: string): Promise<Workspace> {
+    const current = await this.deps.repos.workspaces.getById(id);
+    if (current === null) {
+      throw new AppError('not_found', `workspace not found: ${id}`);
+    }
+    if (current.worktreePath === null) {
+      throw new AppError('conflict', 'workspace checkout is unavailable');
+    }
+
+    const branches = await this.deps.git.listBranches(current.worktreePath);
+    if (!branches.includes(targetRef)) {
+      throw new AppError('invalid_input', 'unknown target branch', {
+        targetRef,
+      });
+    }
+
+    const checkedOutBranch = await this.deps.git.currentBranch(
+      current.worktreePath,
+    );
+    if (checkedOutBranch === 'HEAD') {
+      throw new AppError(
+        'conflict',
+        'cannot change the base branch from detached HEAD',
+      );
+    }
+    if (targetRef === checkedOutBranch) {
+      throw new AppError(
+        'invalid_input',
+        'the target branch cannot be the checked-out branch',
+      );
+    }
+
+    const previousUpstream = await this.deps.git.upstreamBranch(
+      current.worktreePath,
+    );
+    await this.deps.git.setUpstreamBranch(current.worktreePath, targetRef);
+
+    let updated: Workspace | null;
+    try {
+      updated = await this.deps.repos.workspaces.update(id, {
+        baseBranch: targetRef,
+      });
+    } catch (error) {
+      await this.restoreUpstream(current.worktreePath, previousUpstream);
+      throw error;
+    }
+    if (updated === null) {
+      await this.restoreUpstream(current.worktreePath, previousUpstream);
+      throw new AppError('not_found', `workspace not found: ${id}`);
+    }
+
+    this.deps.emit('workspace:updated', { workspace: updated });
+    return updated;
+  }
+
+  /** Best-effort compensation when persistence fails after Git config changed. */
+  private async restoreUpstream(
+    worktreePath: string,
+    previousUpstream: string | null,
+  ): Promise<void> {
+    try {
+      if (previousUpstream === null) {
+        await this.deps.git.unsetUpstreamBranch(worktreePath);
+      } else {
+        await this.deps.git.setUpstreamBranch(worktreePath, previousUpstream);
+      }
+    } catch {
+      // Preserve the persistence failure. The next successful selection repairs both.
+    }
   }
 
   /** Update user-controlled metadata exposed by the workspace context menu. */

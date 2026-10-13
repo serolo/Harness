@@ -29,5 +29,8 @@ phases build against.
   persistent lock can belong to a real Git operation.
 - UI that describes the branch's current relationship to remote Git must use `upstreamBranch()`;
   `Workspace.baseBranch` is creation-time metadata and can become stale when tracking changes.
+- The Git target chooser intentionally updates both the checked-out branch's upstream and the
+  persisted workspace base. `setUpstreamBranch()` changes Git config only: it must never checkout,
+  merge, reset, or accept a ref that did not first come from `listBranches()`.
 - This app's own checkout may be a **detached worktree** — don't assume `git` commands succeed from
   the app's cwd; operate against explicit workspace paths.

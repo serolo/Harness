@@ -48,16 +48,15 @@ export const DEFAULT_IDLE_TIMEOUT_MS = 2_000;
  * Options for spawning the harness CLI in a PTY. A faithful subset of
  * `PtySpawnOptions` (`src/main/pty/index.ts`): `cwd` is the workspace worktree, `shell`
  * + `args` are an ARGUMENT ARRAY (never a shell string), `env` is merged over the
- * inherited env by the adapter. `workspaceId` is optional so the lead's adapter can
- * register the child with the shared `ProcessRegistry` for teardown; this helper never
- * reads it.
+ * inherited env by the adapter. `workspaceId` is required so the native spawner can
+ * register the child with the shared `ProcessRegistry` for teardown.
  */
 export interface RawPtySpawnOptions {
   cwd: string;
   shell: string;
   args: string[];
   env?: Record<string, string>;
-  workspaceId?: string;
+  workspaceId: string;
   cols?: number;
   rows?: number;
 }
@@ -77,7 +76,9 @@ export interface RawPtyHandle {
   /** Fires exactly once when the process exits; `exitCode` 0 = clean. */
   onExit(listener: (e: { exitCode: number }) => void): void;
   /** Signal the process to terminate (interrupt / turn-boundary finalize). */
-  kill(): void;
+  kill(): void | Promise<void>;
+  /** Skip the grace period and SIGKILL the complete process tree. */
+  forceKill?(): void | Promise<void>;
 }
 
 /**
@@ -163,6 +164,7 @@ export class RawTerminalTranscript {
   ): Promise<TurnHandle> {
     const cmd = this.command(opts);
     const handle = await this.spawner.spawn({
+      workspaceId: opts.workspaceId ?? opts.workspaceDir,
       cwd: opts.workspaceDir,
       shell: cmd.shell,
       args: cmd.args,
@@ -203,7 +205,7 @@ export class RawTerminalTranscript {
       idleTimer = undefined;
       // Kill the PTY so the CLI stops running past the boundary we just declared; its
       // `onExit` is guarded by `terminalEmitted` and will not double-finalize.
-      handle.kill();
+      void handle.kill();
       finalize({ kind: 'turn_end' });
     };
 
@@ -239,9 +241,15 @@ export class RawTerminalTranscript {
 
     const interrupt = async (): Promise<void> => {
       // Kill the PTY; `onExit` finalizes. If the process is already gone this is a no-op.
-      handle.kill();
+      await handle.kill();
     };
 
-    return { sessionId: '', interrupt };
+    return {
+      sessionId: '',
+      interrupt,
+      forceInterrupt: async () => {
+        await (handle.forceKill?.() ?? handle.kill());
+      },
+    };
   }
 }

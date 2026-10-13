@@ -21,6 +21,16 @@ in this phase.** This is the first step of the **PIV loop (Plan â†’ Implement â†
 
 ## Process
 
+### 0. Bounded execution contract
+
+- **Work budget:** finish within 30 minutes or 40 tool calls, whichever comes first.
+- **Progress watchdog:** if 10 minutes pass without a new verified finding or plan section, stop.
+- **Blocked-stop condition:** after two failed attempts at the same required lookup/tool, do not
+  wait or retry indefinitely. Write the partial plan only when it is still actionable; otherwise
+  report the exact blocker, the evidence gathered, and the smallest user action needed to resume.
+- Never leave `/harness-plan` running merely to wait on a frozen MCP/tool call. A blocked plan is a
+  valid terminal outcome and must be surfaced explicitly.
+
 ### 1. Understand the request
 From `$ARGUMENTS` extract: feature type (new capability / enhancement / bug fix / refactor),
 affected layers (model / handler / route / service / gateway / frontend / migration), and the
@@ -106,6 +116,12 @@ optional (`/implement` reads it from disk). Structure:
 - **Orchestration:** prefer team if `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` enabled, else parallel subagents | sequential
 - **Parallel decomposition + file-ownership:** <which Ordered Tasks are independent and can run concurrently; which files each agent owns, so parallel work never touches the same file>
 - **Rationale:** <one line: why this strategy for this task shape>
+
+## Execution Bounds
+- **Work budget:** 30 minutes / 40 tool calls
+- **Progress watchdog:** stop after 10 minutes without a verified finding
+- **Blocked-stop condition:** stop after two failed attempts at the same required dependency and
+  record the blocker instead of waiting indefinitely
 
 ## Validation Gate
 Run after all tasks (from repo root):

@@ -1,8 +1,14 @@
 // Git changes overflow menu: target branch, change scope, and latest commit.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Check, ChevronDown, ChevronUp, EllipsisVertical } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  EllipsisVertical,
+  Search,
+} from 'lucide-react';
 import type { DiffMenuInfo, DiffScope } from '@shared/review';
 import { IconButton } from '@renderer/components/ui';
 
@@ -32,8 +38,20 @@ export function CommitFilter({
 }: CommitFilterProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [branchesOpen, setBranchesOpen] = useState(false);
+  const [branchQuery, setBranchQuery] = useState('');
+  const [selectingTarget, setSelectingTarget] = useState<string | null>(null);
+  const [targetError, setTargetError] = useState<string | null>(null);
   const [menuStyle, setMenuStyle] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
+  const branchSearchRef = useRef<HTMLInputElement>(null);
+
+  const filteredBranches = useMemo(() => {
+    const query = branchQuery.trim().toLocaleLowerCase();
+    if (query === '') return info?.branches ?? [];
+    return (info?.branches ?? []).filter((branch) =>
+      branch.toLocaleLowerCase().includes(query),
+    );
+  }, [branchQuery, info?.branches]);
 
   const positionMenu = (): void => {
     const rect = rootRef.current?.getBoundingClientRect();
@@ -67,16 +85,27 @@ export function CommitFilter({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (open && branchesOpen) branchSearchRef.current?.focus();
+  }, [open, branchesOpen]);
+
   const chooseScope = (next: DiffScope): void => {
     onScopeChange(next);
     setOpen(false);
   };
 
   const chooseTarget = (targetRef: string): void => {
+    setTargetError(null);
+    setSelectingTarget(targetRef);
     void onTargetRefChange(targetRef)
-      .then(() => setOpen(false))
+      .then(() => {
+        setSelectingTarget(null);
+        setBranchQuery('');
+        setOpen(false);
+      })
       .catch(() => {
-        /* Keep the menu open so the user can retry another available branch. */
+        setSelectingTarget(null);
+        setTargetError('Could not change the target branch.');
       });
   };
 
@@ -93,6 +122,8 @@ export function CommitFilter({
         aria-expanded={open}
         onClick={() => {
           setBranchesOpen(false);
+          setBranchQuery('');
+          setTargetError(null);
           positionMenu();
           setOpen((current) => !current);
         }}
@@ -109,40 +140,117 @@ export function CommitFilter({
         >
           <button
             type="button"
-            className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm hover:bg-bg-3"
+            role="menuitem"
+            className="group flex w-full items-center gap-3 px-4 py-3 text-left text-sm outline-none transition-colors duration-fast hover:bg-bg-3 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring"
             data-testid="git-target-branch"
             aria-expanded={branchesOpen}
-            onClick={() => setBranchesOpen((current) => !current)}
+            aria-controls="git-target-branch-options"
+            onClick={() => {
+              setBranchQuery('');
+              setTargetError(null);
+              setBranchesOpen((current) => !current);
+            }}
           >
             <span className="shrink-0 text-fg-3">Target branch</span>
-            <span className="ml-auto min-w-0 truncate font-medium text-fg-1">
+            <span className="ml-auto min-w-0 flex-1 truncate text-right font-medium text-fg-1">
               {info?.targetRef ?? 'Loading…'}
             </span>
+            <span className="shrink-0 text-xs font-medium text-accent transition-colors duration-fast group-hover:text-accent-hover">
+              Change
+            </span>
             {branchesOpen ? (
-              <ChevronUp className="h-4 w-4 shrink-0 text-fg-3" />
+              <ChevronUp
+                className="h-4 w-4 shrink-0 text-fg-2"
+                aria-hidden="true"
+              />
             ) : (
-              <ChevronDown className="h-4 w-4 shrink-0 text-fg-3" />
+              <ChevronDown
+                className="h-4 w-4 shrink-0 text-fg-2"
+                aria-hidden="true"
+              />
             )}
           </button>
 
           {branchesOpen ? (
-            <div className="max-h-44 overflow-y-auto border-t border-border-1 py-1">
-              {(info?.branches ?? []).map((branch) => (
-                <button
-                  key={branch}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={branch === info?.targetRef}
-                  className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
-                  data-testid={`git-target-option-${branch}`}
-                  onClick={() => chooseTarget(branch)}
-                >
-                  <span className="min-w-0 flex-1 truncate">{branch}</span>
-                  {branch === info?.targetRef ? (
-                    <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  ) : null}
-                </button>
-              ))}
+            <div
+              id="git-target-branch-options"
+              role="group"
+              aria-label="Target branch options"
+              className="border-t border-border-1"
+            >
+              <div className="p-2">
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-3"
+                    aria-hidden="true"
+                  />
+                  <input
+                    ref={branchSearchRef}
+                    type="search"
+                    value={branchQuery}
+                    placeholder="Search branches"
+                    aria-label="Search branches"
+                    className="h-8 w-full rounded-2 border border-border-2 bg-surface-well pl-8 pr-2.5 text-sm text-fg-1 outline-none placeholder:text-fg-3 focus:border-accent-border focus:shadow-[0_0_0_2px_var(--focus-ring)]"
+                    data-testid="git-target-search"
+                    onChange={(event) => setBranchQuery(event.target.value)}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  />
+                </div>
+                {(info?.comparisonBehind ?? 0) > 0 ? (
+                  <p
+                    className="mt-2 px-1 text-xs text-fg-3"
+                    data-testid="git-target-status"
+                  >
+                    Current branch is {info?.comparisonBehind}{' '}
+                    {info?.comparisonBehind === 1 ? 'commit' : 'commits'} behind
+                    this target.
+                  </p>
+                ) : null}
+                {selectingTarget ? (
+                  <p className="mt-2 px-1 text-xs text-fg-3">
+                    Changing target to {selectingTarget}…
+                  </p>
+                ) : targetError ? (
+                  <p
+                    role="alert"
+                    className="mt-2 px-1 text-xs text-danger"
+                    data-testid="git-target-error"
+                  >
+                    {targetError}
+                  </p>
+                ) : null}
+              </div>
+              <div className="max-h-44 overflow-y-auto border-t border-border-1 py-1">
+                {filteredBranches.length > 0 ? (
+                  filteredBranches.map((branch) => (
+                    <button
+                      key={branch}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={branch === info?.targetRef}
+                      disabled={selectingTarget !== null}
+                      className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-fg-2 hover:bg-bg-3 hover:text-fg-1"
+                      data-testid={`git-target-option-${branch}`}
+                      onClick={() => chooseTarget(branch)}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{branch}</span>
+                      {branch === info?.targetRef ? (
+                        <Check
+                          className="h-4 w-4 shrink-0"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                    </button>
+                  ))
+                ) : (
+                  <p
+                    className="px-4 py-3 text-sm text-fg-3"
+                    data-testid="git-target-no-results"
+                  >
+                    No branches found.
+                  </p>
+                )}
+              </div>
             </div>
           ) : null}
 

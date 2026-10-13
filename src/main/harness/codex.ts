@@ -337,6 +337,7 @@ export class CodexHarness implements Harness {
         stderrPath,
       });
       handle = await this.rawPtySpawner!.spawn({
+        workspaceId: opts.workspaceId ?? opts.workspaceDir,
         cwd: opts.workspaceDir,
         shell: launch.shell,
         args: launch.args,
@@ -370,14 +371,18 @@ export class CodexHarness implements Harness {
       poller = setInterval(readCapturedStdout, 50);
 
       const interrupt = async (): Promise<void> => {
-        handle.kill();
+        await handle.kill();
+      };
+
+      const forceInterrupt = async (): Promise<void> => {
+        await (handle.forceKill?.() ?? handle.kill());
       };
 
       function resolveHandle(): void {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ sessionId, interrupt });
+        resolve({ sessionId, interrupt, forceInterrupt });
       }
 
       function endStream(): void {
@@ -848,6 +853,14 @@ function normalizeError(obj: Record<string, unknown>): CodexNormalizeResult[] {
 // Argument construction (spawn arg array — never a shell string)
 // ---------------------------------------------------------------------------
 
+const LEGACY_CODEX_MODEL_IDS: Readonly<Record<string, string>> = {
+  'codex-gpt-5-6-sol': 'gpt-5.6-sol',
+  'codex-gpt-5-6-terra': 'gpt-5.6-terra',
+  'codex-gpt-5-6-luna': 'gpt-5.6-luna',
+  'codex-gpt-5-5': 'gpt-5.5',
+  'codex-gpt-5-4': 'gpt-5.4',
+};
+
 /**
  * Build the `codex` argv for a turn. The prompt (with serialized attachments) is a
  * single positional argument passed after a `--` end-of-flags separator, so no amount
@@ -899,8 +912,11 @@ export function buildArgs(
     args.push('-c', `model_reasoning_effort="${opts.effort}"`);
   }
 
-  // Phase 12: `opts.model` is Claude-specific (preset aliases target `claude --model`);
-  // codex keeps its CLI default and ignores it (design doc §2 out-of-scope).
+  // Keep the selected model as one inert argv element. Both `exec` and `exec resume`
+  // accept this provider-native flag, so a catalogue choice survives resumed turns.
+  if (opts.model) {
+    args.push('--model', LEGACY_CODEX_MODEL_IDS[opts.model] ?? opts.model);
+  }
 
   // `--` ends flag parsing; the session id (resume only) and prompt then cannot be
   // read as options even if either begins with a dash.

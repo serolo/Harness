@@ -1,86 +1,185 @@
-# Harness
+<p align="center">
+  <img src="build/icon.png" alt="Harness logo" width="128" />
+</p>
 
-Harness is a cross-platform desktop app for running multiple coding agents against one repository. It manages
-git workspaces, agent conversations, terminals, diffs, checkpoints, checks, and integration workflows
-from a single Electron application.
+<h1 align="center">Harness</h1>
 
-The implementation is TypeScript end to end:
+<p align="center">
+  <strong>Run coding agents in parallel. Keep every task isolated, observable, and reviewable.</strong>
+</p>
 
-- Electron main process for the core services
-- React renderer built with Vite
-- `contextBridge` preload API for all renderer-to-main communication
-- SQLite via `better-sqlite3` and Kysely
-- `node-pty` and xterm.js for terminal sessions
-- system `git` plus typed wrappers for repository operations
+<p align="center">
+  Harness is a local-first desktop workspace for Claude Code, Codex, and Cursor.<br />
+  Every task gets its own Git worktree, branch, chat, terminals, and review loop.
+</p>
 
-## Requirements
+<p align="center">
+  <a href="https://github.com/serolo/Harness/actions/workflows/ci.yml"><img src="https://github.com/serolo/Harness/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/serolo/Harness/releases/latest"><img src="https://img.shields.io/github/v/release/serolo/Harness?display_name=tag&amp;sort=semver" alt="Latest release" /></a>
+  <a href="#install"><img src="https://img.shields.io/badge/macOS-13%2B-111827?logo=apple" alt="macOS 13+" /></a>
+  <a href="https://www.electronjs.org/"><img src="https://img.shields.io/badge/Electron-43-47848F?logo=electron&amp;logoColor=white" alt="Electron 43" /></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&amp;logoColor=white" alt="TypeScript 5" /></a>
+</p>
 
-- macOS 13 or newer (Apple silicon or Intel)
-- Windows 10/11 x64
-- A modern x64 Linux distribution (AppImage or Debian package)
-- Node.js 22 or newer
-- npm
-- system `git`
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#what-you-can-do">Features</a> ·
+  <a href="#development">Development</a> ·
+  <a href="#architecture">Architecture</a>
+</p>
 
-Claude Code on Windows also requires Git for Windows. If Git Bash is installed outside its default
-location, set `CLAUDE_CODE_GIT_BASH_PATH` to its `bash.exe` path.
+## Why Harness?
 
-Native Electron modules are rebuilt after install through the `postinstall` script.
+Coding agents are most useful when they can work independently, but running several of them against
+the same checkout creates conflicts and makes progress hard to follow. Harness turns one repository
+into a set of focused workspaces:
 
-## Getting Started
+- **One task, one worktree.** Every agent works on an isolated branch and filesystem checkout.
+- **One place to supervise.** Follow streaming conversations, running processes, terminals, and task
+  state without switching applications.
+- **A built-in review loop.** Inspect diffs, leave line comments, send feedback to the agent, and
+  checkpoint or restore work before it reaches a pull request.
+- **Your tools and accounts.** Harness drives agent CLIs already installed on your machine; it does
+  not introduce a separate model API or billing layer.
+
+## What you can do
+
+| Area | Capabilities |
+| --- | --- |
+| Parallel workspaces | Create, restore, reorder, and archive isolated Git worktrees with dedicated branches and ports. |
+| Agent conversations | Stream turns from Claude Code and Codex, use Cursor through a terminal fallback, attach files, and keep durable chat history. |
+| Custom agents | Compose coordinator and child-agent configurations from versioned YAML and Markdown skill bundles. |
+| Terminals and processes | Open multiple PTY-backed terminals, run project scripts, inspect logs, and stop process trees cleanly. |
+| Review | Browse changed files in a Monaco diff, filter by commit, add inline comments, send feedback to an agent, and create turn checkpoints. |
+| Delivery | Commit and push changes, open pull requests, inspect checks and review threads, fix failures with an agent, and merge when ready. |
+| Tasks and automation | Queue or schedule agent work with per-task model, effort, mode, and agent snapshots. |
+| Project knowledge | Search local project knowledge, inject bounded context into turns, and review proposed knowledge updates. |
+
+Harness also includes a command palette, configurable themes and notifications, usage views, layered
+project settings, deep links, and signed in-app updates.
+
+## How it works
+
+```mermaid
+flowchart LR
+    UI[Harness desktop app] --> WM[Workspace manager]
+    WM --> W1[Task A<br/>worktree + branch]
+    WM --> W2[Task B<br/>worktree + branch]
+    WM --> W3[Task C<br/>worktree + branch]
+
+    W1 --> A1[Claude Code]
+    W2 --> A2[Codex]
+    W3 --> A3[Cursor]
+
+    UI --> DEV[Chat · terminals · run scripts]
+    UI --> REV[Diffs · comments · checkpoints]
+    UI --> GH[GitHub PRs · checks · reviews]
+```
+
+The Electron main process owns Git, SQLite, child processes, PTYs, integrations, and durable state.
+The sandboxed React renderer can reach those services only through a typed `contextBridge` API.
+
+## Install
+
+### macOS release
+
+Download the latest signed and notarized build from
+[GitHub Releases](https://github.com/serolo/Harness/releases/latest). Builds are published for Apple
+silicon and Intel Macs running macOS 13 or newer.
+
+Windows and Linux remain supported source-build targets, but their packaged release pipelines are
+temporarily paused while cross-platform distribution is stabilized.
+
+### Run from source
+
+You will need:
+
+- Node.js 22 or newer and npm
+- Git
+- [GitHub CLI](https://cli.github.com/) authenticated with `gh auth login`
+- At least one authenticated agent CLI: Claude Code or Codex (Cursor is also available as a
+  raw-terminal adapter)
 
 ```sh
+git clone https://github.com/serolo/Harness.git
+cd Harness
 npm install
 npm run dev
 ```
 
-If native bindings need to be rebuilt manually:
+`npm install` rebuilds the native `better-sqlite3` and `node-pty` modules for Electron. If those
+bindings need to be rebuilt later, run `npm run rebuild`.
 
-```sh
-npm run rebuild
-```
+> [!IMPORTANT]
+> Agent commands and project run scripts execute with your user privileges inside their worktrees.
+> Review project configuration and agent permissions before running code you do not trust.
 
-## Scripts
+## Development
 
-```sh
-npm run dev       # Start the Electron/Vite development app
-npm run build     # Build main, preload, and renderer targets
-npm run package   # Package for the current host OS with electron-builder
-npm run release:mac    # Create signed/notarized macOS dmg/zip release assets
-npm run release:win    # Create a signed Windows NSIS installer
-npm run release:linux  # Create Linux AppImage and deb packages
-npm run test      # Run Vitest through the Electron test harness
-npm run test:e2e  # Run Playwright Electron tests
-npm run check     # Type-check, lint, test, and build
-npm run migrate   # Run local database migrations
-```
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start Electron and Vite in development mode. |
+| `npm run build` | Build the main, preload, and renderer targets. |
+| `npm run test` | Run Vitest through the Electron test harness. |
+| `npm run test:e2e` | Run Playwright end-to-end tests against the built app. |
+| `npm run check` | Type-check, lint, test, and build. |
+| `npm run package` | Package the app for the current host OS. |
+| `npm run migrate` | Run local SQLite migrations. |
+| `npm run rebuild` | Rebuild native dependencies for Electron. |
 
-The full repository gate is also available as:
+The repository's complete local gate is:
 
 ```sh
 bash ci/harness-gates.sh
 ```
 
-## Project Layout
+Vitest files run under Electron. To run one focused test file:
 
-```text
-src/main/      Electron main process, core services, IPC handlers, database, git, harnesses
-src/preload/   Hardened contextBridge API exposed to the renderer
-src/shared/    Types shared by main, preload, and renderer
-src/renderer/  React application, feature views, stores, and IPC clients
-docs/          Product spec, implementation plan, and developer workflow docs
-e2e/           Playwright Electron tests
-scripts/       Migration and test runner utilities
+```sh
+node scripts/vitest-electron.mjs run path/to/file.test.ts
 ```
 
-## Development Notes
+## Architecture
 
-- Use npm; `package-lock.json` is authoritative.
-- Keep renderer access to the main process behind `window.api` from `src/preload/index.ts`.
-- Treat `src/shared/**` as the typed contract between processes. Extend contracts additively.
-- Add SQLite schema changes through numbered migrations.
-- Run focused tests for the area you change, then `npm run check` before merging.
+```text
+src/main/      Electron main process: Git, DB, agents, PTYs, integrations, IPC
+src/preload/   Hardened contextBridge API exposed to the renderer
+src/shared/    Typed contracts shared across process boundaries
+src/renderer/  React UI, feature views, stores, and IPC clients
+resources/     Built-in agent and skill bundles
+e2e/           Playwright Electron tests
+scripts/       Migrations, release helpers, and test utilities
+docs/          Product spec, implementation plans, privacy, and workflows
+```
 
-See [CLAUDE.md](CLAUDE.md) for the repo-wide engineering agreement and
-[docs/implementation-plan/README.md](docs/implementation-plan/README.md) for the detailed system
-plan.
+The most important design constraints are deliberate:
+
+- The renderer stays sandboxed with context isolation enabled.
+- `src/shared/**` is an append-only IPC and data contract.
+- Every IPC handler crosses one normalized, typed error boundary.
+- SQLite schema changes ship as migrations because app data lives on the user's disk.
+- Agent prompts, repository data, and credentials never belong in renderer-accessible logs.
+
+Start with the [product specification](docs/parallel-agents-spec.md), then read the
+[implementation map](docs/implementation-plan/README.md) and
+[developer workflow](docs/ai_harness/DEVELOPER_WORKFLOW.md). Repository-wide engineering rules live
+in [AGENTS.md](AGENTS.md).
+
+## Privacy and local data
+
+Repositories, conversations, diffs, commands, terminal output, and app state are stored locally.
+Anonymous product analytics and crash reporting are separate, optional, and disabled by default;
+their payloads exclude prompts, code, paths, diffs, terminal output, and credentials. See the full
+[privacy notes](docs/privacy.md).
+
+## Release status
+
+Harness is under active development. Production releases currently target macOS arm64 and x64;
+Windows and Linux packaging remains in the repository for ongoing stabilization. See
+[the release guide](docs/RELEASING.md) for the signed build and verification process.
+
+---
+
+<div align="center">
+  Built for developers who want more agents working—and less work coordinating them.
+</div>
